@@ -5,8 +5,10 @@ Posts a Block Kit summary of a day's QC run to a configured channel using a
 bot token from the admin credential vault.
 """
 
+import asyncio
 import logging
 import re
+import time
 
 import httpx
 
@@ -309,3 +311,105 @@ async def post_test(channel: str | None = None) -> dict:
         "channel": channel,
         "text": "✅ Pylon QC is connected. Scheduled reports will arrive here.",
     })
+
+
+# ── directory (id → name for the Rules UI) ────────────────────────────────────
+
+_dir_lock = asyncio.Lock()
+_dir_users: dict[str, str] = {}
+_dir_groups: dict[str, str] = {}
+_dir_at: float = 0
+_DIR_TTL = 600
+
+
+async def _api_get(method: str, params: dict | None = None) -> dict:
+    async with httpx.AsyncClient(timeout=25) as client:
+        r = await client.get(
+            f"{SLACK_API}/{method}",
+            params=params or {},
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Slack {method} failed: {data.get('error', 'unknown error')}")
+    return data
+
+
+async def _refresh_directory() -> None:
+    """Load workspace users and user-groups. Failure leaves the previous cache."""
+    global _dir_users, _dir_groups, _dir_at
+    users: dict[str, str] = {}
+    cursor = None
+    while True:
+        params: dict = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        data = await _api_get("users.list", params)
+        for u in data.get("members") or []:
+            if u.get("deleted") or u.get("is_bot"):
+                continue
+            uid = u.get("id")
+            if not uid:
+                continue
+            profile = u.get("profile") or {}
+            name = (profile.get("real_name") or profile.get("display_name")
+                    or u.get("name") or uid)
+            users[uid] = name
+        cursor = (data.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+
+    groups: dict[str, str] = {}
+    try:
+        gdata = await _api_get("usergroups.list")
+        for g in gdata.get("usergroups") or []:
+            gid = g.get("id")
+            handle = g.get("handle") or g.get("name") or gid
+            if gid:
+                groups[gid] = handle if str(handle).startswith("@") else f"@{handle}"
+    except Exception as e:
+        logger.warning("Slack usergroups.list failed: %s", e)
+
+    _dir_users, _dir_groups, _dir_at = users, groups, time.time()
+
+
+async def directory(force: bool = False) -> tuple[dict[str, str], dict[str, str]]:
+    """Return (users, groups) maps, refreshing when stale. Empty if Slack isn't set up."""
+    try:
+        _token()
+    except SlackNotConfigured:
+        return {}, {}
+    async with _dir_lock:
+        stale = time.time() - _dir_at > _DIR_TTL
+        if force or stale or not _dir_users:
+            try:
+                await _refresh_directory()
+            except Exception as e:
+                logger.warning("Slack directory refresh failed: %s", e)
+        return dict(_dir_users), dict(_dir_groups)
+
+
+async def resolve_ids(ids: list[str]) -> dict[str, str]:
+    """Map Slack user/group ids to display names. Missing ids are omitted."""
+    wanted = {i for i in ids if i}
+    if not wanted:
+        return {}
+    users, groups = await directory()
+    out = {}
+    for sid in wanted:
+        name = users.get(sid) or groups.get(sid)
+        if name:
+            out[sid] = name
+    return out
+
+
+async def search_directory(q: str, kind: str = "user", limit: int = 25) -> list[dict]:
+    """Name search over the cached Slack directory. `kind` is user or group."""
+    q = (q or "").strip().lower()
+    users, groups = await directory()
+    src = users if kind != "group" else groups
+    items = [{"id": i, "name": n} for i, n in src.items()]
+    if q:
+        items = [e for e in items if q in e["name"].lower()]
+    items.sort(key=lambda e: e["name"].lower())
+    return items[:limit]

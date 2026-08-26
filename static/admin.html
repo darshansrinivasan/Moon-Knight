@@ -4,124 +4,34 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Admin · Pylon QC</title>
+<link rel="stylesheet" href="/static/shell.css">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0f172a; --surface: #1e293b; --surface2: #263348; --border: #334155;
-    --text: #f1f5f9; --muted: #94a3b8; --accent: #6366f1; --accent2: #818cf8;
-    --pass: #22c55e; --fail: #ef4444; --review: #f59e0b; --radius: 8px;
-  }
-  body {
-    background: var(--bg); color: var(--text); font-size: 14px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    min-height: 100vh;
-  }
-  header {
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
-    position: sticky; top: 0; z-index: 10;
-  }
-  header h1 { font-size: 16px; font-weight: 600; }
-  header h1 span { color: var(--accent2); }
-  .spacer { flex: 1; }
-  .link-btn {
-    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
-    border-radius: var(--radius); padding: 5px 12px; font-size: 12px;
-    text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
-  }
-  .link-btn:hover { border-color: var(--accent); color: var(--text); }
-  .who { font-size: 12px; color: var(--muted); }
-  .who b { color: var(--text); }
-
-  main { max-width: 980px; margin: 0 auto; padding: 24px 20px 60px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
-  .card {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 20px; margin-bottom: 16px;
-  }
-  .card h2 {
-    font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
-    color: var(--muted); font-weight: 600; margin-bottom: 4px;
-  }
-  .card .card-sub { font-size: 12px; color: var(--muted); margin-bottom: 16px; line-height: 1.6; }
-
-  label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
-  .hint { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; line-height: 1.5; }
-  input[type=text], input[type=password], input[type=email], input[type=time], select, textarea {
-    width: 100%; background: var(--surface2); border: 1px solid var(--border);
-    color: var(--text); border-radius: var(--radius); padding: 8px 10px;
-    font-size: 13px; font-family: inherit;
-  }
-  textarea { min-height: 90px; resize: vertical; font-family: ui-monospace, monospace; font-size: 12px; }
-  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
-  .field { margin-bottom: 16px; }
-  .row { display: flex; gap: 8px; align-items: flex-start; }
-  .row > input, .row > select { flex: 1; }
-
-  button {
-    background: var(--accent); border: none; color: #fff; font-weight: 600;
-    font-size: 13px; padding: 8px 14px; border-radius: var(--radius);
-    cursor: pointer; font-family: inherit; white-space: nowrap;
-  }
-  button:hover { background: var(--accent2); }
-  button:disabled { opacity: .5; cursor: default; }
-  button.ghost { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); }
-  button.ghost:hover { border-color: var(--accent); color: var(--text); background: var(--surface2); }
-  button.danger { background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.4); color: var(--fail); }
-
   .cred { border-top: 1px solid var(--border); padding: 14px 0; }
   .cred:first-of-type { border-top: none; padding-top: 0; }
   .cred-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   .cred-head .name { font-size: 13px; font-weight: 600; flex: 1; }
-  .pill {
-    font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
-    letter-spacing: .3px;
-  }
-  .pill.set   { background: rgba(34,197,94,.15); color: var(--pass); border: 1px solid rgba(34,197,94,.3); }
-  .pill.unset { background: rgba(148,163,184,.12); color: var(--muted); border: 1px solid var(--border); }
-  .pill.env   { background: rgba(99,102,241,.15); color: var(--accent2); border: 1px solid rgba(99,102,241,.35); }
   .cred-meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
-
-  /* environment-managed values: shown, explained, not editable here */
   .env-locked {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     background: var(--surface2); border: 1px dashed var(--border);
     border-radius: var(--radius); padding: 8px 11px; font-size: 12px; color: var(--muted);
   }
-  .env-locked .val {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--text);
-  }
+  .env-locked .val { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); }
   .var {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px; color: var(--accent2);
     background: rgba(99,102,241,.12); border-radius: 4px; padding: 1px 6px;
   }
-  input:disabled, select:disabled {
-    opacity: .55; cursor: not-allowed;
-  }
-  .banner {
-    border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
-    font-size: 13px; line-height: 1.6; display: flex; flex-direction: column; gap: 6px;
-  }
-  .banner.warn { background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.35); color: var(--review); }
-  .banner.bad  { background: rgba(239,68,68,.1);  border: 1px solid rgba(239,68,68,.35);  color: var(--fail); }
-  .banner b { color: var(--text); }
-  .banner ul { margin: 2px 0 0 16px; padding: 0; }
-
-  /* model picker */
   .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
   .model-chip {
     font-size: 11.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     padding: 4px 10px; border-radius: 14px; cursor: pointer; user-select: none;
     background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
-    transition: border-color .15s, color .15s, background .15s;
     display: inline-flex; align-items: center; gap: 6px;
   }
   .model-chip:hover { border-color: var(--accent); color: var(--text); }
   .model-chip.on {
-    background: rgba(99,102,241,.16); border-color: var(--accent); color: var(--accent2);
-    font-weight: 600;
+    background: rgba(99,102,241,.16); border-color: var(--accent); color: var(--accent2); font-weight: 600;
   }
   .model-chip .ord {
     font-size: 9.5px; background: var(--accent); color: #fff;
@@ -129,294 +39,177 @@
   }
   .gcp-ok  { color: var(--pass); font-weight: 600; }
   .gcp-off { color: var(--muted); }
-
-  /* read-only mode for members */
-  .banner.info { background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.35); color: var(--accent2); }
   body.readonly .cred input,
   body.readonly .cred textarea { display: none; }
   body.readonly button[data-cred],
   body.readonly button[data-test],
   body.readonly button[data-save],
   body.readonly #invite-btn, body.readonly #invite-email, body.readonly #invite-role,
-  body.readonly #run-now, body.readonly #test-slack, body.readonly #test-vertex,
+  body.readonly #test-slack, body.readonly #test-vertex,
   body.readonly #reload-projects, body.readonly #gcp-connect, body.readonly #gcp-disconnect,
   body.readonly [data-role], body.readonly [data-toggle] { display: none !important; }
   body.readonly .model-chip { pointer-events: none; }
-
-  .msg { font-size: 12px; margin-top: 8px; padding: 7px 10px; border-radius: 6px; display: none; line-height: 1.5; }
-  .msg.ok  { display: block; background: rgba(34,197,94,.12); color: var(--pass); border: 1px solid rgba(34,197,94,.3); }
-  .msg.err { display: block; background: rgba(239,68,68,.12); color: var(--fail); border: 1px solid rgba(239,68,68,.3); }
-  .msg.info{ display: block; background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
-
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th {
-    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px;
-    color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--border); font-weight: 600;
-  }
-  td { padding: 8px; border-bottom: 1px solid rgba(51,65,85,.5); vertical-align: middle; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .status { font-weight: 600; }
-  .status.success { color: var(--pass); }
-  .status.partial { color: var(--review); }
-  .status.error   { color: var(--fail); }
-  .status.running { color: var(--accent2); }
-  .muted { color: var(--muted); }
-  .next-run {
-    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 10px 12px; font-size: 12.5px; margin-bottom: 16px;
-  }
-  .next-run b { color: var(--accent2); }
-  .toggle-row { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
-  .toggle-row input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
-  .toggle-row label { margin: 0; cursor: pointer; }
-  .actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .section { display: none; }
+  .section.on { display: block; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
-<body>
+<body class="shell" data-page="admin">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Admin</h1>
+    <span class="muted" id="who"></span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <aside class="subnav" id="admin-nav">
+      <div class="label">Configure</div>
+      <button class="active" data-section="creds">Credentials</button>
+      <button data-section="vertex">Vertex AI</button>
+      <button data-section="slack">Slack delivery</button>
+      <button data-section="people">People</button>
+      <button data-section="audit" id="nav-audit">Activity log</button>
+    </aside>
+    <div class="content-pane">
+      <div id="loading"><span class="muted">Loading…</span></div>
+      <div id="content" style="display:none">
+        <div id="readonly-note"></div>
+        <div id="readiness"></div>
 
-<header>
-  <h1>Pylon <span>QC</span> · Admin</h1>
-  <div class="spacer"></div>
-  <span class="who" id="who"></span>
-  <a class="link-btn" href="/">← Dashboard</a>
-  <a class="link-btn" href="/runs">Runs</a>
-  <a class="link-btn" href="/rules">Rules</a>
-  <a class="link-btn" href="/auth/logout">Sign out</a>
-</header>
-
-<main>
-  <div id="loading" class="card"><span class="muted">Loading…</span></div>
-
-  <div id="content" style="display:none">
-
-    <div id="readonly-note"></div>
-    <div id="readiness"></div>
-
-    <!-- Credentials -->
-    <div class="card">
-      <h2>Credentials</h2>
-      <p class="card-sub">
-        Stored encrypted in the database — never in source control, never shown back in full.
-        Leave a field blank and save to remove a credential. Sign-in credentials are the one
-        exception: they are needed before this page exists, so they come from the environment.
-      </p>
-      <div id="creds"></div>
-    </div>
-
-    <div class="grid">
-      <!-- Vertex -->
-      <div class="card">
-        <h2>AI — Vertex AI</h2>
-        <p class="card-sub">
-          Gemini runs through Vertex AI using OAuth service-account credentials
-          (or Application Default Credentials on the server). No API keys.
-        </p>
-        <div id="gcp-conn" class="env-locked" style="margin-bottom:14px"></div>
-
-        <div class="field">
-          <label for="vertex_project">Google Cloud project</label>
-          <div class="hint">Loaded from the connected account — pick the project with Vertex AI enabled.</div>
-          <div class="row">
-            <select id="vertex_project"><option value="">Connect an account to load projects…</option></select>
-            <button class="ghost" id="reload-projects" title="Reload projects">↻</button>
-          </div>
-          <div class="msg" id="msg-projects"></div>
-        </div>
-
-        <div class="field">
-          <label for="vertex_location">Region</label>
-          <select id="vertex_location"></select>
-        </div>
-
-        <div class="field">
-          <label for="vertex_quota_project">Quota project</label>
-          <div class="hint">
-            The project billed for Vertex calls. Leave blank to bill the project above.
-            Only needed when billing sits elsewhere — the Vertex AI API must be enabled
-            on whichever project this resolves to.
-          </div>
-          <input type="text" id="vertex_quota_project" placeholder="same as project above">
-        </div>
-
-        <div class="field">
-          <label>Models</label>
-          <div class="hint">
-            Gemini models available in this project and region. Click to include or exclude —
-            the number shows the order they are tried in when one is rate-limited.
-          </div>
-          <div id="model-chips" class="chip-row"><span class="muted" style="font-size:12px">Choose a project to load models…</span></div>
-          <!-- Holds the chosen order. Revealed only if the model list can't be fetched,
-               so a permissions problem never leaves you unable to set a model. -->
-          <div id="models-manual" style="display:none;margin-top:8px">
-            <div class="hint">Models could not be listed, so enter them by hand, comma-separated.</div>
-            <input type="text" id="vertex_models" placeholder="gemini-2.5-flash,gemini-2.0-flash">
+        <div class="section on" id="sec-creds">
+          <div class="card">
+            <h2>Credentials</h2>
+            <p class="card-sub">
+              Stored encrypted in the database — never in source control, never shown back in full.
+              Leave a field blank and save to remove a credential. Sign-in credentials come from the environment.
+            </p>
+            <div id="creds"></div>
           </div>
         </div>
 
-        <div class="actions">
-          <button data-save="vertex_project,vertex_quota_project,vertex_location,vertex_models">Save AI settings</button>
-          <button class="ghost" id="test-vertex">Test Vertex connection</button>
-        </div>
-        <div class="msg" id="msg-vertex"></div>
-      </div>
-
-      <!-- Slack -->
-      <div class="card">
-        <h2>Slack delivery</h2>
-        <p class="card-sub">
-          After each scheduled run, a summary is posted to this channel.
-          Invite the bot to the channel first.
-        </p>
-        <div class="toggle-row">
-          <input type="checkbox" id="slack_enabled">
-          <label for="slack_enabled">Post QC results to Slack</label>
-        </div>
-        <div class="field">
-          <label for="slack_channel">Channel</label>
-          <div class="hint">Channel name or ID, e.g. <b>#support-qc</b>.</div>
-          <input type="text" id="slack_channel" placeholder="#support-qc">
-        </div>
-        <div class="field">
-          <label for="dashboard_base_url">Application URL</label>
-          <div class="hint">
-            Where people reach this app. Two things depend on it: the links inside Slack
-            messages, and the Google sign-in redirect — which must match the URI registered
-            on your OAuth client exactly. Detected automatically when hosted; set it only
-            for a custom domain.
+        <div class="section" id="sec-vertex">
+          <div class="card">
+            <h2>AI — Vertex AI</h2>
+            <p class="card-sub">
+              Gemini runs through Vertex AI using OAuth service-account credentials
+              (or Application Default Credentials on the server). No API keys.
+            </p>
+            <div id="gcp-conn" class="env-locked" style="margin-bottom:14px"></div>
+            <div class="field">
+              <label for="vertex_project">Google Cloud project</label>
+              <div class="hint">Loaded from the connected account — pick the project with Vertex AI enabled.</div>
+              <div class="row">
+                <select id="vertex_project"><option value="">Connect an account to load projects…</option></select>
+                <button class="ghost" id="reload-projects" title="Reload projects">↻</button>
+              </div>
+              <div class="msg" id="msg-projects"></div>
+            </div>
+            <div class="field">
+              <label for="vertex_location">Region</label>
+              <select id="vertex_location"></select>
+            </div>
+            <div class="field">
+              <label for="vertex_quota_project">Quota project</label>
+              <div class="hint">The project billed for Vertex calls. Leave blank to bill the project above.</div>
+              <input type="text" id="vertex_quota_project" placeholder="same as project above">
+            </div>
+            <div class="field">
+              <label>Models</label>
+              <div class="hint">Click to include or exclude — the number is the fallback order when one is rate-limited.</div>
+              <div id="model-chips" class="chip-row"><span class="muted" style="font-size:12px">Choose a project to load models…</span></div>
+              <div id="models-manual" style="display:none;margin-top:8px">
+                <div class="hint">Models could not be listed, so enter them by hand, comma-separated.</div>
+                <input type="text" id="vertex_models" placeholder="gemini-2.5-flash,gemini-2.0-flash">
+              </div>
+            </div>
+            <div class="actions">
+              <button data-save="vertex_project,vertex_quota_project,vertex_location,vertex_models">Save AI settings</button>
+              <button class="ghost" id="test-vertex">Test Vertex connection</button>
+            </div>
+            <div class="msg" id="msg-vertex"></div>
           </div>
-          <input type="text" id="dashboard_base_url" placeholder="https://qc.up.railway.app">
         </div>
-        <div class="actions">
-          <button data-save="slack_enabled,slack_channel,dashboard_base_url">Save Slack settings</button>
-          <button class="ghost" id="test-slack">Send test message</button>
+
+        <div class="section" id="sec-slack">
+          <div class="card">
+            <h2>Slack delivery</h2>
+            <p class="card-sub">After each scheduled run, a summary is posted to this channel. Invite the bot first.</p>
+            <div class="toggle-row">
+              <input type="checkbox" id="slack_enabled">
+              <label for="slack_enabled">Post QC results to Slack</label>
+            </div>
+            <div class="field">
+              <label for="slack_channel">Channel</label>
+              <div class="hint">Channel name or ID, e.g. <b>#support-qc</b>.</div>
+              <input type="text" id="slack_channel" placeholder="#support-qc">
+            </div>
+            <div class="field">
+              <label for="dashboard_base_url">Application URL</label>
+              <div class="hint">Used for Slack deep links and the Google sign-in redirect.</div>
+              <input type="text" id="dashboard_base_url" placeholder="https://qc.up.railway.app">
+            </div>
+            <div class="actions">
+              <button data-save="slack_enabled,slack_channel,dashboard_base_url">Save Slack settings</button>
+              <button class="ghost" id="test-slack">Send test message</button>
+            </div>
+            <div class="msg" id="msg-slack"></div>
+          </div>
         </div>
-        <div class="msg" id="msg-slack"></div>
+
+        <div class="section" id="sec-people">
+          <div class="card">
+            <h2>People</h2>
+            <p class="card-sub">
+              Anyone with an <b id="domain-label">@spotdraft.com</b> Google account can sign in.
+              Pre-authorise someone to set their role before their first visit.
+            </p>
+            <div class="row" style="margin-bottom:16px">
+              <input type="email" id="invite-email" placeholder="colleague@spotdraft.com">
+              <select id="invite-role" style="max-width:130px">
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button id="invite-btn">Add</button>
+            </div>
+            <div class="msg" id="msg-users"></div>
+            <table>
+              <thead><tr><th>Person</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
+              <tbody id="users"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section" id="sec-audit">
+          <div class="card" id="audit-card">
+            <h2>Activity log</h2>
+            <p class="card-sub">Who changed what. Secret values are never recorded.</p>
+            <table>
+              <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
+              <tbody id="audit"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
-
-    <!-- Schedule -->
-    <div class="card">
-      <h2>Automated daily run</h2>
-      <p class="card-sub">
-        Fetches the day's tickets from Pylon, runs the AI checks, and posts the summary
-        to Slack — with no one clicking anything.
-      </p>
-      <div class="next-run" id="next-run"></div>
-      <div class="toggle-row">
-        <input type="checkbox" id="schedule_enabled">
-        <label for="schedule_enabled">Run automatically every day</label>
-      </div>
-      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">
-        <div class="field">
-          <label for="schedule_time">Time of day</label>
-          <input type="time" id="schedule_time">
-        </div>
-        <div class="field">
-          <label for="schedule_tz">Timezone</label>
-          <input type="text" id="schedule_tz" placeholder="Asia/Kolkata">
-        </div>
-        <div class="field">
-          <label for="schedule_target">Which day to score</label>
-          <select id="schedule_target">
-            <option value="yesterday">Yesterday (complete day)</option>
-            <option value="today">Today (so far)</option>
-          </select>
-        </div>
-      </div>
-      <div class="actions">
-        <button data-save="schedule_enabled,schedule_time,schedule_tz,schedule_target">Save schedule</button>
-        <button class="ghost" id="run-now">▶ Run now</button>
-      </div>
-      <div class="msg" id="msg-schedule"></div>
-    </div>
-
-    <!-- Runs -->
-    <div class="card">
-      <h2>Recent runs</h2>
-      <p class="card-sub">Every automated and manual pipeline run, with what it produced.
-        The <a href="/runs" style="color:var(--accent2)">Runs page</a> has the full history —
-        per-run config, token cost, grade stability, and exact diffs between runs.</p>
-      <table>
-        <thead><tr>
-          <th>Date</th><th>Trigger</th><th>Status</th>
-          <th class="num">Fetched</th><th class="num">Scored</th>
-          <th>Slack</th><th>When</th>
-        </tr></thead>
-        <tbody id="runs"></tbody>
-      </table>
-    </div>
-
-    <!-- Users -->
-    <div class="card">
-      <h2>People</h2>
-      <p class="card-sub">
-        Anyone with an <b id="domain-label">@spotdraft.com</b> Google account can sign in.
-        Pre-authorise someone to set their role before their first visit.
-      </p>
-      <div class="row" style="margin-bottom:16px">
-        <input type="email" id="invite-email" placeholder="colleague@spotdraft.com">
-        <select id="invite-role" style="max-width:130px">
-          <option value="member">Member</option>
-          <option value="admin">Admin</option>
-        </select>
-        <button id="invite-btn">Add</button>
-      </div>
-      <div class="msg" id="msg-users"></div>
-      <table>
-        <thead><tr><th>Person</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
-        <tbody id="users"></tbody>
-      </table>
-    </div>
-
-    <!-- Audit -->
-    <div class="card" id="audit-card">
-      <h2>Activity log</h2>
-      <p class="card-sub">Who changed what. Secret values are never recorded.</p>
-      <table>
-        <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
-        <tbody id="audit"></tbody>
-      </table>
-    </div>
-
   </div>
-</main>
-
+</div>
+<script src="/static/shell.js"></script>
 <script>
 const $ = id => document.getElementById(id);
+const esc = QC.esc, show = QC.show, fmtTime = QC.fmtTime, api = QC.api;
 let ME = null, DATA = null;
 
-function esc(s) {
-  return String(s ?? "")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-
-function show(el, text, kind) {
-  el.className = "msg " + kind;
-  el.textContent = text;
-  if (kind === "ok") setTimeout(() => { el.className = "msg"; }, 4000);
-}
-
-function fmtTime(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleString();
-}
-
-async function api(url, opts = {}) {
-  const r = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
+document.querySelectorAll("#admin-nav [data-section]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#admin-nav [data-section]").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelectorAll(".section").forEach(s => s.classList.remove("on"));
+    $("sec-" + btn.dataset.section).classList.add("on");
   });
-  const data = await r.json().catch(() => ({}));
-  // HTTP/2 carries no status text, so falling back to it produced empty errors.
-  if (!r.ok) throw new Error(data.detail || r.statusText || `HTTP ${r.status}`);
-  return data;
-}
+});
 
-// ── credentials ──────────────────────────────────────────────────────────────
 function renderCreds(creds) {
   $("creds").innerHTML = creds.map(c => {
     const pill = c.locked
@@ -426,8 +219,6 @@ function renderCreds(creds) {
     const test = c.testable
       ? `<button class="ghost" data-test="${esc(c.key)}">Test</button>` : "";
 
-    // Values owned by the environment can't be written back from here — show
-    // where they live instead of an input that would silently fail.
     if (c.locked) {
       return `<div class="cred">
         <div class="cred-head"><span class="name">${esc(c.label)}</span>${pill}</div>
@@ -451,9 +242,7 @@ function renderCreds(creds) {
       ? `<div class="cred-meta">Updated by ${esc(c.updated_by || "—")} · ${esc(fmtTime(c.updated_at))}</div>` : "";
 
     return `<div class="cred">
-      <div class="cred-head">
-        <span class="name">${esc(c.label)}</span>${pill}
-      </div>
+      <div class="cred-head"><span class="name">${esc(c.label)}</span>${pill}</div>
       <div class="hint">${esc(c.help)}</div>
       ${input}
       <div class="actions" style="margin-top:8px">
@@ -499,22 +288,15 @@ function renderCreds(creds) {
   });
 }
 
-// ── settings ─────────────────────────────────────────────────────────────────
-// Only the base URL still has a live environment override; everything else
-// on this page is managed here.
 const SETTING_ENV = { dashboard_base_url: "QC_BASE_URL" };
 
 function fillSettings(s, sources = {}) {
   for (const k of ["vertex_project","vertex_quota_project","vertex_location","vertex_models",
-                   "slack_channel","dashboard_base_url","schedule_time",
-                   "schedule_tz","schedule_target"]) {
+                   "slack_channel","dashboard_base_url"]) {
     if ($(k)) $(k).value = s[k] || "";
   }
-  $("slack_enabled").checked    = s.slack_enabled === "1";
-  $("schedule_enabled").checked = s.schedule_enabled === "1";
+  $("slack_enabled").checked = s.slack_enabled === "1";
 
-  // Fields the environment owns are shown but not editable here, with a note
-  // naming the variable so it's obvious where to change them.
   for (const [key, envVar] of Object.entries(SETTING_ENV)) {
     const el = $(key);
     if (!el) continue;
@@ -532,7 +314,6 @@ function fillSettings(s, sources = {}) {
     }
   }
 
-  // A save button whose fields are all environment-owned has nothing to do.
   document.querySelectorAll("[data-save]").forEach(btn => {
     const keys = btn.dataset.save.split(",");
     const allLocked = keys.every(k => sources[k] === "env");
@@ -541,7 +322,6 @@ function fillSettings(s, sources = {}) {
   });
 }
 
-// ── Google Cloud: connection, projects, models ───────────────────────────────
 let GCP = { locations: [], models: [], projectsLoaded: false };
 
 function selectedModels() {
@@ -580,9 +360,7 @@ function renderGcpConnection(st) {
   }
 
   const connectBtn = $("gcp-connect");
-  if (connectBtn) {
-    connectBtn.addEventListener("click", () => { location.href = "/auth/google-cloud"; });
-  }
+  if (connectBtn) connectBtn.addEventListener("click", () => { location.href = "/auth/google-cloud"; });
   const disconnectBtn = $("gcp-disconnect");
   if (disconnectBtn) {
     disconnectBtn.addEventListener("click", async () => {
@@ -600,10 +378,8 @@ function renderLocations(locations, current) {
   sel.innerHTML = locations
     .map(([id, label]) => `<option value="${esc(id)}">${esc(label)}</option>`)
     .join("");
-  // Keep a region the API didn't list (custom or newly added) selectable.
   if (current && !locations.some(([id]) => id === current)) {
-    sel.insertAdjacentHTML("afterbegin",
-      `<option value="${esc(current)}">${esc(current)}</option>`);
+    sel.insertAdjacentHTML("afterbegin", `<option value="${esc(current)}">${esc(current)}</option>`);
   }
   sel.value = current || "us-central1";
 }
@@ -616,7 +392,6 @@ async function loadProjects({ quiet = false } = {}) {
   try {
     const d = await api("/api/admin/gcp/projects");
     if (!d.ok) {
-      // Never strand a configured project just because listing failed.
       sel.innerHTML = current
         ? `<option value="${esc(current)}">${esc(current)} (current)</option>`
         : `<option value="">No projects available</option>`;
@@ -632,9 +407,7 @@ async function loadProjects({ quiet = false } = {}) {
         `<option value="${esc(current)}">${esc(current)} (not listed)</option>`);
     }
     sel.value = current;
-    if (!quiet) {
-      show(msg, `${d.projects.length} project${d.projects.length === 1 ? "" : "s"} available.`, "ok");
-    }
+    if (!quiet) show(msg, `${d.projects.length} project${d.projects.length === 1 ? "" : "s"} available.`, "ok");
     if (sel.value) loadModels({ quiet: true });
   } catch (e) {
     show(msg, e.message, "err");
@@ -652,7 +425,6 @@ function renderModelChips() {
     return;
   }
 
-  // Selected models first, in fallback order, then the rest.
   const rest = GCP.models.map(m => m.id).filter(id => !chosen.includes(id));
   host.innerHTML = [...chosen, ...rest].map(id => {
     const i = chosen.indexOf(id);
@@ -725,9 +497,7 @@ function wireSaveButtons() {
       const keys = btn.dataset.save.split(",");
       const body = {};
       keys.forEach(k => { const v = readSetting(k); if (v !== null) body[k] = v; });
-
-      const msgId = keys[0].startsWith("vertex") ? "msg-vertex"
-                  : keys[0].startsWith("slack")  ? "msg-slack" : "msg-schedule";
+      const msgId = keys[0].startsWith("vertex") ? "msg-vertex" : "msg-slack";
       const msg = $(msgId);
       btn.disabled = true;
       try {
@@ -735,7 +505,6 @@ function wireSaveButtons() {
           method: "PUT", body: JSON.stringify(body),
         });
         fillSettings(d.settings, d.setting_sources);
-        renderNextRun(d.schedule);
         show(msg, d.refused && d.refused.length
           ? `Saved. ${d.refused.join(", ")} unchanged — set by the environment.`
           : "Saved.", d.refused && d.refused.length ? "info" : "ok");
@@ -746,43 +515,11 @@ function wireSaveButtons() {
   });
 }
 
-function renderNextRun(sched) {
-  if (!sched || !sched.enabled) {
-    $("next-run").innerHTML = `<span class="muted">Automatic runs are off — the daily QC must be started by hand.</span>`;
-    return;
-  }
-  if (sched.error) {
-    $("next-run").innerHTML = `<span style="color:var(--fail)">${esc(sched.error)}</span>`;
-    return;
-  }
-  const when = sched.next_run ? new Date(sched.next_run).toLocaleString() : "—";
-  const scope = sched.target === "today" ? "today's tickets" : "the previous day's tickets";
-  $("next-run").innerHTML =
-    `Next automatic run: <b>${esc(when)}</b> <span class="muted">(${esc(sched.timezone || "")}) — scoring ${esc(scope)}</span>`;
-}
-
-// ── runs / users / audit ─────────────────────────────────────────────────────
-function renderRuns(runs) {
-  $("runs").innerHTML = runs.length ? runs.map(r => `
-    <tr>
-      <td>${esc(r.run_date)}</td>
-      <td class="muted">${esc(r.triggered_by)}</td>
-      <td class="status ${esc(r.status)}">${esc(r.status)}${r.error ? ` <span class="muted" title="${esc(r.error)}">ⓘ</span>` : ""}</td>
-      <td class="num">${r.fetched ?? "—"}</td>
-      <td class="num">${r.scored ?? "—"}</td>
-      <td>${r.slack_ok === 1 ? "✅" : r.slack_ok === 0 ? "❌" : "<span class='muted'>—</span>"}</td>
-      <td class="muted">${esc(fmtTime(r.started_at))}</td>
-    </tr>`).join("")
-    : `<tr><td colspan="7" class="muted" style="padding:20px;text-align:center">No runs yet.</td></tr>`;
-}
-
 function renderUsers(users) {
   const envAdmins = new Set((DATA && DATA.env_admins) || []);
   const canEdit   = !DATA || DATA.can_edit;
   $("users").innerHTML = users.map(u => {
     const self = ME && u.email === ME.email;
-    // Roles granted by QC_ADMIN_EMAILS are reapplied at every sign-in, so
-    // editing them here would just be undone.
     const byEnv = envAdmins.has(u.email);
     const roleSel = self
       ? `<span class="muted">${esc(u.role)} (you)</span>`
@@ -845,34 +582,29 @@ function renderAudit(rows) {
     : `<tr><td colspan="4" class="muted" style="padding:20px;text-align:center">Nothing yet.</td></tr>`;
 }
 
-// ── load ─────────────────────────────────────────────────────────────────────
 function applyReadOnly() {
   if (DATA.can_edit) return;
-  // CSS hides the controls; this makes the remaining fields genuinely inert
-  // and states plainly why. Every mutating endpoint also refuses non-admins.
   document.body.classList.add("readonly");
   document.querySelectorAll("#content input, #content select, #content textarea")
     .forEach(el => { el.disabled = true; });
   $("readonly-note").innerHTML =
     `<div class="banner info"><b>Read-only view</b>
-     You can see how the system is configured and how recent runs went.
-     Changing settings, credentials or access needs an administrator.</div>`;
-  const audit = document.getElementById("audit-card");
-  if (audit) audit.style.display = "none";
+     You can see how the system is configured. Changing it needs an administrator.</div>`;
+  $("nav-audit").style.display = "none";
+  $("sec-audit").style.display = "none";
 }
 
 async function load() {
   ME   = await api("/api/me");
   DATA = await api("/api/admin/overview");
 
-  $("who").innerHTML = `Signed in as <b>${esc(ME.name)}</b>`;
+  $("who").textContent = ME.name || "";
   $("domain-label").textContent = "@" + DATA.allowed_domain;
   $("invite-email").placeholder = `colleague@${DATA.allowed_domain}`;
 
   renderReadiness(DATA.readiness);
   renderCreds(DATA.credentials);
 
-  // A failure here must not blank the page — the rest of Admin is still useful.
   let gcpStatus = { connected: false, kind: null, account: "", can_browse: false,
                     locations: [], error: null };
   try {
@@ -886,11 +618,8 @@ async function load() {
 
   fillSettings(DATA.settings, DATA.setting_sources);
   renderModelChips();
-  // Listing projects calls Google on the server, so it stays admin-only.
   if (gcpStatus.can_browse && DATA.can_edit) loadProjects({ quiet: true });
 
-  renderNextRun(DATA.schedule);
-  renderRuns(DATA.runs);
   renderUsers(DATA.users);
   renderAudit(DATA.audit);
 
@@ -899,7 +628,6 @@ async function load() {
   $("content").style.display = "block";
 }
 
-// ── actions ──────────────────────────────────────────────────────────────────
 $("test-slack").addEventListener("click", async () => {
   const msg = $("msg-slack");
   show(msg, "Sending…", "info");
@@ -910,18 +638,14 @@ $("test-slack").addEventListener("click", async () => {
 });
 
 $("reload-projects").addEventListener("click", () => loadProjects());
-
 $("vertex_project").addEventListener("change", () => {
   GCP.models = [];
   renderModelChips();
   loadModels();
 });
-
 $("vertex_location").addEventListener("change", () => {
-  // Model availability differs by region, so re-query rather than assume.
   if ($("vertex_project").value) loadModels();
 });
-
 $("vertex_models").addEventListener("input", renderModelChips);
 
 $("test-vertex").addEventListener("click", async () => {
@@ -932,23 +656,6 @@ $("test-vertex").addEventListener("click", async () => {
                         { method: "POST" });
     show(msg, d.message, d.ok ? "ok" : "err");
   } catch (e) { show(msg, e.message, "err"); }
-});
-
-$("run-now").addEventListener("click", async () => {
-  const msg = $("msg-schedule"), btn = $("run-now");
-  btn.disabled = true;
-  show(msg, "Running the full pipeline — fetch, score, then Slack. This can take a few minutes…", "info");
-  try {
-    const d = await api("/api/admin/run-now", { method: "POST", body: "{}" });
-    const slackNote = d.slack_ok === 1 ? " Posted to Slack."
-                    : d.slack_ok === 0 ? " Slack post failed — check the channel and token." : "";
-    show(msg, `Done (${d.status}): fetched ${d.fetched}, scored ${d.scored}, skipped ${d.skipped}.${slackNote}`,
-         d.status === "error" ? "err" : "ok");
-    DATA = await api("/api/admin/overview");
-    renderRuns(DATA.runs);
-  } catch (e) {
-    show(msg, e.message, "err");
-  } finally { btn.disabled = false; }
 });
 
 $("invite-btn").addEventListener("click", async () => {
@@ -966,7 +673,7 @@ $("invite-btn").addEventListener("click", async () => {
 });
 
 wireSaveButtons();
-load().catch(e => {
+QC.ready.then(() => load()).catch(e => {
   $("loading").innerHTML = `<span style="color:var(--fail)">Could not load admin data: ${esc(e.message)}</span>`;
 });
 </script>

@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
 )
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
 
@@ -481,6 +482,13 @@ async def rules_page(user: dict = Depends(auth.require_user)):
     return _page("rules.html")
 
 
+ROSTER_KEYS = (
+    "cs_user_ids", "impl_user_ids", "impl_group_ids",
+    "eng_user_ids", "eng_group_ids", "pt_user_ids", "pt_group_ids",
+)
+ACCOUNT_KEY = "r3_internal_account_ids"
+
+
 @app.get("/api/rules")
 async def get_rules(user: dict = Depends(auth.require_user)):
     import rules as qc_rules
@@ -491,9 +499,33 @@ async def get_rules(user: dict = Depends(auth.require_user)):
                 "SELECT state, COUNT(*) n FROM tickets WHERE state IS NOT NULL"
                 " GROUP BY state ORDER BY n DESC").fetchall()]
 
+    current = qc_rules.current()
+    fallback = scorer.default_display_names()
+
+    slack_ids = []
+    for key in ROSTER_KEYS:
+        for line in current.get(key, []):
+            sid, _ = qc_rules.parse_entry(line)
+            if sid:
+                slack_ids.append(sid)
+    try:
+        resolved = await slack.resolve_ids(slack_ids)
+    except Exception:
+        resolved = {}
+
+    account_ids = [qc_rules.parse_entry(x)[0] for x in current.get(ACCOUNT_KEY, [])]
+    account_ids = [i for i in account_ids if i]
+    acc_names = await asyncio.to_thread(db.account_names, account_ids)
+
+    labels = {key: qc_rules.labeled_entries(key, resolved, fallback) for key in ROSTER_KEYS}
+    labels[ACCOUNT_KEY] = qc_rules.labeled_entries(
+        ACCOUNT_KEY, acc_names, fallback
+    )
+
     return {
-        "rules":        qc_rules.current(),
+        "rules":        current,
         "defaults":     qc_rules.defaults(),
+        "labels":       labels,
         "rules_hash":   qc_rules.rules_hash(),
         "descriptions": RULE_DESCRIPTIONS,
         "states_seen":  await asyncio.to_thread(states_seen),
@@ -501,6 +533,27 @@ async def get_rules(user: dict = Depends(auth.require_user)):
         "can_edit":     user["role"] == "admin",
         "rubric":       qc_runner.SYSTEM_PROMPT,
     }
+
+
+@app.get("/api/directory/slack")
+async def directory_slack(q: str = "", kind: str = "user",
+                          user: dict = Depends(auth.require_user)):
+    """Name search over Slack users or groups. Used by the Rules picker."""
+    if kind not in ("user", "group"):
+        raise HTTPException(400, "kind must be user or group")
+    try:
+        return {"ok": True, "results": await slack.search_directory(q, kind)}
+    except slack.SlackNotConfigured:
+        return {"ok": False, "message": "Slack bot token is not configured", "results": []}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:300], "results": []}
+
+
+@app.get("/api/directory/accounts")
+async def directory_accounts(q: str = "", user: dict = Depends(auth.require_user)):
+    """Name search over Pylon accounts already fetched into the local database."""
+    rows = await asyncio.to_thread(db.search_accounts, q)
+    return {"ok": True, "results": [{"id": r["id"], "name": r["name"]} for r in rows]}
 
 
 @app.put("/api/rules")
@@ -541,6 +594,14 @@ async def list_runs(date: str | None = None, user: dict = Depends(auth.require_u
     return {
         "runs":      await asyncio.to_thread(query),
         "scheduled": scheduler.recent_runs(25),
+        "schedule":  scheduler.next_run_description(),
+        "settings":  {
+            "schedule_enabled": vault.get_setting("schedule_enabled"),
+            "schedule_time":    vault.get_setting("schedule_time"),
+            "schedule_tz":      vault.get_setting("schedule_tz"),
+            "schedule_target":  vault.get_setting("schedule_target"),
+        },
+        "can_edit":  user["role"] == "admin",
     }
 
 
@@ -954,3 +1015,6 @@ async def invite_user(request: Request, user: dict = Depends(auth.require_admin)
 
     vault.audit(user["email"], "user.invite", f"{email} role={role}")
     return {"ok": True, "users": auth.list_users()}
+
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

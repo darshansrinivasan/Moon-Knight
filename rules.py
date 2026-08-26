@@ -34,6 +34,9 @@ _STATE    = re.compile(r"^[a-z0-9_]+$")
 # ── defaults (sourced from scorer's constants — single origin, no drift) ──────
 
 def _roster_lines(ids) -> list:
+    """Persist `id  name` so scoring still reads the first token and the UI can show names."""
+    if isinstance(ids, dict):
+        return [f"{i}  {n}" for i, n in sorted(ids.items(), key=lambda kv: str(kv[1]).lower())]
     return sorted(ids)
 
 
@@ -44,7 +47,7 @@ def defaults() -> dict:
         "excluded_states":       [],
 
         # R3 — what counts as an internal / invalid account
-        "r3_internal_account_ids":   sorted(scorer.INTERNAL_ACCOUNT_IDS),
+        "r3_internal_account_ids":   _roster_lines(scorer.INTERNAL_ACCOUNTS),
         "r3_invalid_name_fragments": list(scorer.INVALID_NAME_FRAGMENTS),
 
         # R4 — response-time SLA
@@ -52,13 +55,13 @@ def defaults() -> dict:
 
         # R5 — who satisfies a handoff, per team. One entry per line in the UI;
         # the first token is the Slack ID, anything after it is a label.
-        "cs_user_ids":    _roster_lines(scorer.CS_SLACK_USER_IDS),
-        "impl_user_ids":  _roster_lines(scorer.IMPL_SLACK_USER_IDS),
-        "impl_group_ids": _roster_lines(scorer.IMPL_SLACK_GROUP_IDS),
-        "eng_user_ids":   _roster_lines(scorer.ENG_SLACK_USER_IDS),
-        "eng_group_ids":  _roster_lines(scorer.ENG_SLACK_GROUP_IDS),
-        "pt_user_ids":    _roster_lines(scorer.PT_SLACK_USER_IDS),
-        "pt_group_ids":   _roster_lines(scorer.PT_SLACK_GROUP_IDS),
+        "cs_user_ids":    _roster_lines(scorer.CS_SLACK_USERS),
+        "impl_user_ids":  _roster_lines(scorer.IMPL_SLACK_USERS),
+        "impl_group_ids": _roster_lines(scorer.IMPL_SLACK_GROUPS),
+        "eng_user_ids":   _roster_lines(scorer.ENG_SLACK_USERS),
+        "eng_group_ids":  _roster_lines(scorer.ENG_SLACK_GROUPS),
+        "pt_user_ids":    _roster_lines(scorer.PT_SLACK_USERS),
+        "pt_group_ids":   _roster_lines(scorer.PT_SLACK_GROUPS),
 
         # R5 — delegation states that require a literal tag in the thread
         "r5_group_states": {k: list(v) for k, v in scorer._R5_GROUP_STATES.items()},
@@ -106,13 +109,34 @@ def rules_hash(r: dict | None = None) -> str:
     return hashlib.sha256(doc.encode()).hexdigest()[:10]
 
 
-def _first_token(line: str) -> str:
-    return str(line).strip().split()[0] if str(line).strip() else ""
+def parse_entry(line: str) -> tuple[str, str]:
+    """Split a stored roster line into (id, optional label)."""
+    text = str(line).strip()
+    if not text:
+        return "", ""
+    tok, _, rest = text.partition(" ")
+    return tok, rest.strip()
+
+
+def labeled_entries(key: str, resolved: dict[str, str] | None = None,
+                    fallback: dict[str, str] | None = None) -> list[dict]:
+    """Roster lines as `{id, name}` for the UI. IDs stay the persisted fact."""
+    resolved = resolved or {}
+    fallback = fallback or {}
+    out = []
+    for line in current().get(key, []):
+        sid, label = parse_entry(line)
+        if not sid:
+            continue
+        name = resolved.get(sid) or label or fallback.get(sid) or sid
+        out.append({"id": sid, "name": name})
+    out.sort(key=lambda e: e["name"].lower())
+    return out
 
 
 def id_set(key: str) -> set:
     """Roster lines -> the set of Slack IDs (first token of each line)."""
-    return {_first_token(x) for x in current().get(key, []) if _first_token(x)}
+    return {sid for sid, _ in (parse_entry(x) for x in current().get(key, [])) if sid}
 
 
 def value(key: str):
@@ -135,7 +159,7 @@ def oncall_categories() -> set:
 
 
 def internal_account_ids() -> set:
-    return {str(x).strip() for x in current().get("r3_internal_account_ids", [])}
+    return {sid for sid, _ in (parse_entry(x) for x in current().get("r3_internal_account_ids", [])) if sid}
 
 
 def invalid_name_fragments() -> list:
@@ -157,7 +181,7 @@ def validate(candidate: dict) -> list:
 
     def check_lines(key, pattern, kind):
         for line in candidate.get(key, []):
-            tok = _first_token(line)
+            tok, _ = parse_entry(line)
             if not tok:
                 continue
             if not pattern.match(tok):
@@ -175,8 +199,11 @@ def validate(candidate: dict) -> list:
             errors.append(f"excluded_states: '{s}' is not a valid state name")
 
     for x in candidate.get("r3_internal_account_ids", []):
-        if not re.match(r"^[0-9a-fA-F-]{8,40}$", str(x).strip()):
-            errors.append(f"r3_internal_account_ids: '{x}' is not an account id")
+        tok, _ = parse_entry(x)
+        if not tok:
+            continue
+        if not re.match(r"^[0-9a-fA-F-]{8,40}$", tok):
+            errors.append(f"r3_internal_account_ids: '{tok}' is not an account id")
 
     for x in candidate.get("r3_invalid_name_fragments", []):
         if not str(x).strip():

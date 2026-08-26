@@ -4,84 +4,41 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Runs · Pylon QC</title>
+<link rel="stylesheet" href="/static/shell.css">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --bg: #0f172a; --surface: #1e293b; --surface2: #263348; --border: #334155;
-    --text: #f1f5f9; --muted: #94a3b8; --accent: #6366f1; --accent2: #818cf8;
-    --pass: #22c55e; --fail: #ef4444; --review: #f59e0b; --radius: 8px;
-  }
-  body {
-    background: var(--bg); color: var(--text); font-size: 14px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    min-height: 100vh;
-  }
-  header {
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
-    position: sticky; top: 0; z-index: 10;
-  }
-  header h1 { font-size: 16px; font-weight: 600; }
-  header h1 span { color: var(--accent2); }
-  .spacer { flex: 1; }
-  .link-btn {
-    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
-    border-radius: var(--radius); padding: 5px 12px; font-size: 12px;
-    text-decoration: none;
-  }
-  .link-btn:hover { border-color: var(--accent); color: var(--text); }
-
-  main { max-width: 1280px; margin: 0 auto; padding: 20px 20px 60px; }
-
-  /* metric definitions */
   .defs {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 12px; margin-bottom: 20px;
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 12px; margin-bottom: 18px;
   }
-  .def {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 14px 16px;
-  }
+  @media (max-width: 1100px) { .defs { grid-template-columns: 1fr; } }
   .def h3 {
     font-size: 11px; text-transform: uppercase; letter-spacing: .6px;
     color: var(--accent2); font-weight: 700; margin-bottom: 6px;
   }
   .def p { font-size: 12px; color: var(--muted); line-height: 1.6; }
   .def b { color: var(--text); }
-
   h2.sec {
     font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
     color: var(--muted); font-weight: 600; margin: 22px 0 10px;
   }
-
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px;
-          background: var(--surface); border: 1px solid var(--border);
-          border-radius: 12px; overflow: hidden; }
-  th {
-    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px;
-    color: var(--muted); padding: 9px 10px; border-bottom: 1px solid var(--border);
-    font-weight: 600; background: var(--surface); white-space: nowrap;
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow: auto;
   }
-  td { padding: 9px 10px; border-bottom: 1px solid rgba(51,65,85,.5); vertical-align: top; }
-  tr:last-child td { border-bottom: none; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  tr.run-row { cursor: pointer; transition: background .12s; }
+  tr.run-row { cursor: pointer; }
   tr.run-row:hover { background: var(--surface2); }
   tr.run-row.open { background: var(--surface2); }
-  .muted { color: var(--muted); }
-
-  .status { font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
-  .status.success { background: rgba(34,197,94,.15);  color: var(--pass); }
-  .status.partial { background: rgba(245,158,11,.15); color: var(--review); }
-  .status.error   { background: rgba(239,68,68,.15);  color: var(--fail); }
-  .status.running { background: rgba(99,102,241,.15); color: var(--accent2); }
-
+  .status-pill {
+    font-weight: 700; font-size: 11px; padding: 2px 8px; border-radius: 10px; white-space: nowrap;
+  }
+  .status-pill.success { background: rgba(34,197,94,.15);  color: var(--pass); }
+  .status-pill.partial { background: rgba(245,158,11,.15); color: var(--review); }
+  .status-pill.error   { background: rgba(239,68,68,.15);  color: var(--fail); }
+  .status-pill.running { background: rgba(99,102,241,.15); color: var(--accent2); }
   .stability { font-weight: 700; }
   .stab-good { color: var(--pass); }
   .stab-mid  { color: var(--review); }
   .stab-bad  { color: var(--fail); }
-
-  /* detail row */
   td.detail-cell { background: var(--bg); padding: 16px 14px; }
   .detail-grid { display: grid; grid-template-columns: 320px 1fr; gap: 16px; }
   @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
@@ -96,12 +53,10 @@
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 12px; }
   .kv dt { color: var(--muted); white-space: nowrap; }
   .kv dd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
-
   .diff-item { border-top: 1px solid rgba(51,65,85,.5); padding: 10px 0; }
   .diff-item:first-of-type { border-top: none; padding-top: 0; }
   .diff-title { font-size: 12.5px; font-weight: 600; }
   .diff-title a { color: var(--accent2); text-decoration: none; }
-  .diff-title a:hover { text-decoration: underline; }
   .diff-meta { font-size: 11px; color: var(--muted); margin: 2px 0 6px; }
   .grade-move {
     display: inline-flex; align-items: center; gap: 5px; margin: 2px 8px 2px 0;
@@ -114,7 +69,6 @@
   .g-Fail, .g-Poor { color: var(--fail); }
   .g-NeedsReview, .g-NeedsImprovement { color: var(--review); }
   .g-null, .g-NA { color: var(--muted); }
-
   .err-text {
     font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
     color: var(--fail); background: rgba(239,68,68,.08);
@@ -122,88 +76,133 @@
     padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
   }
   .empty { color: var(--muted); font-size: 12.5px; padding: 24px; text-align: center; }
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .next-run {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px 12px; font-size: 12.5px; margin-bottom: 16px;
+  }
+  .next-run b { color: var(--accent2); }
+  .sched-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 800px) { .sched-grid { grid-template-columns: 1fr; } }
+  body.readonly #run-now, body.readonly [data-save] { display: none !important; }
 </style>
 </head>
-<body>
+<body class="shell" data-page="runs">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Runs</h1>
+    <span class="muted">Daily pipeline, scoring history, cost and grade stability.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+      <div class="card">
+        <h2>Automated daily run</h2>
+        <p class="card-sub">
+          Fetches the day's tickets from Pylon, runs the AI checks, and posts the summary
+          to Slack — with no one clicking anything.
+        </p>
+        <div class="next-run" id="next-run"></div>
+        <div class="toggle-row">
+          <input type="checkbox" id="schedule_enabled">
+          <label for="schedule_enabled">Run automatically every day</label>
+        </div>
+        <div class="sched-grid">
+          <div class="field">
+            <label for="schedule_time">Time of day</label>
+            <input type="time" id="schedule_time">
+          </div>
+          <div class="field">
+            <label for="schedule_tz">Timezone</label>
+            <input type="text" id="schedule_tz" placeholder="Asia/Kolkata">
+          </div>
+          <div class="field">
+            <label for="schedule_target">Which day to score</label>
+            <select id="schedule_target">
+              <option value="yesterday">Yesterday (complete day)</option>
+              <option value="today">Today (so far)</option>
+            </select>
+          </div>
+        </div>
+        <div class="actions">
+          <button data-save="schedule_enabled,schedule_time,schedule_tz,schedule_target">Save schedule</button>
+          <button class="ghost" id="run-now">▶ Run now</button>
+        </div>
+        <div class="msg" id="msg-schedule"></div>
+      </div>
 
-<header>
-  <h1>Pylon <span>QC</span> · Runs</h1>
-  <div class="spacer"></div>
-  <a class="link-btn" href="/">Dashboard</a>
-  <a class="link-btn" href="/rules">Rules</a>
-  <a class="link-btn" href="/admin">Admin</a>
-  <a class="link-btn" href="/auth/logout">Sign out</a>
-</header>
+      <div class="defs">
+        <div class="def card">
+          <h3>Stability — the accuracy measure</h3>
+          <p>There is no human-graded answer key, so accuracy is measured as
+          <b>agreement with the previous run of the same day</b>: the percentage of
+          tickets whose overall grade did not change. Scoring is pinned
+          (temperature 0, fixed seed, enum-constrained output), so on unchanged
+          input this should sit at <b>100%</b>.</p>
+        </div>
+        <div class="def card">
+          <h3>When change is legitimate</h3>
+          <p>Refetching a past day updates tickets: states move, replies arrive, and
+          the response-time check re-measures against the current clock. Grade changes
+          after a refetch reflect <b>changed input, not model drift</b>.</p>
+        </div>
+        <div class="def card">
+          <h3>Cost</h3>
+          <p>Token counts come from Vertex per call and are priced from a
+          per-model table — an <b>estimate</b>, shown per run. The models column
+          records which model actually graded, including mid-run fallbacks.</p>
+        </div>
+      </div>
 
-<main>
-  <div class="defs">
-    <div class="def">
-      <h3>Stability — the accuracy measure</h3>
-      <p>There is no human-graded answer key, so accuracy is measured as
-      <b>agreement with the previous run of the same day</b>: the percentage of
-      tickets whose overall grade did not change. Scoring is pinned
-      (temperature 0, fixed seed, enum-constrained output), so on unchanged
-      input this should sit at <b>100%</b>. When it drops, the diff below the
-      run shows exactly which tickets moved and why.</p>
-    </div>
-    <div class="def">
-      <h3>When change is legitimate</h3>
-      <p>Refetching a past day updates tickets: states move
-      (waiting&nbsp;→&nbsp;closed), replies arrive, and the response-time check
-      re-measures against the current clock. Grade changes after a refetch
-      reflect <b>changed input, not model drift</b> — the diff labels R-check
-      movement separately so the two are distinguishable.</p>
-    </div>
-    <div class="def">
-      <h3>Cost</h3>
-      <p>Token counts come from Vertex per call and are priced from a
-      per-model table — an <b>estimate</b>, shown per run. The models column
-      records which model actually graded, including mid-run fallbacks caused
-      by rate limits (previously invisible, and a real source of drift).</p>
+      <h2 class="sec">Scoring runs</h2>
+      <div id="runs-host"><div class="empty">Loading…</div></div>
+
+      <h2 class="sec">Scheduled pipeline runs</h2>
+      <p class="muted" style="font-size:12px;margin:-4px 0 10px">
+        The daily fetch → score → Slack pipeline. A failure here names its cause in full.
+      </p>
+      <div id="sched-host"><div class="empty">Loading…</div></div>
     </div>
   </div>
-
-  <h2 class="sec">Scoring runs</h2>
-  <div id="runs-host"><div class="empty">Loading…</div></div>
-
-  <h2 class="sec">Scheduled pipeline runs</h2>
-  <p class="muted" style="font-size:12px;margin:-4px 0 10px">
-    The daily fetch → score → Slack pipeline. A failure here names its cause in
-    full — early entries failed because Vertex was not yet configured, and one
-    hit the lock while another run was in progress.
-  </p>
-  <div id="sched-host"><div class="empty">Loading…</div></div>
-</main>
-
+</div>
+<script src="/static/shell.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-function esc(s) {
-  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;")
-    .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
-}
-function fmtTime(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return isNaN(d) ? esc(iso) : d.toLocaleString();
-}
+const esc = QC.esc, fmtTime = QC.fmtTime, api = QC.api, show = QC.show;
+let CAN_EDIT = false;
+
 function dur(a, b) {
   if (!a || !b) return "—";
   const s = Math.round((new Date(b) - new Date(a)) / 1000);
   return isNaN(s) ? "—" : s < 60 ? `${s}s` : `${Math.floor(s/60)}m ${s%60}s`;
-}
-async function api(u) {
-  const r = await fetch(u);
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-  return d;
 }
 function stabClass(v) {
   if (v == null) return "muted";
   return "stability " + (v >= 95 ? "stab-good" : v >= 85 ? "stab-mid" : "stab-bad");
 }
 function gradeCls(v) { return "g-" + String(v ?? "null").replace(/[ /]/g,""); }
+
+function renderNextRun(sched) {
+  if (!sched || !sched.enabled) {
+    $("next-run").innerHTML = `<span class="muted">Automatic runs are off — the daily QC must be started by hand.</span>`;
+    return;
+  }
+  if (sched.error) {
+    $("next-run").innerHTML = `<span style="color:var(--fail)">${esc(sched.error)}</span>`;
+    return;
+  }
+  const when = sched.next_run ? new Date(sched.next_run).toLocaleString() : "—";
+  const scope = sched.target === "today" ? "today's tickets" : "the previous day's tickets";
+  $("next-run").innerHTML =
+    `Next automatic run: <b>${esc(when)}</b> <span class="muted">(${esc(sched.timezone || "")}) — scoring ${esc(scope)}</span>`;
+}
+
+function fillSchedule(s) {
+  $("schedule_enabled").checked = s.schedule_enabled === "1";
+  $("schedule_time").value = s.schedule_time || "";
+  $("schedule_tz").value = s.schedule_tz || "";
+  $("schedule_target").value = s.schedule_target || "yesterday";
+}
 
 function renderRuns(runs) {
   if (!runs.length) {
@@ -226,7 +225,7 @@ function renderRuns(runs) {
       <td class="muted">${fmtTime(r.started_at)}</td>
       <td class="muted">${dur(r.started_at, r.finished_at)}</td>
       <td class="muted">${esc(r.triggered_by || "")}</td>
-      <td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td>
+      <td><span class="status-pill ${esc(r.status)}">${esc(r.status)}</span></td>
       <td class="num">${r.scored ?? "—"}/${r.total ?? "—"}</td>
       <td class="muted">${esc(r.model_used || "—")}</td>
       <td class="num muted">${toks}</td>
@@ -236,12 +235,12 @@ function renderRuns(runs) {
     <tr class="detail-row" id="detail-${r.id}" hidden><td colspan="11" class="detail-cell"></td></tr>`;
   }).join("");
 
-  $("runs-host").innerHTML = `<table>
+  $("runs-host").innerHTML = `<div class="table-wrap"><table>
     <thead><tr>
       <th>Run</th><th>Day scored</th><th>Started</th><th>Took</th><th>By</th>
       <th>Status</th><th class="num">Scored</th><th>Models used</th>
       <th class="num">Tokens in/out</th><th class="num">Est. cost</th><th>Stability</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
 
   document.querySelectorAll(".run-row").forEach(row => {
     row.addEventListener("click", () => toggleDetail(row));
@@ -280,8 +279,7 @@ function renderDetail(d) {
   if (d.compared_to == null) {
     right += `<div class="panel"><h4>Changes vs previous run</h4>
       <p class="muted" style="font-size:12px">First recorded run for ${esc(d.date)} —
-      nothing to compare against yet. The next run of this day will show its
-      stability and an exact diff here.</p></div>`;
+      nothing to compare against yet.</p></div>`;
   } else if (!d.diff.length) {
     right += `<div class="panel"><h4>Changes vs run #${d.compared_to}</h4>
       <p class="muted" style="font-size:12px">No grades moved — 100% stable.</p></div>`;
@@ -311,7 +309,7 @@ function renderScheduled(runs) {
     $("sched-host").innerHTML = `<div class="empty">No pipeline runs yet.</div>`;
     return;
   }
-  $("sched-host").innerHTML = `<table>
+  $("sched-host").innerHTML = `<div class="table-wrap"><table>
     <thead><tr>
       <th>Day scored</th><th>Trigger</th><th>Started</th><th>Status</th>
       <th class="num">Fetched</th><th class="num">Scored</th><th>Slack</th><th>Why it failed</th>
@@ -320,17 +318,66 @@ function renderScheduled(runs) {
         <td>${esc(r.run_date)}</td>
         <td class="muted">${esc(r.triggered_by)}</td>
         <td class="muted">${fmtTime(r.started_at)}</td>
-        <td><span class="status ${esc(r.status)}">${esc(r.status)}</span></td>
+        <td><span class="status-pill ${esc(r.status)}">${esc(r.status)}</span></td>
         <td class="num">${r.fetched ?? "—"}</td>
         <td class="num">${r.scored ?? "—"}</td>
         <td>${r.slack_ok === 1 ? "✅" : r.slack_ok === 0 ? "❌" : "<span class='muted'>—</span>"}</td>
         <td>${r.error ? `<div class="err-text">${esc(r.error)}</div>` : "<span class='muted'>—</span>"}</td>
-      </tr>`).join("")}</tbody></table>`;
+      </tr>`).join("")}</tbody></table></div>`;
 }
+
+$("run-now").addEventListener("click", async () => {
+  const msg = $("msg-schedule"), btn = $("run-now");
+  btn.disabled = true;
+  show(msg, "Running the full pipeline — fetch, score, then Slack. This can take a few minutes…", "info");
+  try {
+    const d = await api("/api/admin/run-now", { method: "POST", body: "{}" });
+    const slackNote = d.slack_ok === 1 ? " Posted to Slack."
+                    : d.slack_ok === 0 ? " Slack post failed — check the channel and token." : "";
+    show(msg, `Done (${d.status}): fetched ${d.fetched}, scored ${d.scored}, skipped ${d.skipped}.${slackNote}`,
+         d.status === "error" ? "err" : "ok");
+    const fresh = await api("/api/runs");
+    renderRuns(fresh.runs);
+    renderScheduled(fresh.scheduled);
+    renderNextRun(fresh.schedule);
+  } catch (e) {
+    show(msg, e.message, "err");
+  } finally { btn.disabled = false; }
+});
+
+document.querySelector("[data-save]").addEventListener("click", async () => {
+  const btn = document.querySelector("[data-save]");
+  const body = {
+    schedule_enabled: $("schedule_enabled").checked ? "1" : "0",
+    schedule_time: $("schedule_time").value.trim(),
+    schedule_tz: $("schedule_tz").value.trim(),
+    schedule_target: $("schedule_target").value,
+  };
+  btn.disabled = true;
+  try {
+    const d = await api("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
+    fillSchedule(d.settings);
+    renderNextRun(d.schedule);
+    show($("msg-schedule"), "Saved.", "ok");
+  } catch (e) {
+    show($("msg-schedule"), e.message, "err");
+  } finally { btn.disabled = false; }
+});
 
 (async () => {
   try {
+    await QC.ready;
     const d = await api("/api/runs");
+    CAN_EDIT = !!d.can_edit;
+    if (!CAN_EDIT) {
+      document.body.classList.add("readonly");
+      $("schedule_enabled").disabled = true;
+      $("schedule_time").disabled = true;
+      $("schedule_tz").disabled = true;
+      $("schedule_target").disabled = true;
+    }
+    fillSchedule(d.settings || {});
+    renderNextRun(d.schedule);
     renderRuns(d.runs);
     renderScheduled(d.scheduled);
   } catch (e) {

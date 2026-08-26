@@ -318,6 +318,40 @@ def get_calendar_month(year: int, month: int):
         return [dict(r) for r in rows]
 
 
+def account_names(ids: list[str]) -> dict[str, str]:
+    """Account id → name for ids we have already fetched from Pylon."""
+    ids = [i for i in ids if i]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT id, name FROM accounts WHERE id IN ({placeholders})", ids
+        ).fetchall()
+    return {r["id"]: r["name"] for r in rows if r["name"]}
+
+
+def search_accounts(q: str, limit: int = 25) -> list[dict]:
+    """Name search over accounts seen on fetched tickets."""
+    q = (q or "").strip()
+    with get_conn() as conn:
+        if q:
+            rows = conn.execute(
+                "SELECT id, name, domain FROM accounts"
+                " WHERE name LIKE ? COLLATE NOCASE"
+                " ORDER BY name LIMIT ?",
+                (f"%{q}%", limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, name, domain FROM accounts"
+                " WHERE name IS NOT NULL AND name != ''"
+                " ORDER BY name LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_ticket_messages(ticket_id: str):
     with get_conn() as conn:
         rows = conn.execute(
