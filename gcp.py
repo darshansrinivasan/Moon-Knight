@@ -84,13 +84,18 @@ def _adc_plausible() -> bool:
     if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         return True
 
-    # The file `gcloud auth application-default login` writes.
-    if os.name == "nt":
-        well_known = Path(os.getenv("APPDATA", "")) / "gcloud" / "application_default_credentials.json"
-    else:
-        well_known = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
-    if well_known.exists():
-        return True
+    # The file `gcloud auth application-default login` writes. Probing it must
+    # never raise: in a container HOME can point somewhere this user cannot
+    # stat, and Path.exists() propagates PermissionError rather than saying no.
+    try:
+        if os.name == "nt":
+            well_known = Path(os.getenv("APPDATA", "")) / "gcloud" / "application_default_credentials.json"
+        else:
+            well_known = Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+        if well_known.exists():
+            return True
+    except OSError:
+        pass
 
     # Running on Google infrastructure, where the metadata server does answer.
     return any(os.getenv(v) for v in (
@@ -110,7 +115,7 @@ def _has_adc() -> bool:
             import google.auth
             google.auth.default(scopes=[CLOUD_SCOPE])
             _adc_available = True
-        except Exception:
+        except BaseException:
             _adc_available = False
     return _adc_available
 
