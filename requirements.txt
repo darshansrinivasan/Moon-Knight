@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+httpx
+requests
+python-dotenv
+beautifulsoup4
+google-genai
+google-auth
+cryptography

@@ -1,0 +1,1712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pylon QC Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0f172a;
+    --surface:   #1e293b;
+    --surface2:  #263348;
+    --border:    #334155;
+    --text:      #f1f5f9;
+    --muted:     #94a3b8;
+    --accent:    #6366f1;
+    --accent2:   #818cf8;
+    --pass:      #22c55e;
+    --fail:      #ef4444;
+    --review:    #f59e0b;
+    --na:        #475569;
+    --pending:   #334155;
+    --radius:    8px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── top bar ── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+  header h1 span { color: var(--accent2); }
+  .stat-pill {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .stat-pill b { color: var(--text); }
+  header .spacer { flex: 1; }
+
+  /* ── signed-in user ── */
+  .user-chip {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--muted); white-space: nowrap;
+  }
+  .user-chip img { width: 22px; height: 22px; border-radius: 50%; }
+  .user-chip #user-name { color: var(--text); font-weight: 500; }
+  .chip-link {
+    color: var(--muted); text-decoration: none;
+    border: 1px solid var(--border); background: var(--surface2);
+    border-radius: var(--radius); padding: 3px 9px;
+  }
+  .chip-link:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ── layout ── */
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── left: calendar ── */
+  .cal-panel {
+    width: 380px;
+    min-width: 340px;
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .cal-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px 10px;
+    flex-shrink: 0;
+  }
+  .cal-nav h2 { font-size: 15px; font-weight: 600; }
+  .nav-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius);
+    width: 30px; height: 30px;
+    cursor: pointer;
+    font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s;
+  }
+  .nav-btn:hover { background: var(--accent); border-color: var(--accent); }
+
+  .cal-grid {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 12px 12px;
+  }
+  .weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+  .weekday {
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+    padding: 4px 0;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+  }
+  .days-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+  .day-cell {
+    aspect-ratio: 1;
+    border-radius: var(--radius);
+    border: 1px solid transparent;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    transition: border-color .15s, background .15s;
+    position: relative;
+  }
+  .day-cell.empty { cursor: default; }
+  .day-cell.other-month { opacity: .3; cursor: default; }
+  .day-cell.today .day-num { color: var(--accent2); font-weight: 700; }
+  .day-cell:not(.empty):not(.other-month):hover {
+    border-color: var(--accent);
+  }
+  .day-cell.selected {
+    border-color: var(--accent) !important;
+    background: rgba(99,102,241,.15) !important;
+  }
+  .day-num { font-size: 13px; font-weight: 500; line-height: 1; }
+  .day-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 10px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+
+  /* day status colors */
+  .day-cell.status-none     { background: var(--surface); }
+  .day-cell.status-fetched  { background: rgba(99,102,241,.1); border-color: rgba(99,102,241,.3); }
+  .day-cell.status-pass     { background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
+  .day-cell.status-review   { background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.3); }
+  .day-cell.status-fail     { background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.3); }
+
+  .badge-fetched  { background: rgba(99,102,241,.2);  color: var(--accent2); }
+  .badge-pass     { background: rgba(34,197,94,.2);   color: var(--pass); }
+  .badge-review   { background: rgba(245,158,11,.2);  color: var(--review); }
+  .badge-fail     { background: rgba(239,68,68,.2);   color: var(--fail); }
+
+  /* ── right: ticket panel ── */
+  .ticket-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 14px 20px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .panel-header h3 { font-size: 15px; font-weight: 600; flex: 1; }
+  .panel-header .meta { font-size: 12px; color: var(--muted); }
+  .refetch-btn, .qc-btn {
+    border-radius: var(--radius);
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    gap: 5px;
+    transition: border-color .15s, color .15s, background .15s;
+    white-space: nowrap;
+  }
+  .refetch-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .refetch-btn:hover { border-color: var(--accent); color: var(--text); }
+  .qc-btn {
+    background: rgba(99,102,241,.15);
+    border: 1px solid rgba(99,102,241,.4);
+    color: var(--accent2);
+    font-weight: 600;
+  }
+  .qc-btn:hover { background: rgba(99,102,241,.3); border-color: var(--accent2); }
+  .download-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .download-btn:hover { border-color: var(--pass); color: var(--pass); }
+  .refetch-btn:disabled, .qc-btn:disabled, .download-btn:disabled { opacity: .4; cursor: default; }
+
+  /* ── assignee multi-select ── */
+  .assignee-ms {
+    position: relative;
+    display: none;
+  }
+  .assignee-ms-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--muted);
+    font-size: 12px;
+    padding: 4px 24px 4px 8px;
+    cursor: pointer;
+    outline: none;
+    white-space: nowrap;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    position: relative;
+    transition: border-color .15s, color .15s;
+  }
+  .assignee-ms-btn::after {
+    content: "▾";
+    position: absolute;
+    right: 7px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .assignee-ms-btn:hover, .assignee-ms-btn.open { border-color: var(--accent); color: var(--text); }
+  .assignee-ms-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 200px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 16px rgba(0,0,0,.18);
+    z-index: 200;
+    display: none;
+    padding: 4px 0;
+  }
+  .assignee-ms-dropdown.open { display: block; }
+  .assignee-ms-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text);
+    user-select: none;
+  }
+  .assignee-ms-item:hover { background: var(--surface3, rgba(255,255,255,.06)); }
+  .assignee-ms-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+  .assignee-ms-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+  .assignee-ms-clear {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 11px;
+    padding: 4px 12px 6px;
+    cursor: pointer;
+    text-align: left;
+  }
+  .assignee-ms-clear:hover { text-decoration: underline; }
+
+  /* ── filter bar ── */
+  .filter-bar {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    display: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .filter-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    font-weight: 600;
+    margin-right: 2px;
+  }
+  .status-pill {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+    white-space: nowrap;
+  }
+  .status-pill:hover { border-color: var(--accent); color: var(--text); }
+  .status-pill.active-all     { border-color: var(--accent); background: rgba(99,102,241,.15); color: var(--accent2); }
+  .status-pill.active-pass    { border-color: rgba(34,197,94,.5);  background: rgba(34,197,94,.15);  color: var(--pass); }
+  .status-pill.active-fail    { border-color: rgba(239,68,68,.5);  background: rgba(239,68,68,.15);  color: var(--fail); }
+  .status-pill.active-review  { border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.15); color: var(--review); }
+  .status-pill.active-pending { border-color: var(--border);       background: var(--pending);       color: var(--muted); }
+
+  .ticket-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* empty state */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    gap: 8px;
+  }
+  .empty-state .icon { font-size: 36px; opacity: .4; }
+  .empty-state p { font-size: 13px; }
+
+  /* loading */
+  .loading {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; color: var(--muted); padding: 40px;
+  }
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── ticket card ── */
+  .ticket-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .ticket-card:hover { border-color: var(--accent); }
+  .ticket-card.expanded { border-color: var(--accent2); }
+
+  .card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .ticket-num {
+    font-size: 11px;
+    color: var(--accent2);
+    font-weight: 600;
+    white-space: nowrap;
+    padding-top: 1px;
+  }
+  .ticket-title {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+  }
+  .ticket-title a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .ticket-title a:hover { color: var(--accent2); }
+  .overall-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .overall-Pass         { background: rgba(34,197,94,.2);  color: var(--pass); }
+  .overall-Fail         { background: rgba(239,68,68,.2);  color: var(--fail); }
+  .overall-Needs\.Review,
+  .overall-NeedsReview  { background: rgba(245,158,11,.2); color: var(--review); }
+  .overall-pending      { background: var(--pending);      color: var(--muted); }
+
+  .card-meta {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+  }
+  .meta-tag {
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--surface2);
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+  .meta-tag.state { text-transform: capitalize; }
+
+  .checks-row {
+    display: flex;
+    gap: 5px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .check-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 4px;
+    letter-spacing: .3px;
+  }
+  .check-Pass, .check-Good, .check-Positive
+                      { background: rgba(34,197,94,.15);   color: var(--pass);   border: 1px solid rgba(34,197,94,.3); }
+  .check-Fail, .check-Poor, .check-Frustrated, .check-Urgent
+                      { background: rgba(239,68,68,.15);   color: var(--fail);   border: 1px solid rgba(239,68,68,.3); }
+  .check-NeedsReview, .check-NeedsImprovement, .check-Concerned
+                      { background: rgba(245,158,11,.15);  color: var(--review); border: 1px solid rgba(245,158,11,.3); }
+  .check-NA, .check-Neutral
+                      { background: rgba(71,85,105,.2);    color: var(--na);     border: 1px solid rgba(71,85,105,.3); }
+  .check-pending      { background: var(--pending);        color: var(--muted);  border: 1px solid var(--border); }
+
+  /* tooltip */
+  .check-badge { position: relative; }
+  .check-badge::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0f172a;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 400;
+    white-space: nowrap;
+    padding: 5px 9px;
+    border-radius: 5px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  }
+  .check-badge:hover::after { opacity: 1; }
+
+  /* expanded detail */
+  .card-detail {
+    margin-top: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+    display: none;
+  }
+  .ticket-card.expanded .card-detail { display: block; }
+
+  .ai-notes {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    margin-bottom: 10px;
+  }
+  .ai-notes b { color: var(--text); }
+
+  .messages-section { margin-top: 8px; }
+  .messages-section h4 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .message-bubble {
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    max-width: 90%;
+  }
+  .message-bubble.customer {
+    background: rgba(99,102,241,.1);
+    border: 1px solid rgba(99,102,241,.2);
+    margin-right: auto;
+  }
+  .message-bubble.internal {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    margin-left: auto;
+  }
+  .message-bubble.private {
+    opacity: .6;
+    font-style: italic;
+  }
+  .msg-author {
+    font-size: 10px;
+    font-weight: 600;
+    margin-bottom: 3px;
+    color: var(--muted);
+  }
+  .msg-author.customer { color: var(--accent2); }
+  .msg-text { color: var(--text); }
+  .msg-time { font-size: 10px; color: var(--na); margin-top: 3px; }
+
+  /* ── view tabs ── */
+  .view-tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2px;
+  }
+  .view-tab {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+    white-space: nowrap;
+  }
+  .view-tab:hover { color: var(--text); }
+  .view-tab.active { background: var(--accent); color: #fff; }
+
+  /* ── analytics view ── */
+  #analytics-view {
+    flex: 1;
+    display: none;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .analytics-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .analytics-nav h2 { font-size: 14px; font-weight: 600; min-width: 130px; text-align: center; }
+  .all-time-btn {
+    margin-left: 4px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+  }
+  .all-time-btn:hover, .all-time-btn.active { border-color: var(--accent2); color: var(--accent2); }
+
+  .week-pills-row {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .week-pills-row.visible { display: flex; }
+  .week-pill-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-right: 4px;
+  }
+  .week-pill {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .week-pill:hover { border-color: var(--accent2); color: var(--accent2); }
+  .week-pill.active { border-color: var(--accent2); color: #fff; background: var(--accent2); }
+
+  .kpi-row {
+    display: flex;
+    gap: 12px;
+    padding: 14px 20px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .kpi-tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    flex: 1;
+    min-width: 0;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 5px;
+    color: var(--text);
+  }
+  .kpi-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    font-weight: 600;
+  }
+  .kpi-pass   .kpi-value { color: var(--pass); }
+  .kpi-fail   .kpi-value { color: var(--fail); }
+  .kpi-review .kpi-value { color: var(--review); }
+  .kpi-pend   .kpi-value { color: var(--muted); }
+
+  .analytics-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+  .lb-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 10px;
+  }
+  .lb-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .lb-table thead th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .4px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+  }
+  .lb-table tbody tr {
+    border-bottom: 1px solid rgba(51,65,85,.5);
+    transition: background .12s;
+  }
+  .lb-table tbody tr:hover { background: var(--surface); }
+  .lb-table td {
+    padding: 9px 10px;
+    vertical-align: middle;
+  }
+  .lb-table .num-col { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .lb-table .rank-cell { text-align: center; width: 40px; font-variant-numeric: tabular-nums; }
+  .lb-table .assignee-cell { font-weight: 500; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lb-table .bar-cell { min-width: 200px; }
+
+  .mini-bar {
+    display: flex;
+    width: 100px;
+    height: 7px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface2);
+    gap: 1px;
+    flex-shrink: 0;
+  }
+  .mini-seg { height: 100%; }
+
+  .rate-val { font-size: 13px; font-weight: 700; width: 38px; text-align: right; flex-shrink: 0; }
+  .rate-pass   { color: var(--pass); }
+  .rate-review { color: var(--review); }
+  .rate-fail   { color: var(--fail); }
+  .rate-none   { color: var(--muted); }
+
+  .count-pass   { color: var(--pass);   font-variant-numeric: tabular-nums; }
+  .count-fail   { color: var(--fail);   font-variant-numeric: tabular-nums; }
+  .count-review { color: var(--review); font-variant-numeric: tabular-nums; }
+  .count-pend   { color: var(--muted);  font-variant-numeric: tabular-nums; }
+
+  /* scrollbars */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pylon <span>QC</span></h1>
+  <div class="stat-pill" id="stat-total">Loading…</div>
+  <div class="stat-pill" id="stat-ai">AI checks: <b>—</b></div>
+  <div class="spacer"></div>
+  <div class="view-tabs">
+    <button class="view-tab active" id="tab-dashboard">Dashboard</button>
+    <button class="view-tab" id="tab-analytics">Analytics</button>
+  </div>
+  <div class="user-chip" id="user-chip">
+    <img id="user-avatar" alt="" hidden>
+    <span id="user-name"></span>
+    <a href="/admin" class="chip-link" id="admin-link">Admin</a>
+    <a href="/auth/logout" class="chip-link">Sign out</a>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- Calendar -->
+  <div class="cal-panel">
+    <div class="cal-nav">
+      <button class="nav-btn" id="prev-month">&#8249;</button>
+      <h2 id="cal-title"></h2>
+      <button class="nav-btn" id="next-month">&#8250;</button>
+    </div>
+    <div class="cal-grid">
+      <div class="weekdays">
+        <div class="weekday">Su</div><div class="weekday">Mo</div>
+        <div class="weekday">Tu</div><div class="weekday">We</div>
+        <div class="weekday">Th</div><div class="weekday">Fr</div>
+        <div class="weekday">Sa</div>
+      </div>
+      <div class="days-grid" id="days-grid"></div>
+    </div>
+  </div>
+
+  <!-- Ticket panel -->
+  <div class="ticket-panel">
+    <div class="panel-header">
+      <h3 id="panel-title">Select a day</h3>
+      <span class="meta" id="panel-meta"></span>
+      <div class="assignee-ms" id="assignee-ms">
+        <button class="assignee-ms-btn" id="assignee-ms-btn" title="Filter by assignee">All assignees</button>
+        <div class="assignee-ms-dropdown" id="assignee-ms-dropdown">
+          <button class="assignee-ms-clear" id="assignee-ms-clear">Clear selection</button>
+          <hr class="assignee-ms-divider">
+          <div id="assignee-ms-list"></div>
+        </div>
+      </div>
+      <button class="refetch-btn" id="refetch-btn" title="Re-fetch from Pylon to pick up new tickets">↻ Refetch</button>
+      <button class="qc-btn" id="qc-btn" title="Run AI quality checks (A1–A5) for this day">▶ Run QC</button>
+      <button class="refetch-btn download-btn" id="download-btn" title="Download QC results as CSV" style="display:none">↓ CSV</button>
+    </div>
+    <div class="filter-bar" id="filter-bar">
+      <span class="filter-label">Status</span>
+      <button class="status-pill" data-status="">All</button>
+      <button class="status-pill" data-status="Pass">Pass</button>
+      <button class="status-pill" data-status="Fail">Fail</button>
+      <button class="status-pill" data-status="Needs Review">Needs Review</button>
+      <button class="status-pill" data-status="pending">Pending</button>
+    </div>
+    <div class="ticket-list" id="ticket-list">
+      <div class="empty-state">
+        <div class="icon">📅</div>
+        <p>Click any day on the calendar to load its tickets.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Analytics view -->
+<div id="analytics-view">
+  <div class="analytics-nav">
+    <button class="nav-btn" id="prev-month-a">&#8249;</button>
+    <h2 id="analytics-title">All time</h2>
+    <button class="nav-btn" id="next-month-a">&#8250;</button>
+    <button class="all-time-btn active" id="all-time-btn">All time</button>
+  </div>
+  <div class="week-pills-row" id="week-pills-row">
+    <span class="week-pill-label">Week</span>
+  </div>
+  <div class="kpi-row" id="kpi-row">
+    <div class="kpi-tile"><div class="kpi-value">—</div><div class="kpi-label">Total Tickets</div></div>
+  </div>
+  <div class="analytics-body">
+    <div class="lb-section-title">Assignee Leaderboard · sorted by pass rate</div>
+    <table class="lb-table">
+      <thead>
+        <tr>
+          <th class="rank-cell">#</th>
+          <th>Assignee</th>
+          <th>Pass Rate</th>
+          <th class="num-col">Pass</th>
+          <th class="num-col">Fail</th>
+          <th class="num-col">Needs Review</th>
+          <th class="num-col">Pending</th>
+          <th class="num-col">Total</th>
+        </tr>
+      </thead>
+      <tbody id="lb-body">
+        <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:40px">Select Analytics to load data.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// A session can expire while the tab is open — send the user to sign in again
+// instead of silently rendering empty panels.
+(function () {
+  const _fetch = window.fetch;
+  window.fetch = async (...args) => {
+    const resp = await _fetch(...args);
+    if (resp.status === 401) {
+      location.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
+    }
+    return resp;
+  };
+})();
+
+// ── state ────────────────────────────────────────────────────────────────────
+const today = new Date();
+let curYear  = today.getFullYear();
+let curMonth = today.getMonth() + 1; // 1-based
+let calData  = {};   // { "2026-06-20": { ticket_count, rule_fails, ai_fails, needs_review, ai_done_count } }
+let selDate      = null;
+let allTickets   = [];  // full list for the selected day; filter works client-side
+let statusFilter = "";  // "" = all, "Pass" / "Fail" / "Needs Review" / "pending"
+
+// ── calendar rendering ───────────────────────────────────────────────────────
+const MONTHS = ["January","February","March","April","May","June",
+                "July","August","September","October","November","December"];
+
+function dayStatus(info) {
+  if (!info) return "none";
+  if (!info.ai_done_count || info.ai_done_count === 0) return "fetched";
+  if (info.ai_fails > 0)   return "fail";
+  if (info.needs_review > 0) return "review";
+  return "pass";
+}
+
+function dayBadge(info) {
+  if (!info) return "";
+  const status = dayStatus(info);
+  const cls = { fetched:"fetched", pass:"pass", review:"review", fail:"fail" }[status] || "";
+  const label = status === "fetched"
+    ? info.ticket_count
+    : status === "fail"
+      ? `${info.ai_fails}F`
+      : status === "review"
+        ? `${info.needs_review}NR`
+        : `${info.ticket_count}✓`;
+  return `<span class="day-badge badge-${cls}">${label}</span>`;
+}
+
+async function renderCalendar() {
+  document.getElementById("cal-title").textContent =
+    `${MONTHS[curMonth-1]} ${curYear}`;
+
+  // load from server
+  try {
+    const r = await fetch(`/api/calendar/${curYear}/${curMonth}`);
+    const d = await r.json();
+    calData = {};
+    for (const row of d.days) calData[row.fetch_date] = row;
+  } catch(e) { console.error(e); }
+
+  const grid = document.getElementById("days-grid");
+  grid.innerHTML = "";
+
+  const firstDay = new Date(curYear, curMonth - 1, 1).getDay();
+  const daysInMonth = new Date(curYear, curMonth, 0).getDate();
+  const todayStr = fmtDate(today);
+
+  // leading empty cells
+  for (let i = 0; i < firstDay; i++) {
+    const el = document.createElement("div");
+    el.className = "day-cell empty";
+    grid.appendChild(el);
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${curYear}-${String(curMonth).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const info    = calData[dateStr];
+    const status  = dayStatus(info);
+    const isToday = dateStr === todayStr;
+
+    const cell = document.createElement("div");
+    cell.className = `day-cell status-${status}${isToday ? " today" : ""}${selDate === dateStr ? " selected" : ""}`;
+    cell.dataset.date = dateStr;
+    cell.innerHTML = `<span class="day-num">${d}</span>${dayBadge(info)}`;
+    const isFuture = dateStr > fmtDate(today);
+    if (isFuture) {
+      cell.style.opacity = "0.3";
+      cell.style.cursor  = "default";
+    } else {
+      cell.addEventListener("click", () => selectDay(dateStr));
+    }
+    grid.appendChild(cell);
+  }
+}
+
+// ── day selection ────────────────────────────────────────────────────────────
+async function selectDay(dateStr) {
+  selDate = dateStr;
+  document.querySelectorAll(".day-cell").forEach(c => {
+    c.classList.toggle("selected", c.dataset.date === dateStr);
+  });
+
+  document.getElementById("panel-title").textContent = fmtDisplay(dateStr);
+  document.getElementById("panel-meta").textContent  = "";
+
+  // Reset every button to a clean slate so a running QC on a previous date
+  // never bleeds its disabled state into the newly selected date.
+  const refetchBtn = document.getElementById("refetch-btn");
+  const qcBtn      = document.getElementById("qc-btn");
+  const dlBtn      = document.getElementById("download-btn");
+  refetchBtn.style.display = "none"; refetchBtn.disabled = false; refetchBtn.textContent = "↻ Refetch";
+  qcBtn.style.display      = "none"; qcBtn.disabled      = false; qcBtn.textContent      = "▶ Run QC";
+  dlBtn.style.display      = "none"; dlBtn.disabled      = false;
+  document.getElementById("assignee-ms").style.display = "none";
+  selectedAssignees.clear();
+  _updateAssigneeBtn();
+  statusFilter = "";
+  document.getElementById("filter-bar").style.display = "none";
+  setActivePill("");
+
+  showLoading();
+
+  const r   = await fetch(`/api/day/${dateStr}`);
+  let   day = await r.json();
+  if (selDate !== dateStr) return; // user clicked another day meanwhile
+
+  if (!day.fetched) {
+    document.getElementById("panel-meta").textContent = "Fetching from Pylon…";
+    try {
+      const fr = await fetch(`/api/fetch/${dateStr}`, { method: "POST" });
+      if (!fr.ok) throw new Error((await fr.json().catch(() => ({}))).detail || fr.statusText);
+      const fd = await fr.json();
+      document.getElementById("panel-meta").textContent =
+        `${fd.ticket_count} tickets fetched`;
+    } catch(e) {
+      if (selDate !== dateStr) return;
+      document.getElementById("panel-meta").textContent = "Fetch failed";
+      refetchBtn.style.display = "flex"; // let the user retry
+      showError("Could not fetch tickets for this day. Use ↻ Refetch to retry.");
+      return;
+    }
+    if (selDate !== dateStr) return;
+    await renderCalendar();
+    const r2 = await fetch(`/api/day/${dateStr}`);
+    day = await r2.json();
+    if (selDate !== dateStr) return;
+  }
+
+  const day2 = day;
+  document.getElementById("panel-meta").textContent = `${day2.ticket_count} tickets`;
+  document.getElementById("refetch-btn").style.display = "flex";
+  document.getElementById("download-btn").style.display = "flex";
+  document.getElementById("qc-btn").style.display = "flex";
+  allTickets = day2.tickets;
+  populateAssigneeFilter(allTickets);
+  populateStatusPills(allTickets);
+  applyFilters();
+  loadStats(selDate);
+}
+
+async function refetchDay() {
+  if (!selDate) return;
+  const btn = document.getElementById("refetch-btn");
+  btn.disabled = true;
+  btn.textContent = "↻ Fetching…";
+  document.getElementById("panel-meta").textContent = "Fetching from Pylon…";
+
+  try {
+    const fr = await fetch(`/api/fetch/${selDate}`, { method: "POST" });
+    if (!fr.ok) throw new Error(await fr.text());
+    await renderCalendar();
+    const r2   = await fetch(`/api/day/${selDate}`);
+    const day2 = await r2.json();
+    document.getElementById("panel-meta").textContent = `${day2.ticket_count} tickets`;
+    document.getElementById("download-btn").style.display = "flex";
+    document.getElementById("qc-btn").style.display = "flex";
+    allTickets = day2.tickets;
+    populateAssigneeFilter(allTickets);
+    populateStatusPills(allTickets);
+    applyFilters();
+    loadStats(selDate);
+  } catch(e) {
+    document.getElementById("panel-meta").textContent = `Refetch failed: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "↻ Refetch";
+  }
+}
+
+async function refreshDayPanel(dateStr) {
+  const r    = await fetch(`/api/day/${dateStr}`);
+  const day  = await r.json();
+  document.getElementById("download-btn").style.display = "flex";
+  document.getElementById("qc-btn").style.display = "flex";
+  allTickets = day.tickets;
+  populateAssigneeFilter(allTickets);
+  populateStatusPills(allTickets);
+  applyFilters();
+  loadStats(dateStr);
+}
+
+async function runQC() {
+  if (!selDate) return;
+  const qcDate = selDate;
+  const btn        = document.getElementById("qc-btn");
+  const refetchBtn = document.getElementById("refetch-btn");
+  btn.disabled = true;
+  refetchBtn.disabled = true;
+  btn.textContent = "⏳ Running…";
+  document.getElementById("panel-meta").textContent = "Running AI checks…";
+
+  // Poll every 3 s so cards update as parallel batches land in the DB,
+  // without waiting for the entire run to finish.
+  let polling = true;
+  (async () => {
+    while (polling) {
+      await new Promise(res => setTimeout(res, 3000));
+      if (!polling || selDate !== qcDate) break;
+      try { await refreshDayPanel(qcDate); } catch {}
+    }
+  })();
+
+  let fetchErr = null;
+  try {
+    const r = await fetch(`/api/qc/${qcDate}`, { method: "POST" });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      fetchErr = new Error(body.detail || r.statusText);
+    }
+  } catch(e) {
+    fetchErr = e;
+  } finally {
+    polling = false;
+
+    if (selDate === qcDate) {
+      // Always do a definitive render when the run ends (success or partial).
+      try {
+        await renderCalendar();
+        await refreshDayPanel(qcDate);
+      } catch {}
+
+      if (fetchErr) {
+        document.getElementById("panel-meta").textContent = `QC error: ${fetchErr.message}`;
+      }
+
+      refetchBtn.disabled = false;
+      btn.disabled = false;
+      btn.textContent = "▶ Run QC";
+    }
+  }
+}
+
+// ── check metadata ────────────────────────────────────────────────────────────
+const CHECKS = {
+  r1: { label: "Functionality",  desc: "R1: functionalities custom field is filled" },
+  r2: { label: "Category",       desc: "R2: request_category custom field is filled" },
+  r3: { label: "Account",        desc: "R3: linked to a real customer account (not internal/placeholder)" },
+  r4: { label: "Response Time",  desc: "R4: no unanswered customer message older than 24 h" },
+  r5: { label: "Status Owner",   desc: "R5: ticket status matches who owns the next action" },
+  r7: { label: "Rootly/Jira",    desc: "R7: Rootly or Jira link present for engineering tickets" },
+  r8: { label: "Oncall Check",    desc: "R8: when escalated to oncall or Rootly ref present — does_rootly_exist=Yes, Rootly ref filled, Jira linked, and request_category is an oncall category" },
+  a1: { label: "Cat. Accuracy",  desc: "A1 (AI): functionality & category match the actual customer ask" },
+  a2: { label: "Sentiment",      desc: "A2 (AI): customer sentiment — Positive/Neutral/Concerned/Frustrated/Urgent" },
+  a3: { label: "Response",       desc: "A3 (AI): quality of support responses — Good/Needs Improvement/Poor" },
+  a4: { label: "Status Check",   desc: "A4 (AI): status makes sense given the conversation" },
+  a5: { label: "Closure",        desc: "A5 (AI): ticket wasn't closed while customer ask was still open" },
+};
+
+// ── ticket rendering ─────────────────────────────────────────────────────────
+function checkBadge(key, value) {
+  const meta    = CHECKS[key] || { label: key.toUpperCase(), desc: key };
+  const tooltip = value ? `${meta.desc}: ${value}` : `${meta.desc}: pending`;
+  const cls     = value
+    ? `check-${value.replace(/[ /]/g, "")}`
+    : "check-pending";
+  const display = value ? shortVal(value) : "–";
+  return `<span class="check-badge ${cls}" data-tooltip="${esc(tooltip)}">${esc(meta.label)}: ${esc(display)}</span>`;
+}
+
+function shortVal(v) {
+  if (!v) return "–";
+  if (v === "Needs Review") return "NR";
+  if (v === "N/A") return "N/A";
+  return v.slice(0, 4);
+}
+
+function overallClass(v) {
+  if (!v) return "pending";
+  return v.replace(/ /g,"");
+}
+
+function renderTickets(tickets) {
+  const list = document.getElementById("ticket-list");
+  if (!tickets.length) {
+    list.innerHTML = `<div class="empty-state">
+      <div class="icon">🎉</div>
+      <p>No tickets for this day.</p>
+    </div>`;
+    return;
+  }
+  list.innerHTML = "";
+  tickets.forEach(t => {
+    const card = document.createElement("div");
+    card.className = "ticket-card";
+    card.dataset.id = t.id;
+
+    const overall     = t.overall_result;
+    const overallCls  = overallClass(overall);
+    const overallText = overall || "Pending";
+
+    const checksHtml = ["r1","r2","r3","r4","r5","r7","r8"].map(k =>
+      checkBadge(k, t[k])
+    ).join("") +
+    ["a1","a2","a3","a4","a5"].map(k =>
+      checkBadge(k, t[k])
+    ).join("");
+
+    const stateText = (t.state || "").replace(/_/g," ");
+    const assignee  = t.assignee_name || "Unassigned";
+    const account   = t.account_name  || "–";
+    const safeLink  = /^https?:\/\//i.test(t.link || "") ? t.link : "#";
+
+    card.innerHTML = `
+      <div class="card-top">
+        <span class="ticket-num">#${esc(t.number)}</span>
+        <span class="ticket-title">
+          <a href="${esc(safeLink)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(t.title) || "(no title)"}</a>
+        </span>
+        <span class="overall-badge overall-${overallCls}">${esc(overallText)}</span>
+      </div>
+      <div class="card-meta">
+        <span class="meta-tag state">${esc(stateText)}</span>
+        <span class="meta-tag">${esc(assignee)}</span>
+        <span class="meta-tag">${esc(account)}</span>
+      </div>
+      <div class="checks-row">${checksHtml}</div>
+      <div class="card-detail" id="detail-${esc(t.id)}">
+        ${t.ai_notes ? `<div class="ai-notes"><b>AI Notes:</b> ${esc(t.ai_notes)}</div>` : ""}
+        <div class="messages-section" id="msgs-${esc(t.id)}">
+          <h4>Conversation</h4>
+          <div class="loading"><div class="spinner"></div> Loading messages…</div>
+        </div>
+      </div>
+    `;
+    card.addEventListener("click", () => toggleCard(card, t.id));
+    list.appendChild(card);
+  });
+}
+
+async function toggleCard(card, ticketId) {
+  const wasExpanded = card.classList.contains("expanded");
+  document.querySelectorAll(".ticket-card.expanded").forEach(c => c.classList.remove("expanded"));
+  if (wasExpanded) return;
+
+  card.classList.add("expanded");
+  const msgContainer = document.getElementById(`msgs-${ticketId}`);
+
+  // load messages if not already loaded
+  if (msgContainer.querySelector(".loading")) {
+    try {
+      const r    = await fetch(`/api/ticket/${ticketId}`);
+      const data = await r.json();
+      renderMessages(msgContainer, data.messages);
+    } catch(e) {
+      msgContainer.innerHTML = `<p style="color:var(--muted);font-size:12px">Could not load messages.</p>`;
+    }
+  }
+}
+
+function renderMessages(container, messages) {
+  if (!messages.length) {
+    container.innerHTML = `<h4>Conversation</h4><p style="color:var(--muted);font-size:12px">No messages.</p>`;
+    return;
+  }
+  const html = messages.map(m => {
+    const isCust  = m.is_customer;
+    const isPriv  = m.is_private;
+    const text    = stripHtml(m.message_html || "");
+    const ts      = m.timestamp ? new Date(m.timestamp).toLocaleString() : "";
+    const cls     = `message-bubble ${isCust ? "customer" : "internal"}${isPriv ? " private" : ""}`;
+    const authCls = isCust ? "customer" : "";
+    const label   = isPriv ? `${m.author_name} (private)` : m.author_name;
+    return `<div class="${cls}">
+      <div class="msg-author ${authCls}">${esc(label) || "Unknown"}</div>
+      <div class="msg-text">${esc(text)}</div>
+      <div class="msg-time">${esc(ts)}</div>
+    </div>`;
+  }).join("");
+  container.innerHTML = `<h4>Conversation</h4>${html}`;
+}
+
+function stripHtml(html) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  return tmp.textContent || tmp.innerText || "";
+}
+
+// Escape untrusted text (ticket titles, names, notes come from customer data)
+// before inserting into innerHTML templates.
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// ── assignee multi-select state ───────────────────────────────────────────────
+const selectedAssignees = new Set();
+
+function _updateAssigneeBtn() {
+  const btn = document.getElementById("assignee-ms-btn");
+  if (selectedAssignees.size === 0) {
+    btn.textContent = "All assignees";
+  } else if (selectedAssignees.size === 1) {
+    btn.textContent = [...selectedAssignees][0];
+  } else {
+    btn.textContent = `${selectedAssignees.size} assignees`;
+  }
+}
+
+// ── filters (assignee + status) ──────────────────────────────────────────────
+function populateAssigneeFilter(tickets) {
+  const ms    = document.getElementById("assignee-ms");
+  const list  = document.getElementById("assignee-ms-list");
+  const names = [...new Set(
+    tickets.map(t => t.assignee_name || "Unassigned").filter(Boolean)
+  )].sort();
+
+  // Remove names no longer present from the selection
+  for (const n of [...selectedAssignees]) {
+    if (!names.includes(n)) selectedAssignees.delete(n);
+  }
+
+  list.innerHTML = names.map(n => `
+    <label class="assignee-ms-item">
+      <input type="checkbox" value="${esc(n)}" ${selectedAssignees.has(n) ? "checked" : ""}>
+      ${esc(n)}
+    </label>
+  `).join("");
+
+  list.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedAssignees.add(cb.value);
+      else selectedAssignees.delete(cb.value);
+      _updateAssigneeBtn();
+      applyFilters();
+    });
+  });
+
+  _updateAssigneeBtn();
+  ms.style.display = tickets.length ? "block" : "none";
+}
+
+function populateStatusPills(tickets) {
+  const counts = { "Pass": 0, "Fail": 0, "Needs Review": 0, "pending": 0 };
+  for (const t of tickets) {
+    const s = t.overall_result || "pending";
+    if (s in counts) counts[s]++;
+  }
+  document.querySelectorAll(".status-pill").forEach(pill => {
+    const s = pill.dataset.status;
+    if (s === "") {
+      pill.textContent = `All (${tickets.length})`;
+    } else {
+      pill.textContent = `${s === "pending" ? "Pending" : s} (${counts[s] || 0})`;
+    }
+  });
+  document.getElementById("filter-bar").style.display = tickets.length ? "flex" : "none";
+  setActivePill(statusFilter);
+}
+
+function setActivePill(status) {
+  document.querySelectorAll(".status-pill").forEach(pill => {
+    pill.className = "status-pill";
+    if (pill.dataset.status === status) {
+      const key = status === "" ? "all"
+        : status === "Needs Review" ? "review"
+        : status.toLowerCase();
+      pill.classList.add(`active-${key}`);
+    }
+  });
+}
+
+function applyFilters() {
+  let filtered = allTickets;
+  if (selectedAssignees.size > 0) {
+    filtered = filtered.filter(t => selectedAssignees.has(t.assignee_name || "Unassigned"));
+  }
+  if (statusFilter === "pending") {
+    filtered = filtered.filter(t => !t.overall_result);
+  } else if (statusFilter) {
+    filtered = filtered.filter(t => t.overall_result === statusFilter);
+  }
+  renderTickets(filtered);
+  const meta = document.getElementById("panel-meta");
+  const isFiltered = selectedAssignees.size > 0 || statusFilter;
+  meta.textContent = isFiltered
+    ? `${filtered.length} of ${allTickets.length} tickets`
+    : `${allTickets.length} tickets`;
+}
+
+// ── stats ────────────────────────────────────────────────────────────────────
+async function loadStats(date = null) {
+  try {
+    const url = date ? `/api/stats?date=${date}` : "/api/stats";
+    const r   = await fetch(url);
+    const s   = await r.json();
+
+    const scope = date ? fmtDisplay(date) : "All time";
+    document.getElementById("stat-total").innerHTML =
+      `<span style="color:var(--muted);font-weight:400">${scope}:</span> <b>${s.total_tickets}</b> tickets`;
+    document.getElementById("stat-ai").innerHTML =
+      `<b style="color:var(--pass)">${s.pass_count ?? 0}</b> pass · ` +
+      `<b style="color:var(--fail)">${s.fail_count ?? 0}</b> fail · ` +
+      `<b style="color:var(--review)">${s.review_count ?? 0}</b> NR` +
+      (s.ai_done < s.total_tickets
+        ? ` <span style="color:var(--muted);font-weight:400">(${s.ai_done} QC'd)</span>`
+        : "");
+  } catch(e) {}
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function fmtDisplay(dateStr) {
+  const [y,m,d] = dateStr.split("-");
+  return `${MONTHS[+m-1]} ${+d}, ${y}`;
+}
+
+function showLoading() {
+  document.getElementById("ticket-list").innerHTML =
+    `<div class="loading"><div class="spinner"></div> Loading…</div>`;
+}
+function showError(msg) {
+  document.getElementById("ticket-list").innerHTML =
+    `<div class="empty-state"><div class="icon">⚠️</div><p>${msg}</p></div>`;
+}
+
+function downloadCSV() {
+  if (!selDate) return;
+  const a = document.createElement("a");
+  a.href = `/api/export/${selDate}`;
+  a.download = `pylon-qc-${selDate}.csv`;
+  a.click();
+}
+
+// ── analytics ────────────────────────────────────────────────────────────────
+let analyticMonth = null; // null = all time; "2026-07" = specific month
+let analyticWeek  = null; // null = full month; {start, end, label} = specific week
+
+function showDashboard() {
+  document.querySelector('.layout').style.display = 'flex';
+  document.getElementById('analytics-view').style.display = 'none';
+  document.getElementById('tab-dashboard').classList.add('active');
+  document.getElementById('tab-analytics').classList.remove('active');
+}
+
+function showAnalytics() {
+  document.querySelector('.layout').style.display = 'none';
+  document.getElementById('analytics-view').style.display = 'flex';
+  document.getElementById('tab-dashboard').classList.remove('active');
+  document.getElementById('tab-analytics').classList.add('active');
+  loadAnalytics();
+}
+
+function fmtAnalyticMonth(m) {
+  if (!m) return 'All time';
+  const [y, mo] = m.split('-');
+  return `${MONTHS[+mo - 1]} ${y}`;
+}
+
+function _pad2(n) { return String(n).padStart(2, '0'); }
+
+function _isoDate(y, m, d) { return `${y}-${_pad2(m)}-${_pad2(d)}`; }
+
+function _buildWeekPills(m) {
+  // m = "2026-08"  → returns [{start, end, label}, …]
+  const [y, mo] = m.split('-').map(Number);
+  const daysInMonth = new Date(y, mo, 0).getDate();
+  const monthShort = MONTHS[mo - 1].slice(0, 3);
+  const pills = [];
+  let day = 1;
+  while (day <= daysInMonth) {
+    const wEnd = Math.min(day + 6, daysInMonth);
+    const label = day === wEnd
+      ? `${monthShort} ${day}`
+      : `${monthShort} ${day}–${wEnd}`;
+    pills.push({ start: _isoDate(y, mo, day), end: _isoDate(y, mo, wEnd), label });
+    day += 7;
+  }
+  return pills;
+}
+
+function _renderWeekPills(m) {
+  const row = document.getElementById('week-pills-row');
+  // remove old pills (keep the label span)
+  row.querySelectorAll('.week-pill').forEach(el => el.remove());
+
+  if (!m) {
+    row.classList.remove('visible');
+    return;
+  }
+  row.classList.add('visible');
+  const pills = _buildWeekPills(m);
+  pills.forEach(w => {
+    const btn = document.createElement('button');
+    btn.className = 'week-pill';
+    btn.textContent = w.label;
+    btn.dataset.start = w.start;
+    btn.dataset.end   = w.end;
+    if (analyticWeek && analyticWeek.start === w.start) btn.classList.add('active');
+    btn.addEventListener('click', () => {
+      const already = analyticWeek && analyticWeek.start === w.start;
+      analyticWeek = already ? null : w;
+      row.querySelectorAll('.week-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.start === (analyticWeek && analyticWeek.start))
+      );
+      loadAnalytics();
+    });
+    row.appendChild(btn);
+  });
+}
+
+function setAnalyticMonth(m) {
+  analyticMonth = m;
+  analyticWeek  = null;
+  document.getElementById('analytics-title').textContent = fmtAnalyticMonth(m);
+  const allBtn = document.getElementById('all-time-btn');
+  allBtn.classList.toggle('active', !m);
+  _renderWeekPills(m);
+  loadAnalytics();
+}
+
+function prevAnalyticMonth() {
+  const base = analyticMonth || `${curYear}-${String(curMonth).padStart(2,'0')}`;
+  const [y, mo] = base.split('-').map(Number);
+  const d = new Date(y, mo - 2, 1);
+  setAnalyticMonth(`${d.getFullYear()}-${_pad2(d.getMonth()+1)}`);
+}
+
+function nextAnalyticMonth() {
+  if (!analyticMonth) return;
+  const [y, mo] = analyticMonth.split('-').map(Number);
+  const d = new Date(y, mo, 1);
+  const next = `${d.getFullYear()}-${_pad2(d.getMonth()+1)}`;
+  const nowStr = `${today.getFullYear()}-${_pad2(today.getMonth()+1)}`;
+  if (next > nowStr) return;
+  setAnalyticMonth(next);
+}
+
+function rateClass(rate) {
+  if (rate == null) return 'rate-none';
+  return rate >= 80 ? 'rate-pass' : rate >= 50 ? 'rate-review' : 'rate-fail';
+}
+
+async function loadAnalytics() {
+  let url;
+  if (analyticWeek) {
+    url = `/api/analytics?start=${analyticWeek.start}&end=${analyticWeek.end}`;
+  } else if (analyticMonth) {
+    url = `/api/analytics?month=${analyticMonth}`;
+  } else {
+    url = '/api/analytics';
+  }
+  document.getElementById('lb-body').innerHTML =
+    `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:40px">Loading…</td></tr>`;
+  try {
+    const r    = await fetch(url);
+    const data = await r.json();
+    renderAnalytics(data.assignees);
+  } catch(e) {
+    document.getElementById('lb-body').innerHTML =
+      `<tr><td colspan="8" style="text-align:center;color:var(--fail);padding:40px">Failed to load.</td></tr>`;
+  }
+}
+
+function renderAnalytics(assignees) {
+  // aggregate totals
+  const tot = assignees.reduce((a, r) => ({
+    total:   a.total   + r.total,
+    pass:    a.pass    + r.pass_count,
+    fail:    a.fail    + r.fail_count,
+    review:  a.review  + r.review_count,
+    pending: a.pending + r.pending_count,
+    ai_done: a.ai_done + r.ai_done,
+  }), { total:0, pass:0, fail:0, review:0, pending:0, ai_done:0 });
+
+  const overallRate = tot.ai_done ? Math.round(tot.pass / tot.ai_done * 100) : null;
+
+  document.getElementById('kpi-row').innerHTML = `
+    <div class="kpi-tile">
+      <div class="kpi-value">${tot.total}</div>
+      <div class="kpi-label">Total Tickets</div>
+    </div>
+    <div class="kpi-tile kpi-pass">
+      <div class="kpi-value">${tot.pass}</div>
+      <div class="kpi-label">Pass</div>
+    </div>
+    <div class="kpi-tile kpi-fail">
+      <div class="kpi-value">${tot.fail}</div>
+      <div class="kpi-label">Fail</div>
+    </div>
+    <div class="kpi-tile kpi-review">
+      <div class="kpi-value">${tot.review}</div>
+      <div class="kpi-label">Needs Review</div>
+    </div>
+    <div class="kpi-tile kpi-pend">
+      <div class="kpi-value">${tot.pending}</div>
+      <div class="kpi-label">Pending QC</div>
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-value ${rateClass(overallRate)}">${overallRate != null ? overallRate + '%' : '—'}</div>
+      <div class="kpi-label">Overall Pass Rate</div>
+    </div>`;
+
+  // sort: ranked by pass rate (only QC'd tickets), all-pending to bottom
+  const sorted = [...assignees].sort((a, b) => {
+    const ra = a.ai_done ? a.pass_count / a.ai_done : -1;
+    const rb = b.ai_done ? b.pass_count / b.ai_done : -1;
+    return rb - ra || b.total - a.total;
+  });
+
+  const medals = ['🥇', '🥈', '🥉'];
+
+  document.getElementById('lb-body').innerHTML = sorted.map((a, i) => {
+    const rate = a.ai_done ? Math.round(a.pass_count / a.ai_done * 100) : null;
+    const t    = a.total || 1; // avoid /0
+
+    // bar segment widths as % of total tickets
+    const pw = (a.pass_count    / t * 100).toFixed(1);
+    const fw = (a.fail_count    / t * 100).toFixed(1);
+    const rw = (a.review_count  / t * 100).toFixed(1);
+    const nw = (a.pending_count / t * 100).toFixed(1);
+
+    const rank = i < 3
+      ? `<span style="font-size:16px;line-height:1">${medals[i]}</span>`
+      : `<span style="color:var(--muted)">${i + 1}</span>`;
+
+    const rateHtml = `<span class="rate-val ${rateClass(rate)}">${rate != null ? rate + '%' : '—'}</span>`;
+
+    return `<tr>
+      <td class="rank-cell">${rank}</td>
+      <td class="assignee-cell" title="${esc(a.assignee)}">${esc(a.assignee)}</td>
+      <td class="bar-cell">
+        <div style="display:flex;align-items:center;gap:8px">
+          ${rateHtml}
+          <div class="mini-bar" title="Pass: ${a.pass_count} · Fail: ${a.fail_count} · NR: ${a.review_count} · Pending: ${a.pending_count}">
+            <div class="mini-seg" style="width:${pw}%;background:var(--pass)"></div>
+            <div class="mini-seg" style="width:${fw}%;background:var(--fail)"></div>
+            <div class="mini-seg" style="width:${rw}%;background:var(--review)"></div>
+            <div class="mini-seg" style="width:${nw}%;background:var(--border)"></div>
+          </div>
+        </div>
+      </td>
+      <td class="num-col count-pass">${a.pass_count}</td>
+      <td class="num-col count-fail">${a.fail_count}</td>
+      <td class="num-col count-review">${a.review_count}</td>
+      <td class="num-col count-pend">${a.pending_count}</td>
+      <td class="num-col" style="color:var(--text)">${a.total}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── nav ───────────────────────────────────────────────────────────────────────
+// ── assignee multi-select toggle & outside-click ─────────────────────────────
+(function () {
+  const btn  = document.getElementById("assignee-ms-btn");
+  const drop = document.getElementById("assignee-ms-dropdown");
+  const clr  = document.getElementById("assignee-ms-clear");
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+
+  clr.addEventListener("click", () => {
+    selectedAssignees.clear();
+    drop.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = false);
+    _updateAssigneeBtn();
+    applyFilters();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!document.getElementById("assignee-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
+document.getElementById("tab-dashboard").addEventListener("click", showDashboard);
+document.getElementById("tab-analytics").addEventListener("click", showAnalytics);
+document.getElementById("prev-month-a").addEventListener("click", prevAnalyticMonth);
+document.getElementById("next-month-a").addEventListener("click", nextAnalyticMonth);
+document.getElementById("all-time-btn").addEventListener("click", () => setAnalyticMonth(null));
+document.querySelectorAll(".status-pill").forEach(pill => {
+  pill.addEventListener("click", () => {
+    statusFilter = pill.dataset.status;
+    setActivePill(statusFilter);
+    applyFilters();
+  });
+});
+document.getElementById("refetch-btn").addEventListener("click", refetchDay);
+document.getElementById("qc-btn").addEventListener("click", runQC);
+document.getElementById("download-btn").addEventListener("click", downloadCSV);
+document.getElementById("prev-month").addEventListener("click", () => {
+  if (--curMonth < 1) { curMonth = 12; curYear--; }
+  renderCalendar();
+});
+document.getElementById("next-month").addEventListener("click", () => {
+  if (++curMonth > 12) { curMonth = 1; curYear++; }
+  renderCalendar();
+});
+
+// ── signed-in user ────────────────────────────────────────────────────────────
+async function loadMe() {
+  try {
+    const r = await fetch("/api/me");
+    if (!r.ok) return;
+    const me = await r.json();
+    document.getElementById("user-name").textContent = me.name || me.email;
+    if (me.picture) {
+      const img = document.getElementById("user-avatar");
+      img.src = me.picture;
+      img.hidden = false;
+    }
+    // Members reach Admin too — it renders read-only for them.
+    document.getElementById("admin-link").textContent =
+      me.role === "admin" ? "Admin" : "Settings";
+  } catch(e) {}
+}
+
+// ── init ──────────────────────────────────────────────────────────────────────
+loadMe();
+(async () => {
+  await renderCalendar();
+  // Slack links point at /?date=YYYY-MM-DD — open that day directly.
+  const wanted = new URLSearchParams(location.search).get("date");
+  if (wanted && /^\d{4}-\d{2}-\d{2}$/.test(wanted)) {
+    const [y, m] = wanted.split("-").map(Number);
+    if (y !== curYear || m !== curMonth) {
+      curYear = y; curMonth = m;
+      await renderCalendar();
+    }
+    selectDay(wanted);
+  }
+})();
+loadStats();
+</script>
+</body>
+</html>

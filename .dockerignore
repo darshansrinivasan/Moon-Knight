@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.env
+qc.db
+qc.db-*
+.git
+.gitignore
+.dockerignore
+Dockerfile
+SPEC.md
+SKILL.md
+.DS_Store

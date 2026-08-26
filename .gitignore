@@ -1,0 +1,17 @@
+# secrets — never commit live tokens
+.env
+
+# encrypts the credential vault and signs sessions — back it up, never commit it
+.master.key
+
+# local database (contains customer conversations)
+qc.db
+qc.db-shm
+qc.db-wal
+
+# python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
