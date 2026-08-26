@@ -11,6 +11,8 @@ from datetime import datetime, timezone, timedelta
 
 from bs4 import BeautifulSoup
 
+import rules as qc_rules
+
 # ── constants ────────────────────────────────────────────────────────────────
 
 INTERNAL_ACCOUNT_IDS = {
@@ -355,7 +357,7 @@ def _fetch_slack_thread(url: str) -> str:
 
 def _thread_has_eng_group(thread_text: str) -> bool:
     """True if any engineering Slack group is @-mentioned in fetched thread text."""
-    for gid in ENG_SLACK_GROUP_IDS:
+    for gid in qc_rules.id_set("eng_group_ids"):
         if f"<!subteam^{gid}>" in thread_text or f"<@{gid}>" in thread_text:
             return True
     return False
@@ -391,12 +393,12 @@ def r3(issue: dict, account: dict | None) -> str:
     account_id = (issue.get("account") or {}).get("id")
     if not account_id or not account:
         return "Fail"
-    if account_id in INTERNAL_ACCOUNT_IDS:
+    if account_id in qc_rules.internal_account_ids():
         return "Fail"
     if account.get("type") == "internal":
         return "Fail"
     name = (account.get("name") or "").lower()
-    if any(frag in name for frag in INVALID_NAME_FRAGMENTS):
+    if any(frag in name for frag in qc_rules.invalid_name_fragments()):
         return "Fail"
     return "Pass"
 
@@ -415,7 +417,7 @@ def r4(issue: dict, messages: list[dict]) -> str:
         return "Pass"  # last public msg is from support
 
     age = datetime.now(timezone.utc) - _parse_ts(latest["timestamp"])
-    return "Fail" if age > timedelta(hours=24) else "Pass"
+    return "Fail" if age > timedelta(hours=qc_rules.sla_hours()) else "Pass"
 
 
 def _has_jira(
@@ -490,11 +492,11 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     # (individually or as a group), or if found in the oncall_slack_chat_link thread.
     if state == "waiting_on_csm":
         mentioned = _mentioned_slack_ids(messages)
-        if mentioned & CS_SLACK_USER_IDS:
+        if mentioned & qc_rules.id_set("cs_user_ids"):
             return "Pass"
-        if mentioned & IMPL_SLACK_USER_IDS:
+        if mentioned & qc_rules.id_set("impl_user_ids"):
             return "Pass"
-        if _mentioned_group_ids(messages) & IMPL_SLACK_GROUP_IDS:
+        if _mentioned_group_ids(messages) & qc_rules.id_set("impl_group_ids"):
             return "Pass"
         all_text = " ".join(_html_text(m.get("message_html")) for m in messages)
         if "@cs" in all_text or "@implementation" in all_text:
@@ -506,11 +508,11 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
             thread_text = _fetch_slack_thread(oncall_link)
             if thread_text:
                 thread_ids = _slack_text_user_ids(thread_text)
-                if thread_ids & CS_SLACK_USER_IDS:
+                if thread_ids & qc_rules.id_set("cs_user_ids"):
                     return "Pass"
-                if thread_ids & IMPL_SLACK_USER_IDS:
+                if thread_ids & qc_rules.id_set("impl_user_ids"):
                     return "Pass"
-                for gid in IMPL_SLACK_GROUP_IDS:
+                for gid in qc_rules.id_set("impl_group_ids"):
                     if f"<!subteam^{gid}>" in thread_text:
                         return "Pass"
         return "Fail"
@@ -518,9 +520,9 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     # waiting_on_product: pass if any PT member individually tagged OR @pt group tagged
     # in Pylon thread, then check oncall_slack_chat_link thread as fallback.
     if state == "waiting_on_product":
-        if _mentioned_slack_ids(messages) & PT_SLACK_USER_IDS:
+        if _mentioned_slack_ids(messages) & qc_rules.id_set("pt_user_ids"):
             return "Pass"
-        if _mentioned_group_ids(messages) & PT_SLACK_GROUP_IDS:
+        if _mentioned_group_ids(messages) & qc_rules.id_set("pt_group_ids"):
             return "Pass"
         all_text = " ".join(_html_text(m.get("message_html")) for m in messages)
         if "@pt" in all_text:
@@ -531,9 +533,9 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         if oncall_link:
             thread_text = _fetch_slack_thread(oncall_link)
             if thread_text:
-                if _slack_text_user_ids(thread_text) & PT_SLACK_USER_IDS:
+                if _slack_text_user_ids(thread_text) & qc_rules.id_set("pt_user_ids"):
                     return "Pass"
-                for gid in PT_SLACK_GROUP_IDS:
+                for gid in qc_rules.id_set("pt_group_ids"):
                     if f"<!subteam^{gid}>" in thread_text:
                         return "Pass"
         return "Fail"
@@ -543,10 +545,10 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     # then fall back to Rootly/Jira presence.
     if state in ENGG_STATES:
         # 1a. Pylon thread HTML — individual engineer @-mentioned?
-        if _mentioned_slack_ids(messages) & ENG_SLACK_USER_IDS:
+        if _mentioned_slack_ids(messages) & qc_rules.id_set("eng_user_ids"):
             return "Pass"
         # 1b. Pylon thread HTML — engineering group @-mentioned?
-        if _mentioned_group_ids(messages) & ENG_SLACK_GROUP_IDS:
+        if _mentioned_group_ids(messages) & qc_rules.id_set("eng_group_ids"):
             return "Pass"
 
         # 2. oncall_slack_chat_link — fetch thread, check for eng user/group tags
@@ -556,7 +558,7 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         if oncall_link:
             thread_text = _fetch_slack_thread(oncall_link)
             if thread_text:
-                if _slack_text_user_ids(thread_text) & ENG_SLACK_USER_IDS:
+                if _slack_text_user_ids(thread_text) & qc_rules.id_set("eng_user_ids"):
                     return "Pass"
                 if _thread_has_eng_group(thread_text):
                     return "Pass"
@@ -565,8 +567,8 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         return "Pass" if _has_rootly_or_jira(issue, messages, external_issues) else "Fail"
 
     # Other delegation states — require group mention in thread text
-    if state in _R5_GROUP_STATES:
-        tags     = _R5_GROUP_STATES[state]
+    if state in qc_rules.group_states():
+        tags     = qc_rules.group_states()[state]
         all_text = " ".join(_html_text(m.get("message_html")) for m in messages)
         return "Pass" if any(tag in all_text for tag in tags) else "Fail"
 
@@ -641,7 +643,8 @@ def r8(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     req_cat        = (_cf_val(cf.get("request_category")) or "").strip().lower()
 
     return "Pass" if (
-        has_rootly_yes and has_ref and has_jira_link and req_cat in ONCALL_CATEGORIES
+        has_rootly_yes and has_ref and has_jira_link
+        and req_cat in qc_rules.oncall_categories()
     ) else "Fail"
 
 

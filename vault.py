@@ -259,6 +259,21 @@ def import_legacy_env(actor: str = "startup") -> list[str]:
     return imported
 
 
+def get_raw_setting(key: str) -> str | None:
+    """Read a setting outside the public registry (e.g. the rules document)."""
+    row = _query("SELECT value FROM app_settings WHERE key = ?", (key,))
+    return row["value"] if row else None
+
+
+def get_setting_meta(key: str) -> dict | None:
+    row = _query("SELECT updated_by, updated_at FROM app_settings WHERE key = ?", (key,))
+    return dict(row) if row else None
+
+
+def set_raw_setting(key: str, value: str, updated_by: str) -> None:
+    _set_raw_setting(key, value, updated_by)
+
+
 def _set_raw_setting(key: str, value: str, updated_by: str) -> None:
     """Write a setting that is not part of the public registry."""
     with db.get_conn() as conn:

@@ -462,6 +462,66 @@ async def get_ticket(ticket_id: str, user: dict = Depends(auth.require_user)):
     return {"ticket": ticket, "messages": messages}
 
 
+# ── scoring rules ───────────────────────────────────────────────────────────────
+
+RULE_DESCRIPTIONS = {
+    "r1": ("R1 — Functionality", "The 'functionalities' custom field must be filled. No parameters."),
+    "r2": ("R2 — Request category", "The 'request_category' custom field must be filled. No parameters."),
+    "r3": ("R3 — Real customer account", "The ticket must link to a genuine external account — not an internal catch-all, dogfooding, or trial account."),
+    "r4": ("R4 — Response time", "No customer message may go unanswered longer than the SLA."),
+    "r5": ("R5 — Status ownership", "A ticket's state must match who owns the next action, proven by an @-mention of someone on the right team (or a Rootly/Jira link for engineering)."),
+    "r7": ("R7 — Rootly/Jira link", "Engineering tickets must reference a Rootly incident or Jira issue. No parameters."),
+    "r8": ("R8 — Oncall completeness", "When escalated to oncall, all four fields must be consistent: rootly exists, reference filled, Jira linked, category is an oncall one."),
+    "a":  ("A1–A5 — AI grading", "Category accuracy, customer sentiment, response quality, status-vs-conversation, and premature closure — graded by Gemini against a fixed rubric with pinned generation."),
+}
+
+
+@app.get("/rules", response_class=HTMLResponse)
+async def rules_page(user: dict = Depends(auth.require_user)):
+    return _page("rules.html")
+
+
+@app.get("/api/rules")
+async def get_rules(user: dict = Depends(auth.require_user)):
+    import rules as qc_rules
+
+    def states_seen():
+        with db.get_conn() as conn:
+            return [r["state"] for r in conn.execute(
+                "SELECT state, COUNT(*) n FROM tickets WHERE state IS NOT NULL"
+                " GROUP BY state ORDER BY n DESC").fetchall()]
+
+    return {
+        "rules":        qc_rules.current(),
+        "defaults":     qc_rules.defaults(),
+        "rules_hash":   qc_rules.rules_hash(),
+        "descriptions": RULE_DESCRIPTIONS,
+        "states_seen":  await asyncio.to_thread(states_seen),
+        "meta":         vault.get_setting_meta(qc_rules.RULES_KEY),
+        "can_edit":     user["role"] == "admin",
+        "rubric":       qc_runner.SYSTEM_PROMPT,
+    }
+
+
+@app.put("/api/rules")
+async def put_rules(request: Request, user: dict = Depends(auth.require_admin)):
+    import rules as qc_rules
+    body = await request.json()
+    candidate = body.get("rules")
+    if not isinstance(candidate, dict):
+        raise HTTPException(400, "Body must be {\"rules\": {...}}")
+
+    errors = await asyncio.to_thread(qc_rules.save, candidate, user["email"])
+    if errors:
+        # Rejected by validation — nothing was saved.
+        return JSONResponse({"ok": False, "errors": errors}, status_code=422)
+
+    vault.audit(user["email"], "rules.update",
+                f"hash={qc_rules.rules_hash()} keys={', '.join(sorted(candidate.keys()))}")
+    return {"ok": True, "rules": qc_rules.current(), "rules_hash": qc_rules.rules_hash(),
+            "meta": vault.get_setting_meta(qc_rules.RULES_KEY)}
+
+
 # ── run history ───────────────────────────────────────────────────────────────
 
 @app.get("/runs", response_class=HTMLResponse)

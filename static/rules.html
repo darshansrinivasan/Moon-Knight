@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rules · Pylon QC</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --surface2: #263348; --border: #334155;
+    --text: #f1f5f9; --muted: #94a3b8; --accent: #6366f1; --accent2: #818cf8;
+    --pass: #22c55e; --fail: #ef4444; --review: #f59e0b; --radius: 8px;
+  }
+  body {
+    background: var(--bg); color: var(--text); font-size: 14px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 12px 20px; display: flex; align-items: center; gap: 16px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header h1 span { color: var(--accent2); }
+  .spacer { flex: 1; }
+  .link-btn {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: var(--radius); padding: 5px 12px; font-size: 12px; text-decoration: none;
+  }
+  .link-btn:hover { border-color: var(--accent); color: var(--text); }
+  button.primary {
+    background: var(--accent); border: none; color: #fff; font-weight: 600;
+    font-size: 13px; padding: 8px 16px; border-radius: var(--radius); cursor: pointer;
+  }
+  button.primary:hover { background: var(--accent2); }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  button.ghost {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+    font-size: 12px; padding: 7px 12px; border-radius: var(--radius); cursor: pointer;
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--text); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 20px 80px; }
+
+  .banner {
+    border-radius: var(--radius); padding: 11px 15px; margin-bottom: 16px;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .banner.info { background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.35); color: var(--accent2); }
+  .banner.err  { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.35); color: var(--fail); }
+  .banner.ok   { background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.35); color: var(--pass); }
+  .banner ul { margin: 4px 0 0 16px; }
+  .banner b { color: var(--text); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 14px; font-weight: 650; margin-bottom: 3px; }
+  .card .what { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
+  .card h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); font-weight: 600; margin: 14px 0 6px;
+  }
+  .hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 6px; }
+  .no-params { font-size: 12px; color: var(--muted); font-style: italic; }
+
+  textarea, input[type=text], input[type=number] {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius); padding: 8px 10px;
+    font-size: 12.5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  textarea { resize: vertical; line-height: 1.55; }
+  textarea:focus, input:focus { outline: none; border-color: var(--accent); }
+  input[type=number] { max-width: 120px; font-family: inherit; }
+  textarea:disabled, input:disabled { opacity: .55; cursor: not-allowed; }
+
+  .roster-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .count { font-size: 11px; color: var(--accent2); font-weight: 600; }
+
+  .state-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .state-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 14px; padding: 4px 11px; font-size: 12px; cursor: pointer;
+    user-select: none; transition: border-color .15s, background .15s;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .state-chip input { accent-color: var(--accent); cursor: pointer; }
+  .state-chip.on { border-color: var(--accent); background: rgba(99,102,241,.14); color: var(--accent2); }
+  .state-chip .n { color: var(--muted); font-size: 10.5px; }
+  body.readonly .state-chip { pointer-events: none; }
+
+  .rubric {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+    line-height: 1.6; color: var(--muted); white-space: pre-wrap; max-height: 320px; overflow-y: auto;
+  }
+  details > summary { cursor: pointer; font-size: 12.5px; color: var(--accent2); margin-bottom: 8px; }
+
+  .savebar {
+    position: sticky; bottom: 0; background: var(--surface);
+    border-top: 1px solid var(--border); margin: 0 -20px -80px; padding: 12px 20px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .savebar .meta { font-size: 11.5px; color: var(--muted); flex: 1; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pylon <span>QC</span> · Rules</h1>
+  <div class="spacer"></div>
+  <a class="link-btn" href="/">Dashboard</a>
+  <a class="link-btn" href="/runs">Runs</a>
+  <a class="link-btn" href="/admin">Admin</a>
+  <a class="link-btn" href="/auth/logout">Sign out</a>
+</header>
+
+<main>
+  <div id="mode-note"></div>
+  <div id="msg"></div>
+
+  <!-- Scope -->
+  <div class="card">
+    <h2>Scoring scope</h2>
+    <p class="what">
+      Tickets in a checked state are <b>skipped by AI scoring</b> — they get no grades and no
+      overall result, and never appear in the Slack report. Deterministic R-checks still run at
+      fetch time. Every run records which states were excluded, so results stay explainable.
+    </p>
+    <div class="state-row" id="states"></div>
+  </div>
+
+  <!-- R checks -->
+  <div class="card"><h2 id="t-r1"></h2><p class="what" id="d-r1"></p><p class="no-params">Field-presence check — nothing to configure.</p></div>
+  <div class="card"><h2 id="t-r2"></h2><p class="what" id="d-r2"></p><p class="no-params">Field-presence check — nothing to configure.</p></div>
+
+  <div class="card">
+    <h2 id="t-r3"></h2><p class="what" id="d-r3"></p>
+    <h3>Internal account IDs <span class="count" id="c-r3a"></span></h3>
+    <div class="hint">One Pylon account ID per line. Anything after the ID is a label for your own reference.</div>
+    <textarea id="r3_internal_account_ids" rows="3" spellcheck="false"></textarea>
+    <h3>Invalid name fragments</h3>
+    <div class="hint">Comma-separated. An account whose name contains any of these fails R3.</div>
+    <input type="text" id="r3_invalid_name_fragments" spellcheck="false">
+  </div>
+
+  <div class="card">
+    <h2 id="t-r4"></h2><p class="what" id="d-r4"></p>
+    <h3>SLA</h3>
+    <div class="hint">Hours a customer message may wait for a reply before R4 fails. 1–336.</div>
+    <input type="number" id="r4_sla_hours" min="1" max="336" step="1"> <span class="hint" style="display:inline">hours</span>
+  </div>
+
+  <div class="card">
+    <h2 id="t-r5"></h2><p class="what" id="d-r5"></p>
+    <div class="hint">One entry per line: the Slack ID first (users start with U, groups with S),
+    then optionally a name — kept purely as a label. These were previously hardcoded and needed a
+    deploy to update when a team changed.</div>
+    <div class="roster-grid">
+      <div><h3>Customer Success — users <span class="count" id="c-cs"></span></h3>
+        <textarea id="cs_user_ids" rows="8" spellcheck="false"></textarea></div>
+      <div><h3>Implementation — users <span class="count" id="c-iu"></span></h3>
+        <textarea id="impl_user_ids" rows="8" spellcheck="false"></textarea>
+        <h3>Implementation — groups <span class="count" id="c-ig"></span></h3>
+        <textarea id="impl_group_ids" rows="2" spellcheck="false"></textarea></div>
+      <div><h3>Engineering — users <span class="count" id="c-eu"></span></h3>
+        <textarea id="eng_user_ids" rows="8" spellcheck="false"></textarea>
+        <h3>Engineering — groups <span class="count" id="c-eg"></span></h3>
+        <textarea id="eng_group_ids" rows="3" spellcheck="false"></textarea></div>
+      <div><h3>Product — users <span class="count" id="c-pu"></span></h3>
+        <textarea id="pt_user_ids" rows="8" spellcheck="false"></textarea>
+        <h3>Product — groups <span class="count" id="c-pg"></span></h3>
+        <textarea id="pt_group_ids" rows="2" spellcheck="false"></textarea></div>
+    </div>
+    <h3>Other delegation states</h3>
+    <div class="hint">One per line, as <b>state: @tag1, @tag2</b> — the state passes R5 when any tag appears in the thread.</div>
+    <textarea id="r5_group_states" rows="2" spellcheck="false"></textarea>
+  </div>
+
+  <div class="card"><h2 id="t-r7"></h2><p class="what" id="d-r7"></p><p class="no-params">Link-presence check — nothing to configure.</p></div>
+
+  <div class="card">
+    <h2 id="t-r8"></h2><p class="what" id="d-r8"></p>
+    <h3>Oncall categories</h3>
+    <div class="hint">Comma-separated request_category values accepted as oncall.</div>
+    <input type="text" id="r8_oncall_categories" spellcheck="false">
+  </div>
+
+  <!-- AI checks -->
+  <div class="card">
+    <h2 id="t-a"></h2><p class="what" id="d-a"></p>
+    <details><summary>Show the full grading rubric (read-only — the fixed part of every run)</summary>
+      <div class="rubric" id="rubric"></div>
+    </details>
+    <h3>Workspace-specific guidance</h3>
+    <div class="hint">
+      Appended to the rubric on every run — use it for judgements the base rubric can't know
+      ("tickets from X are internal", "never penalise Y"). Changing this can shift grades: each
+      run records whether guidance was active and the rules hash, and the Runs page's stability
+      metric will show exactly which tickets moved. Max 4000 characters.
+    </h3>
+    <textarea id="a_guidance" rows="5" placeholder="e.g. Tickets titled 'Zapier - Intake Created' are automated intakes; do not penalise missing replies on them." spellcheck="false"></textarea>
+  </div>
+
+  <div class="card">
+    <div class="savebar" id="savebar">
+      <span class="meta" id="meta"></span>
+      <button class="ghost" id="load-defaults">Load defaults into form</button>
+      <button class="primary" id="save">Validate &amp; save</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+function esc(s){return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+let DATA = null;
+
+const LISTS = ["cs_user_ids","impl_user_ids","impl_group_ids","eng_user_ids",
+               "eng_group_ids","pt_user_ids","pt_group_ids","r3_internal_account_ids"];
+const CSVS  = ["r3_invalid_name_fragments","r8_oncall_categories"];
+const COUNTS = {cs_user_ids:"c-cs", impl_user_ids:"c-iu", impl_group_ids:"c-ig",
+                eng_user_ids:"c-eu", eng_group_ids:"c-eg", pt_user_ids:"c-pu",
+                pt_group_ids:"c-pg", r3_internal_account_ids:"c-r3a"};
+
+function show(kind, html) {
+  $("msg").innerHTML = html ? `<div class="banner ${kind}">${html}</div>` : "";
+  if (html) window.scrollTo({top: 0, behavior: "smooth"});
+}
+
+function fillForm(r) {
+  for (const k of LISTS) { $(k).value = (r[k] || []).join("\n"); updateCount(k); }
+  for (const k of CSVS)  $(k).value = (r[k] || []).join(", ");
+  $("r4_sla_hours").value = r.r4_sla_hours ?? 24;
+  $("a_guidance").value = r.a_guidance || "";
+  $("r5_group_states").value = Object.entries(r.r5_group_states || {})
+    .map(([st, tags]) => `${st}: ${(tags || []).join(", ")}`).join("\n");
+  renderStates(r.excluded_states || []);
+}
+
+function updateCount(k) {
+  const n = $(k).value.split("\n").filter(l => l.trim()).length;
+  const el = $(COUNTS[k]); if (el) el.textContent = `(${n})`;
+}
+
+function renderStates(excluded) {
+  const known = new Set([...(DATA.states_seen || []),
+    "new","waiting_on_you","waiting_on_customer","waiting_on_csm","waiting_on_engg",
+    "waiting_on_product","waiting_on_legal","investigating","on_hold","closed","archived",
+    ...excluded]);
+  $("states").innerHTML = [...known].map(st => {
+    const on = excluded.includes(st);
+    return `<label class="state-chip ${on ? "on" : ""}">
+      <input type="checkbox" data-state="${esc(st)}" ${on ? "checked" : ""}
+             ${DATA.can_edit ? "" : "disabled"}>${esc(st)}</label>`;
+  }).join("");
+  $("states").querySelectorAll("input").forEach(cb => {
+    cb.addEventListener("change", () =>
+      cb.closest(".state-chip").classList.toggle("on", cb.checked));
+  });
+}
+
+function collect() {
+  const rules = {};
+  for (const k of LISTS) rules[k] = $(k).value.split("\n").map(l => l.trim()).filter(Boolean);
+  for (const k of CSVS)  rules[k] = $(k).value.split(",").map(x => x.trim()).filter(Boolean);
+  rules.r4_sla_hours = Number($("r4_sla_hours").value);
+  rules.a_guidance = $("a_guidance").value.trim();
+  rules.excluded_states = [...$("states").querySelectorAll("input:checked")]
+    .map(cb => cb.dataset.state);
+  const gs = {};
+  for (const line of $("r5_group_states").value.split("\n")) {
+    const [st, tags] = line.split(":");
+    if (st && st.trim()) gs[st.trim()] = (tags || "").split(",").map(t => t.trim()).filter(Boolean);
+  }
+  rules.r5_group_states = gs;
+  return rules;
+}
+
+function renderMeta() {
+  const m = DATA.meta;
+  $("meta").innerHTML = `Rules hash <b style="color:var(--accent2)">${esc(DATA.rules_hash)}</b>` +
+    (m ? ` · last modified by ${esc(m.updated_by)} · ${esc(new Date(m.updated_at).toLocaleString())}`
+       : ` · defaults (never modified)`);
+}
+
+async function load() {
+  const r = await fetch("/api/rules");
+  DATA = await r.json();
+  if (!r.ok) throw new Error(DATA.detail || `HTTP ${r.status}`);
+
+  for (const [k, [title, what]] of Object.entries(DATA.descriptions)) {
+    if ($(`t-${k}`)) { $(`t-${k}`).textContent = title; $(`d-${k}`).textContent = what; }
+  }
+  $("rubric").textContent = DATA.rubric;
+  fillForm(DATA.rules);
+  renderMeta();
+
+  if (!DATA.can_edit) {
+    document.body.classList.add("readonly");
+    document.querySelectorAll("textarea, input").forEach(el => el.disabled = true);
+    $("save").style.display = "none";
+    $("load-defaults").style.display = "none";
+    $("mode-note").innerHTML = `<div class="banner info"><b>Read-only view.</b>
+      These are the rules every run is scored against. Changing them needs an administrator.</div>`;
+  }
+
+  for (const k of LISTS) $(k).addEventListener("input", () => updateCount(k));
+}
+
+$("load-defaults").addEventListener("click", () => {
+  fillForm(DATA.defaults);
+  show("info", "Defaults loaded into the form — nothing is saved until you press <b>Validate &amp; save</b>.");
+});
+
+$("save").addEventListener("click", async () => {
+  $("save").disabled = true;
+  try {
+    const r = await fetch("/api/rules", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rules: collect()}),
+    });
+    const d = await r.json();
+    if (r.status === 422) {
+      show("err", `<b>Rejected — nothing was saved.</b><ul>${
+        d.errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul>`);
+    } else if (!r.ok) {
+      show("err", esc(d.detail || `HTTP ${r.status}`));
+    } else {
+      DATA.rules = d.rules; DATA.rules_hash = d.rules_hash; DATA.meta = d.meta;
+      renderMeta();
+      show("ok", `<b>Accepted and saved.</b> Rules hash is now ${esc(d.rules_hash)} —
+        the next run will record it, and the Runs page will show any grade movement it causes.`);
+    }
+  } catch (e) {
+    show("err", esc(e.message));
+  } finally {
+    $("save").disabled = false;
+  }
+});
+
+load().catch(e => show("err", esc(e.message)));
+</script>
+</body>
+</html>

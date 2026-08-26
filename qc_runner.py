@@ -432,8 +432,9 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
             missing.append("set 'does_rootly_exist' to Yes")
         if not (cf.get("rootly.incident_reference") or {}).get("value"):
             missing.append("fill in the Rootly incident reference (e.g. ROOT-1234)")
+        import rules as qc_rules
         req_cat = ((cf.get("request_category") or {}).get("value") or "").lower()
-        if req_cat not in scorer.ONCALL_CATEGORIES:
+        if req_cat not in qc_rules.oncall_categories():
             missing.append(f"change request_category from '{req_cat}' to an oncall category")
         if not any("jira" in (e.get("source") or "").lower() or "atlassian" in (e.get("link") or "").lower()
                    for e in []):  # Jira check simplified here; actual check is in scorer
@@ -499,6 +500,17 @@ def _build_ticket_block(t: dict, idx: int) -> str:
     return "\n".join(lines)
 
 
+def _system_prompt() -> str:
+    """The base rubric plus any workspace-specific guidance set by admins."""
+    import rules as qc_rules
+    guidance = qc_rules.guidance()
+    if not guidance:
+        return SYSTEM_PROMPT
+    return (SYSTEM_PROMPT
+            + "\n\nWORKSPACE-SPECIFIC GUIDANCE (set by admins — apply alongside the rubric):\n"
+            + guidance)
+
+
 def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
     """Call Gemini on Vertex, cascading through models on quota errors.
 
@@ -514,7 +526,7 @@ def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
                 model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
+                    system_instruction=_system_prompt(),
                     temperature=GEN_TEMPERATURE,
                     seed=GEN_SEED,
                     candidate_count=1,
@@ -638,6 +650,9 @@ def _effective_config(date_str: str, triggered_by: str) -> dict:
         "batch_size":      BATCH_SIZE,
         "max_workers":     MAX_WORKERS,
         "prompt_version":  PROMPT_VERSION,
+        "rules_hash":      __import__("rules").rules_hash(),
+        "excluded_states": __import__("rules").excluded_states(),
+        "custom_guidance": bool(__import__("rules").guidance()),
     }
 
 
@@ -691,8 +706,16 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
     Records the run — config, tokens, cost, and grade stability vs the
     previous run of the same date. Returns counts plus run metadata.
     """
+    import rules as qc_rules
+    excluded = qc_rules.excluded_states()
+    not_in = ""
+    params: list = [date_str]
+    if excluded:
+        not_in = f"AND t.state NOT IN ({','.join('?' * len(excluded))})"
+        params += excluded
+
     with db.get_conn() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT t.id, t.number, t.title, t.state, t.assignee_name,
                    t.account_id, t.custom_fields, t.source, t.customer_portal_visible,
                    a.name AS account_name, a.type AS account_type,
@@ -703,8 +726,9 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
             LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
             WHERE t.fetch_date = ?
               AND (ac.ticket_id IS NULL OR t.fetched_at > ac.checked_at)
+              {not_in}
             ORDER BY t.number
-        """, (date_str,)).fetchall()
+        """, params).fetchall()
 
     tickets = [dict(r) for r in rows]
     if not tickets:
