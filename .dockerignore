@@ -11,3 +11,9 @@ Dockerfile
 SPEC.md
 SKILL.md
 .DS_Store
+# secrets — must never be baked into an image layer
+.master.key
+.env.*
+!.env.example
+*.pem
+*.key
