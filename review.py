@@ -171,7 +171,7 @@ def annotate_tickets(tickets: list[dict], user: dict) -> list[dict]:
     covered = None if is_admin(user) else assignees_for(user)
     for t in tickets:
         ai = t.get("overall_result")
-        rev = reviews.get(t["id"])
+        rev = _active_review(reviews.get(t["id"]))
         t["ai_result"] = ai
         t["overall_result"] = rev["decision"] if rev else ai
         t["review"] = {
@@ -185,6 +185,13 @@ def annotate_tickets(tickets: list[dict], user: dict) -> list[dict]:
         assignee = t.get("assignee_name") or "Unassigned"
         t["can_review"] = True if covered is None else assignee in covered
     return tickets
+
+
+def _active_review(rev: dict | None) -> dict | None:
+    """Latest row wins, but Revert clears the human grade back to AI."""
+    if not rev or rev.get("decision") not in DECISIONS:
+        return None
+    return rev
 
 
 def _ticket_row(ticket_id: str) -> dict | None:
@@ -205,6 +212,7 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> 
     `decision`:
       - `Pass` / `Fail` — override (or confirm) the overall grade
       - `accept` — keep the AI overall; rejected if the AI grade is not Pass or Fail
+      - `revert` — clear the latest sign-off; effective grade becomes the AI overall
     """
     ticket = _ticket_row(ticket_id)
     if not ticket:
@@ -215,21 +223,26 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> 
             "Admins can review every ticket."
         )
 
-    ai = ticket.get("ai_result")
-    if not ai:
-        raise ReviewInvalid("Run QC on this ticket before accepting it")
-
     kept_ai = 0
     decision = (decision or "").strip()
-    if decision == "accept":
-        if ai not in DECISIONS:
-            raise ReviewInvalid(
-                f"AI graded this {ai}. Choose Pass or Fail to accept it."
-            )
-        decision = ai
-        kept_ai = 1
-    elif decision not in DECISIONS:
-        raise ReviewInvalid("Decision must be Pass, Fail, or accept")
+    if decision == "revert":
+        prev = _active_review(latest_review(ticket_id))
+        if not prev:
+            raise ReviewInvalid("This ticket is not signed off")
+        decision = "Revert"
+    else:
+        ai = ticket.get("ai_result")
+        if not ai:
+            raise ReviewInvalid("Run QC on this ticket before accepting it")
+        if decision == "accept":
+            if ai not in DECISIONS:
+                raise ReviewInvalid(
+                    f"AI graded this {ai}. Choose Pass or Fail to accept it."
+                )
+            decision = ai
+            kept_ai = 1
+        elif decision not in DECISIONS:
+            raise ReviewInvalid("Decision must be Pass, Fail, accept, or revert")
 
     record = {
         "ticket_id": ticket_id,

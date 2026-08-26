@@ -56,19 +56,28 @@ One person can own several coverages. Assignees appear after those people have
 shown up on a fetched ticket. Save the group; the reviewer can sign off as
 soon as they next open the dashboard.
 
+On the dashboard, **Group** filters tickets by those coverage groups. A
+reviewer's own group is selected by default so they land on their team.
+Admins see every group and can switch. **Ungrouped** is anyone not in a
+coverage. The filter stays when you change days; **All groups** clears it.
+Status pills count tickets inside the active group filter.
+
 ## Accept QC / Pass / Fail
 
 Sign-off is **per ticket**, not per day. Expand a card:
 
-- **Accept QC** — keep the AI overall and record who/when. Disabled when AI
-  graded `Needs Review` or the ticket has not been scored; pick Pass or Fail
-  instead.
-- **Pass** / **Fail** — override (or confirm) the overall grade. The AI
-  overall is stored separately and is never overwritten.
+- **Accept QC** — keep the AI overall and record who/when. Only shown before
+  the first sign-off, and only when AI already graded Pass or Fail.
+- **Pass** / **Fail** — open a modal to set the ticket's overall result
+  (optional note). This is the overall, not a single A-check.
+- After sign-off, Accept QC is gone. **Change overall** opens the same modal;
+  **Revert** clears the sign-off so the AI overall is the effective grade
+  again. Revert is another append-only row, not a delete.
 
 The dashboard list, status pills, Unreviewed filter, day totals, and CSV use
-the **effective** grade: latest sign-off if present, otherwise the AI overall.
-Calendar heat and Slack reports still use the AI overall for this version.
+the **effective** grade: latest Pass/Fail sign-off if present, otherwise the
+AI overall. Calendar heat and Slack reports still use the AI overall for this
+version.
 
 **Unreviewed** means QC has run and nobody has signed off yet.
 

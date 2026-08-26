@@ -401,14 +401,18 @@ def ticket_stats(date: str | None = None) -> dict:
         row = conn.execute(f"""
             SELECT
                 COUNT(*) AS total_tickets,
-                SUM(CASE WHEN COALESCE(rev.decision, ac.overall_result) = 'Pass'
-                         THEN 1 ELSE 0 END) AS pass_count,
-                SUM(CASE WHEN COALESCE(rev.decision, ac.overall_result) = 'Fail'
-                         THEN 1 ELSE 0 END) AS fail_count,
-                SUM(CASE WHEN COALESCE(rev.decision, ac.overall_result) = 'Needs Review'
-                         THEN 1 ELSE 0 END) AS review_count,
+                SUM(CASE WHEN COALESCE(
+                         CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,
+                         ac.overall_result) = 'Pass' THEN 1 ELSE 0 END) AS pass_count,
+                SUM(CASE WHEN COALESCE(
+                         CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,
+                         ac.overall_result) = 'Fail' THEN 1 ELSE 0 END) AS fail_count,
+                SUM(CASE WHEN COALESCE(
+                         CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,
+                         ac.overall_result) = 'Needs Review' THEN 1 ELSE 0 END) AS review_count,
                 COUNT(ac.ticket_id) AS ai_done,
-                SUM(CASE WHEN ac.ticket_id IS NOT NULL AND rev.id IS NULL
+                SUM(CASE WHEN ac.ticket_id IS NOT NULL
+                          AND (rev.id IS NULL OR rev.decision NOT IN ('Pass','Fail'))
                          THEN 1 ELSE 0 END) AS unreviewed
             FROM tickets t
             LEFT JOIN ai_checks ac ON ac.ticket_id = t.id

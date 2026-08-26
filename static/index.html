@@ -178,6 +178,7 @@
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     flex-shrink: 0;
   }
@@ -508,10 +509,59 @@
   .review-bar button.pass { border-color: rgba(34,197,94,.45); color: var(--pass); }
   .review-bar button.fail { border-color: rgba(239,68,68,.45); color: var(--fail); }
   .review-bar button.accept { border-color: var(--accent); color: var(--accent2); }
+  .review-bar button.change { border-color: var(--accent); color: var(--accent2); }
+  .review-bar button.revert { color: var(--muted); }
   .review-bar button:disabled { opacity: .4; cursor: default; }
   .review-mark {
     font-size: 10px; font-weight: 600; letter-spacing: .02em;
     color: var(--muted); margin-left: 6px;
+  }
+
+  .review-modal {
+    position: fixed; inset: 0; z-index: 400;
+    display: none; align-items: center; justify-content: center;
+  }
+  .review-modal.open { display: flex; }
+  .review-modal-backdrop {
+    position: absolute; inset: 0; background: rgba(15,23,42,.72);
+  }
+  .review-modal-card {
+    position: relative; z-index: 1;
+    width: min(440px, calc(100vw - 32px));
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 22px; box-shadow: 0 16px 48px rgba(0,0,0,.45);
+  }
+  .review-modal-card h3 { font-size: 16px; margin: 0 0 6px; }
+  .review-modal-ticket { font-size: 13px; color: var(--text); margin: 0 0 8px; font-weight: 500; }
+  .review-modal-ai { font-size: 12px; color: var(--muted); margin: 0 0 14px; }
+  .review-modal-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .review-choice {
+    font-size: 15px; font-weight: 700; padding: 16px 12px; border-radius: 10px;
+    cursor: pointer; border: 1px solid var(--border); background: var(--surface2); color: var(--muted);
+  }
+  .review-choice:hover { border-color: var(--accent); color: var(--text); }
+  .review-choice[data-choice="Pass"].on {
+    border-color: rgba(34,197,94,.7); background: rgba(34,197,94,.16); color: var(--pass);
+  }
+  .review-choice[data-choice="Fail"].on {
+    border-color: rgba(239,68,68,.7); background: rgba(239,68,68,.16); color: var(--fail);
+  }
+  .review-modal-card label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
+  .review-modal-card textarea {
+    width: 100%; resize: vertical; min-height: 56px; margin-bottom: 14px;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font: inherit;
+  }
+  .review-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .review-modal-actions button {
+    font-size: 13px; padding: 7px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface2); color: var(--text);
+  }
+  .review-modal-actions #review-modal-confirm {
+    background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  .review-modal-actions #review-modal-confirm.fail {
+    background: var(--fail); border-color: var(--fail);
   }
 
   .messages-section { margin-top: 8px; }
@@ -784,6 +834,14 @@
     <div class="panel-header">
       <h3 id="panel-title">Select a day</h3>
       <span class="meta" id="panel-meta"></span>
+      <div class="assignee-ms" id="group-ms" style="display:none">
+        <button class="assignee-ms-btn" id="group-ms-btn" title="Filter by review coverage group">All groups</button>
+        <div class="assignee-ms-dropdown" id="group-ms-dropdown">
+          <button class="assignee-ms-clear" id="group-ms-clear">All groups</button>
+          <hr class="assignee-ms-divider">
+          <div id="group-ms-list"></div>
+        </div>
+      </div>
       <div class="assignee-ms" id="assignee-ms">
         <button class="assignee-ms-btn" id="assignee-ms-btn" title="Filter by assignee">All assignees</button>
         <div class="assignee-ms-dropdown" id="assignee-ms-dropdown">
@@ -853,6 +911,25 @@
 
 </div><!-- /app-main -->
 
+<div id="review-modal" class="review-modal" hidden>
+  <div class="review-modal-backdrop" id="review-modal-backdrop"></div>
+  <div class="review-modal-card" role="dialog" aria-modal="true" aria-labelledby="review-modal-title">
+    <h3 id="review-modal-title">Set overall result</h3>
+    <p class="review-modal-ticket" id="review-modal-ticket"></p>
+    <p class="review-modal-ai" id="review-modal-ai"></p>
+    <div class="review-modal-choices">
+      <button type="button" class="review-choice" data-choice="Pass">Pass</button>
+      <button type="button" class="review-choice" data-choice="Fail">Fail</button>
+    </div>
+    <label for="review-modal-note">Note (optional)</label>
+    <textarea id="review-modal-note" placeholder="Why this overall?"></textarea>
+    <div class="review-modal-actions">
+      <button type="button" id="review-modal-cancel">Cancel</button>
+      <button type="button" id="review-modal-confirm">Confirm Pass</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/shell.js"></script>
 <script>
 // ── state ────────────────────────────────────────────────────────────────────
@@ -864,6 +941,9 @@ let selDate      = null;
 let allTickets   = [];  // full list for the selected day; filter works client-side
 let statusFilter = "";  // "" = all, "Pass" / "Fail" / "Needs Review" / "pending" / "unreviewed"
 let lastRun      = null; // latest qc_runs row for the selected day (cost)
+let coverages    = [];   // review coverage groups from Admin
+const selectedGroups = new Set(); // coverage id strings, plus "ungrouped"
+let groupDefaultApplied = false;
 
 // ── calendar rendering ───────────────────────────────────────────────────────
 const MONTHS = ["January","February","March","April","May","June",
@@ -958,6 +1038,7 @@ async function selectDay(dateStr) {
   qcBtn.style.display      = "none"; qcBtn.disabled      = false; qcBtn.textContent      = "▶ Run QC";
   dlBtn.style.display      = "none"; dlBtn.disabled      = false;
   document.getElementById("assignee-ms").style.display = "none";
+  document.getElementById("group-ms").style.display = "none";
   selectedAssignees.clear();
   _updateAssigneeBtn();
   statusFilter = "";
@@ -1145,50 +1226,101 @@ function reviewBarHtml(t) {
   if (rev) {
     const when = rev.reviewed_at ? new Date(rev.reviewed_at).toLocaleString() : "";
     const kept = rev.kept_ai ? " · kept AI grade" : "";
-    who = `Signed off by ${rev.reviewer_name || rev.reviewer_email} · ${when}${kept}`;
+    who = `Signed off ${rev.decision} by ${rev.reviewer_name || rev.reviewer_email} · ${when}${kept}`;
   } else if (!ai) {
     who = "Run QC before accepting this ticket.";
   } else if (!t.can_review) {
     who = "Sign-off is limited to the coverage reviewer and admins.";
   } else {
-    who = `AI graded this ${ai}. Accept keeps that grade, or override with Pass / Fail.`;
+    who = `AI overall is ${ai}. Accept keeps it, or set Pass / Fail.`;
   }
 
-  const canAct = t.can_review && ai;
-  const canAccept = ai === "Pass" || ai === "Fail";
-  const acceptTitle = canAccept
-    ? "Keep the AI overall and record who signed off"
-    : `AI graded this ${ai || "pending"} — pick Pass or Fail`;
-  const btns = canAct ? `
-    <button type="button" class="accept" data-review="accept" ${canAccept ? "" : "disabled"}
-            title="${esc(acceptTitle)}">Accept QC</button>
-    <button type="button" class="pass" data-review="Pass">Pass</button>
-    <button type="button" class="fail" data-review="Fail">Fail</button>
-  ` : "";
+  const canAct = t.can_review && (ai || rev);
+  let btns = "";
+  if (canAct && !rev) {
+    const canAccept = ai === "Pass" || ai === "Fail";
+    const acceptTitle = canAccept
+      ? "Keep the AI overall and record who signed off"
+      : `AI graded this ${ai || "pending"} — pick Pass or Fail`;
+    btns = `
+      <button type="button" class="accept" data-review="accept" ${canAccept ? "" : "disabled"}
+              title="${esc(acceptTitle)}">Accept QC</button>
+      <button type="button" class="pass" data-open-modal="Pass">Pass</button>
+      <button type="button" class="fail" data-open-modal="Fail">Fail</button>`;
+  } else if (canAct && rev) {
+    btns = `
+      <button type="button" class="change" data-open-modal="${esc(rev.decision)}">Change overall</button>
+      <button type="button" class="revert" data-review="revert">Revert</button>`;
+  }
   return `<div class="review-bar">${btns}<span class="review-who">${esc(who)}</span></div>`;
 }
 
-async function submitReview(ticketId, decision, btn) {
-  btn.disabled = true;
+async function submitReview(ticketId, decision, note, btn) {
+  if (btn) btn.disabled = true;
   try {
     const d = await QC.api(`/api/ticket/${encodeURIComponent(ticketId)}/review`, {
       method: "POST",
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({ decision, note: note || "" }),
     });
     const t = allTickets.find(x => x.id === ticketId);
     if (t) {
-      t.review = d.review;
-      t.overall_result = d.review.decision;
+      t.review = d.review || null;
+      t.overall_result = d.review ? d.review.decision : t.ai_result;
     }
-    populateStatusPills(allTickets);
+    populateStatusPills();
     applyFilters();
     loadStats(selDate);
     const card = document.querySelector(`.ticket-card[data-id="${CSS.escape(ticketId)}"]`);
-    if (card) card.classList.add("expanded");
+    if (card) {
+      card.classList.add("expanded");
+      const msg = document.getElementById(`msgs-${ticketId}`);
+      if (msg && msg.querySelector(".loading")) {
+        try {
+          const r = await fetch(`/api/ticket/${ticketId}`);
+          const data = await r.json();
+          renderMessages(msg, data.messages);
+        } catch {}
+      }
+    }
   } catch (e) {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
     alert(e.message);
+    throw e;
   }
+}
+
+let reviewModalTicket = null;
+let reviewModalChoice = "Pass";
+
+function openReviewModal(ticket, preset) {
+  reviewModalTicket = ticket;
+  reviewModalChoice = preset === "Fail" ? "Fail" : "Pass";
+  const modal = document.getElementById("review-modal");
+  document.getElementById("review-modal-title").textContent = ticket.review
+    ? "Change overall result" : "Set overall result";
+  document.getElementById("review-modal-ticket").textContent =
+    `#${ticket.number} ${ticket.title || ""}`.trim();
+  const ai = ticket.ai_result || "not scored";
+  document.getElementById("review-modal-ai").textContent = ticket.review
+    ? `Currently signed off as ${ticket.review.decision}. AI overall is ${ai}.`
+    : `This sets the ticket's overall QC result. AI overall is ${ai}.`;
+  document.getElementById("review-modal-note").value = "";
+  modal.querySelectorAll(".review-choice").forEach(btn => {
+    btn.classList.toggle("on", btn.dataset.choice === reviewModalChoice);
+  });
+  const confirm = document.getElementById("review-modal-confirm");
+  confirm.textContent = `Confirm ${reviewModalChoice}`;
+  confirm.classList.toggle("fail", reviewModalChoice === "Fail");
+  confirm.disabled = false;
+  modal.hidden = false;
+  modal.classList.add("open");
+}
+
+function closeReviewModal() {
+  const modal = document.getElementById("review-modal");
+  modal.classList.remove("open");
+  modal.hidden = true;
+  reviewModalTicket = null;
 }
 
 function renderTickets(tickets) {
@@ -1196,7 +1328,7 @@ function renderTickets(tickets) {
   if (!tickets.length) {
     list.innerHTML = `<div class="empty-state">
       <div class="icon">🎉</div>
-      <p>No tickets for this day.</p>
+      <p>${allTickets.length ? "No tickets match these filters." : "No tickets for this day."}</p>
     </div>`;
     return;
   }
@@ -1255,7 +1387,13 @@ function renderTickets(tickets) {
       bar.querySelectorAll("[data-review]").forEach(btn => {
         btn.addEventListener("click", e => {
           e.stopPropagation();
-          submitReview(t.id, btn.dataset.review, btn);
+          submitReview(t.id, btn.dataset.review, "", btn).catch(() => {});
+        });
+      });
+      bar.querySelectorAll("[data-open-modal]").forEach(btn => {
+        btn.addEventListener("click", e => {
+          e.stopPropagation();
+          openReviewModal(t, btn.dataset.openModal);
         });
       });
     }
@@ -1333,6 +1471,101 @@ function _updateAssigneeBtn() {
   }
 }
 
+function applyDefaultGroupFilter() {
+  if (groupDefaultApplied) return;
+  groupDefaultApplied = true;
+  const me = window.QC && QC.me;
+  if (!me || me.role === "admin") return;
+  const email = (me.email || "").toLowerCase();
+  coverages
+    .filter(c => (c.reviewer_email || "").toLowerCase() === email)
+    .forEach(c => selectedGroups.add(String(c.id)));
+}
+
+function groupName(id) {
+  if (id === "ungrouped") return "Ungrouped";
+  const c = coverages.find(x => String(x.id) === String(id));
+  return c ? c.name : id;
+}
+
+function _updateGroupBtn() {
+  const btn = document.getElementById("group-ms-btn");
+  if (selectedGroups.size === 0) {
+    btn.textContent = "All groups";
+  } else if (selectedGroups.size === 1) {
+    btn.textContent = groupName([...selectedGroups][0]);
+  } else {
+    btn.textContent = `${selectedGroups.size} groups`;
+  }
+}
+
+function assigneeInCoverage(name, coverage) {
+  return (coverage.assignees || []).includes(name);
+}
+
+function ticketInSelectedGroups(t) {
+  if (selectedGroups.size === 0) return true;
+  const name = t.assignee_name || "Unassigned";
+  const inAny = coverages.some(c => assigneeInCoverage(name, c));
+  if (selectedGroups.has("ungrouped") && !inAny) return true;
+  return coverages.some(c =>
+    selectedGroups.has(String(c.id)) && assigneeInCoverage(name, c));
+}
+
+function scopedTickets() {
+  let filtered = allTickets;
+  if (selectedGroups.size > 0) {
+    filtered = filtered.filter(ticketInSelectedGroups);
+  }
+  if (selectedAssignees.size > 0) {
+    filtered = filtered.filter(t => selectedAssignees.has(t.assignee_name || "Unassigned"));
+  }
+  return filtered;
+}
+
+function populateGroupFilter(tickets) {
+  const ms = document.getElementById("group-ms");
+  const list = document.getElementById("group-ms-list");
+  if (!coverages.length) {
+    ms.style.display = "none";
+    return;
+  }
+  const names = new Set(tickets.map(t => t.assignee_name || "Unassigned"));
+  const hasUngrouped = [...names].some(n =>
+    !coverages.some(c => assigneeInCoverage(n, c)));
+
+  const items = coverages.map(c => {
+    const id = String(c.id);
+    const n = (c.assignees || []).filter(a => names.has(a)).length;
+    const mine = QC.me && (c.reviewer_email || "").toLowerCase() === (QC.me.email || "").toLowerCase();
+    const label = mine ? `${c.name} (yours)` : c.name;
+    return `<label class="assignee-ms-item">
+      <input type="checkbox" value="${esc(id)}" ${selectedGroups.has(id) ? "checked" : ""}>
+      ${esc(label)} · ${n}
+    </label>`;
+  });
+  if (hasUngrouped) {
+    items.push(`<label class="assignee-ms-item">
+      <input type="checkbox" value="ungrouped" ${selectedGroups.has("ungrouped") ? "checked" : ""}>
+      Ungrouped
+    </label>`);
+  } else {
+    selectedGroups.delete("ungrouped");
+  }
+  list.innerHTML = items.join("");
+  list.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedGroups.add(cb.value);
+      else selectedGroups.delete(cb.value);
+      _updateGroupBtn();
+      populateStatusPills();
+      applyFilters();
+    });
+  });
+  _updateGroupBtn();
+  ms.style.display = tickets.length ? "block" : "none";
+}
+
 // ── filters (assignee + status) ──────────────────────────────────────────────
 function populateAssigneeFilter(tickets) {
   const ms    = document.getElementById("assignee-ms");
@@ -1358,15 +1591,18 @@ function populateAssigneeFilter(tickets) {
       if (cb.checked) selectedAssignees.add(cb.value);
       else selectedAssignees.delete(cb.value);
       _updateAssigneeBtn();
+      populateStatusPills();
       applyFilters();
     });
   });
 
   _updateAssigneeBtn();
   ms.style.display = tickets.length ? "block" : "none";
+  populateGroupFilter(tickets);
 }
 
-function populateStatusPills(tickets) {
+function populateStatusPills() {
+  const tickets = scopedTickets();
   const counts = { "Pass": 0, "Fail": 0, "Needs Review": 0, "pending": 0, "unreviewed": 0 };
   for (const t of tickets) {
     const s = t.overall_result || "pending";
@@ -1383,7 +1619,7 @@ function populateStatusPills(tickets) {
       pill.textContent = `${s === "pending" ? "Pending" : s} (${counts[s] || 0})`;
     }
   });
-  document.getElementById("filter-bar").style.display = tickets.length ? "flex" : "none";
+  document.getElementById("filter-bar").style.display = allTickets.length ? "flex" : "none";
   setActivePill(statusFilter);
 }
 
@@ -1410,10 +1646,7 @@ function formatCost(run) {
 }
 
 function applyFilters() {
-  let filtered = allTickets;
-  if (selectedAssignees.size > 0) {
-    filtered = filtered.filter(t => selectedAssignees.has(t.assignee_name || "Unassigned"));
-  }
+  let filtered = scopedTickets();
   if (statusFilter === "pending") {
     filtered = filtered.filter(t => !t.overall_result);
   } else if (statusFilter === "unreviewed") {
@@ -1422,7 +1655,7 @@ function applyFilters() {
     filtered = filtered.filter(t => t.overall_result === statusFilter);
   }
   renderTickets(filtered);
-  const isFiltered = selectedAssignees.size > 0 || statusFilter;
+  const isFiltered = selectedAssignees.size > 0 || selectedGroups.size > 0 || statusFilter;
   const tickets = isFiltered
     ? `${filtered.length} of ${allTickets.length} tickets`
     : `${allTickets.length} tickets`;
@@ -1712,6 +1945,7 @@ function renderAnalytics(assignees) {
     selectedAssignees.clear();
     drop.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = false);
     _updateAssigneeBtn();
+    populateStatusPills();
     applyFilters();
   });
 
@@ -1726,6 +1960,77 @@ function renderAnalytics(assignees) {
     if (e.key === "Escape") {
       drop.classList.remove("open");
       btn.classList.remove("open");
+    }
+  });
+})();
+
+(function () {
+  const btn  = document.getElementById("group-ms-btn");
+  const drop = document.getElementById("group-ms-dropdown");
+  const clr  = document.getElementById("group-ms-clear");
+  if (!btn) return;
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+
+  clr.addEventListener("click", () => {
+    selectedGroups.clear();
+    drop.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = false);
+    _updateGroupBtn();
+    populateStatusPills();
+    applyFilters();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!document.getElementById("group-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
+
+(function wireReviewModal() {
+  const modal = document.getElementById("review-modal");
+  if (!modal) return;
+  modal.querySelectorAll(".review-choice").forEach(btn => {
+    btn.addEventListener("click", () => {
+      reviewModalChoice = btn.dataset.choice;
+      modal.querySelectorAll(".review-choice").forEach(b =>
+        b.classList.toggle("on", b.dataset.choice === reviewModalChoice));
+      const confirm = document.getElementById("review-modal-confirm");
+      confirm.textContent = `Confirm ${reviewModalChoice}`;
+      confirm.classList.toggle("fail", reviewModalChoice === "Fail");
+    });
+  });
+  document.getElementById("review-modal-cancel").addEventListener("click", closeReviewModal);
+  document.getElementById("review-modal-backdrop").addEventListener("click", closeReviewModal);
+  document.getElementById("review-modal-confirm").addEventListener("click", async () => {
+    if (!reviewModalTicket) return;
+    const ticket = reviewModalTicket;
+    const note = document.getElementById("review-modal-note").value;
+    const confirm = document.getElementById("review-modal-confirm");
+    confirm.disabled = true;
+    try {
+      await submitReview(ticket.id, reviewModalChoice, note, confirm);
+      closeReviewModal();
+    } catch {
+      confirm.disabled = false;
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && modal.classList.contains("open")) {
+      e.stopPropagation();
+      closeReviewModal();
     }
   });
 })();
@@ -1754,6 +2059,11 @@ document.getElementById("next-month").addEventListener("click", () => {
 // ── init ──────────────────────────────────────────────────────────────────────
 (async () => {
   await (window.QC && QC.ready);
+  try {
+    const d = await QC.api("/api/review/coverages");
+    coverages = d.coverages || [];
+    applyDefaultGroupFilter();
+  } catch {}
   await renderCalendar();
   const params = new URLSearchParams(location.search);
   if (params.get("view") === "analytics") {

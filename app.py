@@ -489,6 +489,8 @@ async def review_ticket(ticket_id: str, request: Request,
         user["email"], "ticket.review",
         f"{ticket_id} {record['decision']}" + (" (kept AI)" if record["kept_ai"] else ""),
     )
+    if record["decision"] == "Revert":
+        return {"ok": True, "review": None}
     return {"ok": True, "review": {
         "decision": record["decision"],
         "kept_ai": bool(record["kept_ai"]),
