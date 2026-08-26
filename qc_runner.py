@@ -58,7 +58,8 @@ def _vertex_credentials():
     import gcp
     oauth_creds = gcp.oauth_credentials()
     if oauth_creds:
-        return oauth_creds, "oauth:" + (vault.get_setting("google_cloud_account") or "?")
+        return _with_quota_project(oauth_creds), \
+            "oauth:" + (vault.get_setting("google_cloud_account") or "?")
 
     import google.auth
     try:
@@ -66,10 +67,82 @@ def _vertex_credentials():
     except Exception as e:
         raise VertexNotConfigured(
             "No Google Cloud credentials. Connect a Google account in Admin → AI, "
-            "set GOOGLE_SERVICE_ACCOUNT_JSON, or run "
+            "paste a service account, or run "
             f"`gcloud auth application-default login` locally. ({e})"
         )
-    return creds, "adc"
+    return _with_quota_project(creds), "adc"
+
+
+def quota_project() -> str:
+    """Project billed for Vertex calls. Defaults to the model project."""
+    return (vault.get_setting("vertex_quota_project").strip()
+            or vault.get_setting("vertex_project").strip())
+
+
+def _with_quota_project(creds):
+    """Attach a billing project to *user* credentials.
+
+    A user credential carries no project of its own, so Vertex has nothing to
+    bill and rejects the call. Setting a quota project makes the client send
+    X-Goog-User-Project. Service accounts belong to a project already, and
+    attaching one there just adds a serviceusage permission they may not have.
+    """
+    from google.oauth2 import service_account
+    if isinstance(creds, service_account.Credentials):
+        return creds
+
+    project = quota_project()
+    if project and hasattr(creds, "with_quota_project"):
+        return creds.with_quota_project(project)
+    return creds
+
+
+def explain_vertex_error(exc: Exception) -> str:
+    """Turn Google's near-identical 403s into the specific fix each one needs.
+
+    They read alike and have entirely different causes: the API not enabled on
+    the billed project, a user credential with no usable quota project, or an
+    account missing the Vertex role.
+    """
+    msg = str(exc)
+    low = msg.lower()
+    proj  = vault.get_setting("vertex_project").strip() or "<project>"
+    quota = quota_project() or proj
+
+    import re
+    m = re.search(r"project (\d{6,})", msg)
+    named = m.group(1) if m else quota
+
+    if "has not been used in project" in low or "it is disabled" in low:
+        return (
+            f"The Vertex AI API is not enabled on project {named} — the project being "
+            f"billed, which is not always the one hosting the model. Enable it:\n"
+            f"    gcloud services enable aiplatform.googleapis.com --project {named}\n"
+            "Then wait a minute and retry. If the quota project differs from the model "
+            "project, enable it on both."
+        )
+    if "quota project" in low or "serviceusage.services.use" in low:
+        return (
+            f"The signed-in account cannot bill project {quota}. Grant it "
+            "roles/serviceusage.serviceUsageConsumer on that project, or set a "
+            "different Quota project in Admin → AI."
+        )
+    if "aiplatform.endpoints.predict" in low:
+        return (
+            f"The API is enabled but this account lacks permission to generate. "
+            f"Grant roles/aiplatform.user on project {proj}."
+        )
+    if "aiplatform.locations.list" in low:
+        return (
+            "This account cannot list Vertex regions. That only affects the region "
+            "dropdown — generation still works with a region selected manually."
+        )
+    if "404" in low and "publisher" in low:
+        return (
+            f"That model is not available in the selected region. Pick another region "
+            "or model in Admin → AI."
+        )
+    return msg[:400]
 
 
 def get_vertex_client():
@@ -84,7 +157,7 @@ def get_vertex_client():
         )
 
     creds, cred_id = _vertex_credentials()
-    fingerprint = f"{project}|{location}|{cred_id}"
+    fingerprint = f"{project}|{location}|{quota_project()}|{cred_id}"
 
     with _client_lock:
         if _client_cache and _client_cache[0] == fingerprint:

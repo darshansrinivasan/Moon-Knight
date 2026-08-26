@@ -209,6 +209,7 @@ _ENV_ONLY  = {c["key"] for c in CREDENTIAL_SPECS if c.get("env_only")}
 # it is auto-detected from the hosting platform anyway.
 SETTING_SPECS = [
     {"key": "vertex_project",     "legacy_env": "VERTEX_PROJECT",   "default": ""},
+    {"key": "vertex_quota_project", "legacy_env": "VERTEX_QUOTA_PROJECT", "default": ""},
     {"key": "vertex_location",    "legacy_env": "VERTEX_LOCATION",  "default": "us-central1"},
     {"key": "vertex_models",      "legacy_env": "VERTEX_MODELS",    "default": ""},
     {"key": "slack_enabled",      "legacy_env": "SLACK_ENABLED",    "default": "0", "bool": True},
@@ -557,6 +558,9 @@ def readiness() -> dict:
 
 def log_startup_config() -> None:
     """One clear block in the deploy logs saying what is and isn't configured."""
+    # Force the key to load now: an invalid QC_MASTER_KEY should fail here, not
+    # silently at the first credential write.
+    _f()
     r = readiness()
     logger.info("── Pylon QC configuration ─────────────────────────────")
     logger.info("  base URL     : %s", r["base_url"] or "(from request host)")

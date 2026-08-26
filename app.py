@@ -411,7 +411,7 @@ async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
     except qc_runner.VertexNotConfigured as e:
         raise HTTPException(503, str(e))
     except Exception as e:
-        raise HTTPException(502, f"QC run failed: {e}")
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
 
     vault.audit(user["email"], "qc.run", f"{date_str} scored={result.get('scored')}")
     return {"date": date_str, **result}
@@ -666,6 +666,8 @@ async def test_credential(key: str, user: dict = Depends(auth.require_admin)):
         return {"ok": False, "message": "No test available for this credential"}
 
     except Exception as e:
+        if key == "vertex_service_account_json":
+            return {"ok": False, "message": qc_runner.explain_vertex_error(e)}
         return {"ok": False, "message": str(e)[:300]}
 
 
@@ -725,7 +727,7 @@ async def gcp_models(project: str | None = None, location: str | None = None,
     except gcp.NotConnected as e:
         return {"ok": False, "message": str(e), "models": []}
     except Exception as e:
-        return {"ok": False, "message": str(e)[:300], "models": []}
+        return {"ok": False, "message": qc_runner.explain_vertex_error(e), "models": []}
 
 
 @app.post("/api/admin/slack/test")

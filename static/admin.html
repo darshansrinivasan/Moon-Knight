@@ -229,17 +229,32 @@
         </div>
 
         <div class="field">
+          <label for="vertex_quota_project">Quota project</label>
+          <div class="hint">
+            The project billed for Vertex calls. Leave blank to bill the project above.
+            Only needed when billing sits elsewhere — the Vertex AI API must be enabled
+            on whichever project this resolves to.
+          </div>
+          <input type="text" id="vertex_quota_project" placeholder="same as project above">
+        </div>
+
+        <div class="field">
           <label>Models</label>
           <div class="hint">
-            Available Gemini models in this project and region. Click to include or exclude —
-            selected models are tried in the order shown when one is rate-limited.
+            Gemini models available in this project and region. Click to include or exclude —
+            the number shows the order they are tried in when one is rate-limited.
           </div>
           <div id="model-chips" class="chip-row"><span class="muted" style="font-size:12px">Choose a project to load models…</span></div>
-          <input type="text" id="vertex_models" placeholder="gemini-2.5-flash,gemini-2.0-flash" style="margin-top:8px">
+          <!-- Holds the chosen order. Revealed only if the model list can't be fetched,
+               so a permissions problem never leaves you unable to set a model. -->
+          <div id="models-manual" style="display:none;margin-top:8px">
+            <div class="hint">Models could not be listed, so enter them by hand, comma-separated.</div>
+            <input type="text" id="vertex_models" placeholder="gemini-2.5-flash,gemini-2.0-flash">
+          </div>
         </div>
 
         <div class="actions">
-          <button data-save="vertex_project,vertex_location,vertex_models">Save AI settings</button>
+          <button data-save="vertex_project,vertex_quota_project,vertex_location,vertex_models">Save AI settings</button>
           <button class="ghost" id="test-vertex">Test Vertex connection</button>
         </div>
         <div class="msg" id="msg-vertex"></div>
@@ -485,7 +500,7 @@ function renderCreds(creds) {
 const SETTING_ENV = { dashboard_base_url: "QC_BASE_URL" };
 
 function fillSettings(s, sources = {}) {
-  for (const k of ["vertex_project","vertex_location","vertex_models",
+  for (const k of ["vertex_project","vertex_quota_project","vertex_location","vertex_models",
                    "slack_channel","dashboard_base_url","schedule_time",
                    "schedule_tz","schedule_target"]) {
     if ($(k)) $(k).value = s[k] || "";
@@ -656,8 +671,15 @@ async function loadModels({ quiet = false } = {}) {
   try {
     const d = await api(`/api/admin/gcp/models?project=${encodeURIComponent(project)}`
                         + `&location=${encodeURIComponent(location)}`);
-    if (!d.ok) { GCP.models = []; renderModelChips(); show(msg, d.message, "err"); return; }
+    if (!d.ok) {
+      GCP.models = [];
+      renderModelChips();
+      $("models-manual").style.display = DATA.can_edit ? "block" : "none";
+      show(msg, d.message, "err");
+      return;
+    }
     GCP.models = d.models;
+    $("models-manual").style.display = "none";
     renderModelChips();
     if (!quiet) show(msg, `${d.models.length} model${d.models.length === 1 ? "" : "s"} available.`, "ok");
   } catch (e) {
