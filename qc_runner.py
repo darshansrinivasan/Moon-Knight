@@ -37,8 +37,12 @@ _client_lock = threading.Lock()
 _client_cache: tuple[str, object] | None = None   # (fingerprint, client)
 
 
-def _vertex_credentials():
-    """Resolve a Vertex credential: service account → connected account → ADC."""
+def _vertex_credentials(quota_override: str | None = None):
+    """Resolve a Vertex credential: service account → connected account → ADC.
+
+    quota_override lets configuration-time calls bill the project being browsed,
+    which is not yet saved in settings.
+    """
     try:
         info = vault.service_account_info()
     except ValueError as e:
@@ -58,7 +62,7 @@ def _vertex_credentials():
     import gcp
     oauth_creds = gcp.oauth_credentials()
     if oauth_creds:
-        return _with_quota_project(oauth_creds), \
+        return _with_quota_project(oauth_creds, quota_override), \
             "oauth:" + (vault.get_setting("google_cloud_account") or "?")
 
     import google.auth
@@ -70,7 +74,7 @@ def _vertex_credentials():
             "paste a service account, or run "
             f"`gcloud auth application-default login` locally. ({e})"
         )
-    return _with_quota_project(creds), "adc"
+    return _with_quota_project(creds, quota_override), "adc"
 
 
 def quota_project() -> str:
@@ -79,7 +83,7 @@ def quota_project() -> str:
             or vault.get_setting("vertex_project").strip())
 
 
-def _with_quota_project(creds):
+def _with_quota_project(creds, override: str | None = None):
     """Attach a billing project to *user* credentials.
 
     A user credential carries no project of its own, so Vertex has nothing to
@@ -91,7 +95,7 @@ def _with_quota_project(creds):
     if isinstance(creds, service_account.Credentials):
         return creds
 
-    project = quota_project()
+    project = (override or "").strip() or quota_project()
     if project and hasattr(creds, "with_quota_project"):
         return creds.with_quota_project(project)
     return creds

@@ -150,29 +150,46 @@ def connection_status() -> dict:
     return {"connected": False, "kind": None, "account": "", "can_browse": False}
 
 
-def browse_credentials():
-    """The credential used to list projects/models: SA → connected account → ADC."""
+def browse_credentials(quota_override: str | None = None):
+    """The credential used to list projects/models: SA → connected account → ADC.
+
+    While configuring, nothing is saved yet, so the project being browsed is
+    passed in as the one to bill. Without it the call names no project and
+    Google answers 403 — which looks identical to the API being disabled.
+    """
     import qc_runner
     try:
-        creds, _ = qc_runner._vertex_credentials()
+        creds, _ = qc_runner._vertex_credentials(quota_override)
         return creds
     except qc_runner.VertexNotConfigured as e:
         raise NotConnected(str(e))
 
 
-def _access_token(creds) -> str:
+def _auth_headers(creds) -> dict:
+    """Let the credential build its own headers.
+
+    Taking `.token` and hand-writing `Authorization` skips Credentials.apply(),
+    which is what injects `x-goog-user-project`. Without that header a user
+    credential names no project to bill and Google answers 403 — a failure that
+    reads exactly like the API being disabled. Every request here must go
+    through apply(), so there is deliberately no way to get a bare token.
+    """
     from google.auth.transport.requests import Request
     if not creds.valid:
         creds.refresh(Request())
-    return creds.token
+    headers: dict = {}
+    creds.apply(headers)
+    return headers
 
 
 # ── discovery ─────────────────────────────────────────────────────────────────
 
 def list_projects() -> list[dict]:
     """Active Google Cloud projects the current credential can see."""
+    # Bill whatever the admin has configured; project listing itself is not
+    # project-scoped, so there is nothing better to fall back to.
     creds = browse_credentials()
-    token = _access_token(creds)
+    headers = _auth_headers(creds)
 
     projects: list[dict] = []
     page_token = None
@@ -181,13 +198,14 @@ def list_projects() -> list[dict]:
             params = {"filter": "lifecycleState:ACTIVE", "pageSize": 200}
             if page_token:
                 params["pageToken"] = page_token
-            r = client.get(CRM_URL, headers={"Authorization": f"Bearer {token}"},
-                           params=params)
+            r = client.get(CRM_URL, headers=headers, params=params)
             if r.status_code == 403:
-                raise NotConnected(
-                    "This account cannot list projects. Enable the Cloud Resource "
-                    "Manager API on the project, or type the project ID manually."
-                )
+                # Two different causes read alike here, so say which is which
+                # instead of advising an enablement that may be irrelevant.
+                import qc_runner
+                raise NotConnected(qc_runner.explain_vertex_error(
+                    RuntimeError(r.text)) + "\n\nYou can also skip the dropdown and "
+                    "type the project ID directly.")
             r.raise_for_status()
             body = r.json()
             for p in body.get("projects", []):
@@ -214,8 +232,11 @@ def list_models(project: str, location: str) -> list[dict]:
         raise NotConnected("Choose a Google Cloud project first")
 
     from google import genai
+    import qc_runner
 
-    creds = browse_credentials()
+    # Bill the project being browsed unless an explicit quota project is set.
+    quota = vault.get_setting("vertex_quota_project").strip() or project
+    creds = browse_credentials(quota_override=quota)
     client = genai.Client(vertexai=True, project=project,
                           location=location or "us-central1", credentials=creds)
 
