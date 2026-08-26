@@ -324,6 +324,7 @@
   .status-pill.active-fail    { border-color: rgba(239,68,68,.5);  background: rgba(239,68,68,.15);  color: var(--fail); }
   .status-pill.active-review  { border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.15); color: var(--review); }
   .status-pill.active-pending { border-color: var(--border);       background: var(--pending);       color: var(--muted); }
+  .status-pill.active-unreviewed { border-color: var(--accent); background: rgba(99,102,241,.12); color: var(--accent2); }
 
   .ticket-list {
     flex: 1;
@@ -491,6 +492,27 @@
     margin-bottom: 10px;
   }
   .ai-notes b { color: var(--text); }
+
+  .review-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    margin: 0 0 12px; padding: 10px 12px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); font-size: 12px;
+  }
+  .review-bar .review-who { color: var(--muted); flex: 1; min-width: 180px; }
+  .review-bar button {
+    font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  .review-bar button:hover { border-color: var(--accent); }
+  .review-bar button.pass { border-color: rgba(34,197,94,.45); color: var(--pass); }
+  .review-bar button.fail { border-color: rgba(239,68,68,.45); color: var(--fail); }
+  .review-bar button.accept { border-color: var(--accent); color: var(--accent2); }
+  .review-bar button:disabled { opacity: .4; cursor: default; }
+  .review-mark {
+    font-size: 10px; font-weight: 600; letter-spacing: .02em;
+    color: var(--muted); margin-left: 6px;
+  }
 
   .messages-section { margin-top: 8px; }
   .messages-section h4 {
@@ -781,6 +803,7 @@
       <button class="status-pill" data-status="Fail">Fail</button>
       <button class="status-pill" data-status="Needs Review">Needs Review</button>
       <button class="status-pill" data-status="pending">Pending</button>
+      <button class="status-pill" data-status="unreviewed">Unreviewed</button>
     </div>
     <div class="ticket-list" id="ticket-list">
       <div class="empty-state">
@@ -839,7 +862,8 @@ let curMonth = today.getMonth() + 1; // 1-based
 let calData  = {};   // { "2026-06-20": { ticket_count, rule_fails, ai_fails, needs_review, ai_done_count } }
 let selDate      = null;
 let allTickets   = [];  // full list for the selected day; filter works client-side
-let statusFilter = "";  // "" = all, "Pass" / "Fail" / "Needs Review" / "pending"
+let statusFilter = "";  // "" = all, "Pass" / "Fail" / "Needs Review" / "pending" / "unreviewed"
+let lastRun      = null; // latest qc_runs row for the selected day (cost)
 
 // ── calendar rendering ───────────────────────────────────────────────────────
 const MONTHS = ["January","February","March","April","May","June",
@@ -923,6 +947,7 @@ async function selectDay(dateStr) {
 
   document.getElementById("panel-title").textContent = fmtDisplay(dateStr);
   document.getElementById("panel-meta").textContent  = "";
+  lastRun = null;
 
   // Reset every button to a clean slate so a running QC on a previous date
   // never bleeds its disabled state into the newly selected date.
@@ -968,7 +993,7 @@ async function selectDay(dateStr) {
   }
 
   const day2 = day;
-  document.getElementById("panel-meta").textContent = `${day2.ticket_count} tickets`;
+  lastRun = day2.last_run || null;
   document.getElementById("refetch-btn").style.display = "flex";
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
@@ -992,7 +1017,7 @@ async function refetchDay() {
     await renderCalendar();
     const r2   = await fetch(`/api/day/${selDate}`);
     const day2 = await r2.json();
-    document.getElementById("panel-meta").textContent = `${day2.ticket_count} tickets`;
+    lastRun = day2.last_run || lastRun;
     document.getElementById("download-btn").style.display = "flex";
     document.getElementById("qc-btn").style.display = "flex";
     allTickets = day2.tickets;
@@ -1011,6 +1036,7 @@ async function refetchDay() {
 async function refreshDayPanel(dateStr) {
   const r    = await fetch(`/api/day/${dateStr}`);
   const day  = await r.json();
+  lastRun = day.last_run || lastRun;
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
   allTickets = day.tickets;
@@ -1044,9 +1070,11 @@ async function runQC() {
   let fetchErr = null;
   try {
     const r = await fetch(`/api/qc/${qcDate}`, { method: "POST" });
+    const body = await r.json().catch(() => ({}));
     if (!r.ok) {
-      const body = await r.json().catch(() => ({}));
       fetchErr = new Error(body.detail || r.statusText);
+    } else if (body.prompt_tokens != null || body.cost_usd != null) {
+      lastRun = body;
     }
   } catch(e) {
     fetchErr = e;
@@ -1110,6 +1138,59 @@ function overallClass(v) {
   return v.replace(/ /g,"");
 }
 
+function reviewBarHtml(t) {
+  const rev = t.review;
+  const ai = t.ai_result;
+  let who = "";
+  if (rev) {
+    const when = rev.reviewed_at ? new Date(rev.reviewed_at).toLocaleString() : "";
+    const kept = rev.kept_ai ? " · kept AI grade" : "";
+    who = `Signed off by ${rev.reviewer_name || rev.reviewer_email} · ${when}${kept}`;
+  } else if (!ai) {
+    who = "Run QC before accepting this ticket.";
+  } else if (!t.can_review) {
+    who = "Sign-off is limited to the coverage reviewer and admins.";
+  } else {
+    who = `AI graded this ${ai}. Accept keeps that grade, or override with Pass / Fail.`;
+  }
+
+  const canAct = t.can_review && ai;
+  const canAccept = ai === "Pass" || ai === "Fail";
+  const acceptTitle = canAccept
+    ? "Keep the AI overall and record who signed off"
+    : `AI graded this ${ai || "pending"} — pick Pass or Fail`;
+  const btns = canAct ? `
+    <button type="button" class="accept" data-review="accept" ${canAccept ? "" : "disabled"}
+            title="${esc(acceptTitle)}">Accept QC</button>
+    <button type="button" class="pass" data-review="Pass">Pass</button>
+    <button type="button" class="fail" data-review="Fail">Fail</button>
+  ` : "";
+  return `<div class="review-bar">${btns}<span class="review-who">${esc(who)}</span></div>`;
+}
+
+async function submitReview(ticketId, decision, btn) {
+  btn.disabled = true;
+  try {
+    const d = await QC.api(`/api/ticket/${encodeURIComponent(ticketId)}/review`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const t = allTickets.find(x => x.id === ticketId);
+    if (t) {
+      t.review = d.review;
+      t.overall_result = d.review.decision;
+    }
+    populateStatusPills(allTickets);
+    applyFilters();
+    loadStats(selDate);
+    const card = document.querySelector(`.ticket-card[data-id="${CSS.escape(ticketId)}"]`);
+    if (card) card.classList.add("expanded");
+  } catch (e) {
+    btn.disabled = false;
+    alert(e.message);
+  }
+}
+
 function renderTickets(tickets) {
   const list = document.getElementById("ticket-list");
   if (!tickets.length) {
@@ -1128,6 +1209,9 @@ function renderTickets(tickets) {
     const overall     = t.overall_result;
     const overallCls  = overallClass(overall);
     const overallText = overall || "Pending";
+    const signed      = t.review
+      ? `<span class="review-mark" title="Signed off by ${esc(t.review.reviewer_name || t.review.reviewer_email)}">signed off</span>`
+      : "";
 
     const checksHtml = ["r1","r2","r3","r4","r5","r7","r8"].map(k =>
       checkBadge(k, t[k])
@@ -1147,7 +1231,7 @@ function renderTickets(tickets) {
         <span class="ticket-title">
           <a href="${esc(safeLink)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(t.title) || "(no title)"}</a>
         </span>
-        <span class="overall-badge overall-${overallCls}">${esc(overallText)}</span>
+        <span class="overall-badge overall-${overallCls}">${esc(overallText)}</span>${signed}
       </div>
       <div class="card-meta">
         <span class="meta-tag state">${esc(stateText)}</span>
@@ -1157,6 +1241,7 @@ function renderTickets(tickets) {
       <div class="checks-row">${checksHtml}</div>
       <div class="card-detail" id="detail-${esc(t.id)}">
         ${t.ai_notes ? `<div class="ai-notes"><b>AI Notes:</b> ${esc(t.ai_notes)}</div>` : ""}
+        ${reviewBarHtml(t)}
         <div class="messages-section" id="msgs-${esc(t.id)}">
           <h4>Conversation</h4>
           <div class="loading"><div class="spinner"></div> Loading messages…</div>
@@ -1164,6 +1249,16 @@ function renderTickets(tickets) {
       </div>
     `;
     card.addEventListener("click", () => toggleCard(card, t.id));
+    const bar = card.querySelector(".review-bar");
+    if (bar) {
+      bar.addEventListener("click", e => e.stopPropagation());
+      bar.querySelectorAll("[data-review]").forEach(btn => {
+        btn.addEventListener("click", e => {
+          e.stopPropagation();
+          submitReview(t.id, btn.dataset.review, btn);
+        });
+      });
+    }
     list.appendChild(card);
   });
 }
@@ -1272,15 +1367,18 @@ function populateAssigneeFilter(tickets) {
 }
 
 function populateStatusPills(tickets) {
-  const counts = { "Pass": 0, "Fail": 0, "Needs Review": 0, "pending": 0 };
+  const counts = { "Pass": 0, "Fail": 0, "Needs Review": 0, "pending": 0, "unreviewed": 0 };
   for (const t of tickets) {
     const s = t.overall_result || "pending";
     if (s in counts) counts[s]++;
+    if (t.ai_result && !t.review) counts.unreviewed++;
   }
   document.querySelectorAll(".status-pill").forEach(pill => {
     const s = pill.dataset.status;
     if (s === "") {
       pill.textContent = `All (${tickets.length})`;
+    } else if (s === "unreviewed") {
+      pill.textContent = `Unreviewed (${counts.unreviewed || 0})`;
     } else {
       pill.textContent = `${s === "pending" ? "Pending" : s} (${counts[s] || 0})`;
     }
@@ -1295,10 +1393,20 @@ function setActivePill(status) {
     if (pill.dataset.status === status) {
       const key = status === "" ? "all"
         : status === "Needs Review" ? "review"
+        : status === "unreviewed" ? "unreviewed"
         : status.toLowerCase();
       pill.classList.add(`active-${key}`);
     }
   });
+}
+
+function formatCost(run) {
+  if (!run) return "";
+  const tokens = (Number(run.prompt_tokens) || 0) + (Number(run.output_tokens) || 0);
+  if (!tokens) return "usage not reported";
+  const usd = Number(run.cost_usd);
+  if (!Number.isFinite(usd)) return "usage not reported";
+  return `~$${usd.toFixed(4)}`;
 }
 
 function applyFilters() {
@@ -1308,15 +1416,18 @@ function applyFilters() {
   }
   if (statusFilter === "pending") {
     filtered = filtered.filter(t => !t.overall_result);
+  } else if (statusFilter === "unreviewed") {
+    filtered = filtered.filter(t => t.ai_result && !t.review);
   } else if (statusFilter) {
     filtered = filtered.filter(t => t.overall_result === statusFilter);
   }
   renderTickets(filtered);
-  const meta = document.getElementById("panel-meta");
   const isFiltered = selectedAssignees.size > 0 || statusFilter;
-  meta.textContent = isFiltered
+  const tickets = isFiltered
     ? `${filtered.length} of ${allTickets.length} tickets`
     : `${allTickets.length} tickets`;
+  const cost = formatCost(lastRun);
+  document.getElementById("panel-meta").textContent = cost ? `${tickets} · ${cost}` : tickets;
 }
 
 // ── stats ────────────────────────────────────────────────────────────────────

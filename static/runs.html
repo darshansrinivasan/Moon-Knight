@@ -215,10 +215,11 @@ function renderRuns(runs) {
       ? `<span class="muted">first run</span>`
       : `<span class="${stabClass(r.stability)}">${r.stability}%</span>` +
         (r.changed ? ` <span class="muted">(${r.changed} moved)</span>` : "");
-    const cost = r.cost_usd != null ? "$" + Number(r.cost_usd).toFixed(4) : "—";
     const toks = (r.prompt_tokens || r.output_tokens)
       ? `${((r.prompt_tokens||0)/1000).toFixed(1)}k / ${((r.output_tokens||0)/1000).toFixed(1)}k`
       : "—";
+    const cost = toks === "—" ? "usage not reported"
+      : r.cost_usd != null ? "$" + Number(r.cost_usd).toFixed(4) : "—";
     return `<tr class="run-row" data-id="${r.id}">
       <td class="num muted">#${r.id}</td>
       <td>${esc(r.date)}</td>

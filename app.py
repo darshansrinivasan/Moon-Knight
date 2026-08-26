@@ -23,6 +23,7 @@ import gcp
 import pylon
 import qc_runner
 import resync_overall
+import review
 import scheduler
 import scorer
 import slack
@@ -204,9 +205,11 @@ async def healthz():
 
 @app.get("/api/me")
 async def me(user: dict = Depends(auth.require_user)):
+    covered = review.assignees_for(user)
     return {
         "email": user["email"], "name": user["name"],
         "picture": user["picture"], "role": user["role"],
+        "can_review_any": review.is_admin(user) or bool(covered),
     }
 
 
@@ -422,13 +425,18 @@ async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
 
 @app.get("/api/day/{date_str}")
 async def get_day(date_str: str, user: dict = Depends(auth.require_user)):
-    log     = await asyncio.to_thread(db.get_fetch_log, date_str)
-    tickets = await asyncio.to_thread(db.get_day_tickets, date_str)
+    def load():
+        log = db.get_fetch_log(date_str)
+        tickets = review.annotate_tickets(db.get_day_tickets(date_str), user)
+        return log, tickets, db.latest_qc_run(date_str)
+
+    log, tickets, last_run = await asyncio.to_thread(load)
     return {
         "date": date_str,
         "fetched": log is not None,
         "ticket_count": len(tickets),
         "tickets": tickets,
+        "last_run": last_run,
     }
 
 
@@ -460,7 +468,77 @@ async def get_ticket(ticket_id: str, user: dict = Depends(auth.require_user)):
     ticket, messages = await asyncio.to_thread(query)
     if not ticket:
         raise HTTPException(404, "Ticket not found")
+    review.annotate_tickets([ticket], user)
     return {"ticket": ticket, "messages": messages}
+
+
+@app.post("/api/ticket/{ticket_id}/review")
+async def review_ticket(ticket_id: str, request: Request,
+                        user: dict = Depends(auth.require_user)):
+    """Sign off one ticket. Admins: any ticket. Coverage reviewers: their assignees only."""
+    body = await request.json()
+    decision = body.get("decision") or ""
+    note = body.get("note") or ""
+    try:
+        record = await asyncio.to_thread(review.accept_ticket, ticket_id, user, decision, note)
+    except review.ReviewDenied as e:
+        raise HTTPException(403, str(e))
+    except review.ReviewInvalid as e:
+        raise HTTPException(400, str(e))
+    vault.audit(
+        user["email"], "ticket.review",
+        f"{ticket_id} {record['decision']}" + (" (kept AI)" if record["kept_ai"] else ""),
+    )
+    return {"ok": True, "review": {
+        "decision": record["decision"],
+        "kept_ai": bool(record["kept_ai"]),
+        "reviewer_email": record["reviewer_email"],
+        "reviewer_name": record["reviewer_name"],
+        "reviewed_at": record["reviewed_at"],
+        "note": record["note"],
+    }}
+
+
+@app.get("/api/review/coverages")
+async def get_coverages(user: dict = Depends(auth.require_user)):
+    def load():
+        return {
+            "coverages": review.list_coverages(),
+            "assignees": review.list_assignee_names(),
+            "can_edit": user["role"] == "admin",
+        }
+    return await asyncio.to_thread(load)
+
+
+@app.put("/api/review/coverages")
+async def put_coverage(request: Request, user: dict = Depends(auth.require_admin)):
+    body = await request.json()
+    try:
+        coverages = await asyncio.to_thread(review.save_coverage, body, user["email"])
+    except review.ReviewInvalid as e:
+        raise HTTPException(400, str(e))
+    vault.audit(user["email"], "review.coverage.save",
+                f"{body.get('name')} → {body.get('reviewer_email')}")
+    return {"ok": True, "coverages": coverages, "assignees": review.list_assignee_names()}
+
+
+@app.delete("/api/review/coverages/{coverage_id}")
+async def delete_coverage(coverage_id: int, user: dict = Depends(auth.require_admin)):
+    coverages = await asyncio.to_thread(review.delete_coverage, coverage_id)
+    vault.audit(user["email"], "review.coverage.delete", str(coverage_id))
+    return {"ok": True, "coverages": coverages}
+
+
+@app.get("/api/directory/reviewers")
+async def directory_reviewers(q: str = "", user: dict = Depends(auth.require_user)):
+    """Slack people with an email on the login domain — pickable as reviewers."""
+    try:
+        results = await slack.search_reviewers(q, auth.ALLOWED_DOMAIN)
+        return {"ok": True, "results": results}
+    except slack.SlackNotConfigured:
+        return {"ok": False, "message": "Slack bot token is not configured", "results": []}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:300], "results": []}
 
 
 # ── scoring rules ───────────────────────────────────────────────────────────────
@@ -673,16 +751,23 @@ async def export_csv(date_str: str, user: dict = Depends(auth.require_user)):
         raise HTTPException(400, "Use YYYY-MM-DD")
 
     def build_csv():
-        tickets = db.get_day_tickets(date_str)
+        tickets = review.annotate_tickets(db.get_day_tickets(date_str), user)
         if not tickets:
             return ""
+
+        for t in tickets:
+            rev = t.get("review") or {}
+            t["ai_result"] = t.get("ai_result") or ""
+            t["reviewed_by"] = rev.get("reviewer_name") or rev.get("reviewer_email") or ""
+            t["reviewed_at"] = rev.get("reviewed_at") or ""
 
         fields = [
             "number", "title", "link", "state",
             "assignee_name", "account_name",
             "r1", "r2", "r3", "r4", "r5", "r7", "r8",
             "a1", "a2", "a3", "a4", "a5",
-            "overall_result", "ai_notes",
+            "ai_result", "overall_result", "reviewed_by", "reviewed_at",
+            "ai_notes",
         ]
         labels = {
             "number": "Ticket #", "title": "Title", "link": "Link",
@@ -694,7 +779,9 @@ async def export_csv(date_str: str, user: dict = Depends(auth.require_user)):
             "a1": "A1 Cat. Accuracy", "a2": "A2 Sentiment",
             "a3": "A3 Response Quality", "a4": "A4 Status Check",
             "a5": "A5 Closure",
-            "overall_result": "Overall", "ai_notes": "AI Notes",
+            "ai_result": "AI overall", "overall_result": "Overall",
+            "reviewed_by": "Reviewed by", "reviewed_at": "Reviewed at",
+            "ai_notes": "AI Notes",
         }
 
         def safe(v):
@@ -765,23 +852,7 @@ async def get_analytics(
 
 @app.get("/api/stats")
 async def get_stats(date: str | None = None, user: dict = Depends(auth.require_user)):
-    def query():
-        where  = "WHERE t.fetch_date = ?" if date else ""
-        params = (date,) if date else ()
-        with db.get_conn() as conn:
-            totals = conn.execute(f"""
-                SELECT
-                    COUNT(*)                                             AS total_tickets,
-                    SUM(CASE WHEN ac.overall_result='Pass'         THEN 1 ELSE 0 END) AS pass_count,
-                    SUM(CASE WHEN ac.overall_result='Fail'         THEN 1 ELSE 0 END) AS fail_count,
-                    SUM(CASE WHEN ac.overall_result='Needs Review' THEN 1 ELSE 0 END) AS review_count,
-                    COUNT(ac.ticket_id)                                  AS ai_done
-                FROM tickets t
-                LEFT JOIN ai_checks ac ON t.id = ac.ticket_id
-                {where}
-            """, params).fetchone()
-            return dict(totals)
-    return await asyncio.to_thread(query)
+    return await asyncio.to_thread(db.ticket_stats, date)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

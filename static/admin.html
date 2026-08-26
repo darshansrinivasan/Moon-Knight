@@ -47,7 +47,31 @@
   body.readonly #invite-btn, body.readonly #invite-email, body.readonly #invite-role,
   body.readonly #test-slack, body.readonly #test-vertex,
   body.readonly #reload-projects, body.readonly #gcp-connect, body.readonly #gcp-disconnect,
-  body.readonly [data-role], body.readonly [data-toggle] { display: none !important; }
+  body.readonly [data-role], body.readonly [data-toggle],
+  body.readonly #coverage-form, body.readonly [data-coverage-del] { display: none !important; }
+  .coverage-item {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 10px; background: var(--surface2);
+  }
+  .coverage-item h3 { font-size: 13px; margin: 0 0 4px; }
+  .coverage-item .who { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .assignee-pick {
+    display: flex; flex-wrap: wrap; gap: 6px; max-height: 180px; overflow: auto;
+    padding: 4px 0;
+  }
+  .assignee-pick label {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+  }
+  .assignee-pick label.on { border-color: var(--accent); color: var(--accent2); }
+  .coverage-form { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .coverage-form h3 { font-size: 13px; margin: 0 0 12px; }
+  .picker { position: relative; }
+  .assignee-chip {
+    display: inline-block; font-size: 11.5px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; margin: 2px;
+  }
   body.readonly .model-chip { pointer-events: none; }
   .section { display: none; }
   .section.on { display: block; }
@@ -70,6 +94,7 @@
       <button data-section="vertex">Vertex AI</button>
       <button data-section="slack">Slack delivery</button>
       <button data-section="people">People</button>
+      <button data-section="review">Review coverage</button>
       <button data-section="audit" id="nav-audit">Activity log</button>
     </aside>
     <div class="content-pane">
@@ -112,8 +137,10 @@
             </div>
             <div class="field">
               <label for="vertex_quota_project">Quota project</label>
-              <div class="hint">The project billed for Vertex calls. Leave blank to bill the project above.</div>
-              <input type="text" id="vertex_quota_project" placeholder="same as project above">
+              <div class="hint">The project billed for Vertex calls. Same as Vertex project unless you bill another one.</div>
+              <select id="vertex_quota_project">
+                <option value="">Same as Vertex project</option>
+              </select>
             </div>
             <div class="field">
               <label>Models</label>
@@ -178,6 +205,45 @@
               <thead><tr><th>Person</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
               <tbody id="users"></tbody>
             </table>
+          </div>
+        </div>
+
+        <div class="section" id="sec-review">
+          <div class="card">
+            <h2>Review coverage</h2>
+            <p class="card-sub">
+              App admins can sign off every ticket. Additional reviewers are people from
+              the Slack directory, matched to Google sign-in by email. Each coverage maps
+              a group of ticket assignees to one reviewer (for example APAC vs NAM).
+              Sign-off is per ticket, not per day. Slack reports still use the AI grade.
+            </p>
+            <div id="coverage-list"></div>
+            <div id="coverage-form" class="coverage-form">
+              <h3 id="coverage-form-title">Add coverage</h3>
+              <div class="field">
+                <label for="cov-name">Name</label>
+                <input type="text" id="cov-name" placeholder="APAC, NAM, EMEA…">
+              </div>
+              <div class="field">
+                <label>Reviewer (Slack)</label>
+                <div class="hint">Must have a @spotdraft.com email on their Slack profile.</div>
+                <div class="picker" id="cov-reviewer-picker">
+                  <input type="text" id="cov-reviewer-q" placeholder="Search Slack people…" autocomplete="off">
+                  <div class="picker-results" id="cov-reviewer-results"></div>
+                </div>
+                <div class="hint" id="cov-reviewer-chosen" style="margin-top:6px"></div>
+              </div>
+              <div class="field">
+                <label>Assignees this person reviews</label>
+                <div class="hint">Names come from tickets already fetched. Include Unassigned if they should cover those too.</div>
+                <div id="cov-assignees" class="assignee-pick"></div>
+              </div>
+              <div class="actions">
+                <button type="button" id="cov-save">Save coverage</button>
+                <button type="button" class="ghost" id="cov-cancel" style="display:none">Cancel edit</button>
+              </div>
+            </div>
+            <div class="msg" id="msg-coverage"></div>
           </div>
         </div>
 
@@ -291,10 +357,11 @@ function renderCreds(creds) {
 const SETTING_ENV = { dashboard_base_url: "QC_BASE_URL" };
 
 function fillSettings(s, sources = {}) {
-  for (const k of ["vertex_project","vertex_quota_project","vertex_location","vertex_models",
+  for (const k of ["vertex_project","vertex_location","vertex_models",
                    "slack_channel","dashboard_base_url"]) {
     if ($(k)) $(k).value = s[k] || "";
   }
+  fillQuotaSelect([], s.vertex_quota_project || "");
   $("slack_enabled").checked = s.slack_enabled === "1";
 
   for (const [key, envVar] of Object.entries(SETTING_ENV)) {
@@ -373,6 +440,19 @@ function renderGcpConnection(st) {
   }
 }
 
+function fillQuotaSelect(projects, current) {
+  const sel = $("vertex_quota_project");
+  if (!sel) return;
+  const opts = (projects || []).map(p =>
+    `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.id)}</option>`).join("");
+  sel.innerHTML = `<option value="">Same as Vertex project</option>` + opts;
+  if (current && !(projects || []).some(p => p.id === current)) {
+    sel.insertAdjacentHTML("beforeend",
+      `<option value="${esc(current)}">${esc(current)} (not listed)</option>`);
+  }
+  sel.value = current || "";
+}
+
 function renderLocations(locations, current) {
   const sel = $("vertex_location");
   sel.innerHTML = locations
@@ -395,6 +475,7 @@ async function loadProjects({ quiet = false } = {}) {
       sel.innerHTML = current
         ? `<option value="${esc(current)}">${esc(current)} (current)</option>`
         : `<option value="">No projects available</option>`;
+      fillQuotaSelect([], DATA.settings.vertex_quota_project || "");
       show(msg, d.message, "err");
       return;
     }
@@ -407,6 +488,7 @@ async function loadProjects({ quiet = false } = {}) {
         `<option value="${esc(current)}">${esc(current)} (not listed)</option>`);
     }
     sel.value = current;
+    fillQuotaSelect(d.projects, DATA.settings.vertex_quota_project || "");
     if (!quiet) show(msg, `${d.projects.length} project${d.projects.length === 1 ? "" : "s"} available.`, "ok");
     if (sel.value) loadModels({ quiet: true });
   } catch (e) {
@@ -582,6 +664,110 @@ function renderAudit(rows) {
     : `<tr><td colspan="4" class="muted" style="padding:20px;text-align:center">Nothing yet.</td></tr>`;
 }
 
+let COVER = { coverages: [], assignees: [], reviewer: null, editingId: null };
+
+function setCoverages(d) {
+  COVER.coverages = d.coverages || [];
+  COVER.assignees = d.assignees || COVER.assignees;
+  renderCoverages();
+  renderAssigneePick();
+}
+
+async function loadCoverages() {
+  setCoverages(await api("/api/review/coverages"));
+}
+
+function renderCoverages() {
+  const host = $("coverage-list");
+  if (!COVER.coverages.length) {
+    host.innerHTML = `<p class="muted" style="font-size:13px">No coverage groups yet. Admins can review every ticket until you add one.</p>`;
+    return;
+  }
+  host.innerHTML = COVER.coverages.map(c => {
+    const chips = (c.assignees || []).map(a =>
+      `<span class="assignee-chip">${esc(a)}</span>`).join("") ||
+      `<span class="muted">No assignees — this reviewer currently owns nobody.</span>`;
+    const actions = DATA.can_edit
+      ? `<div class="actions" style="margin-top:8px">
+           <button class="ghost" data-coverage-edit="${c.id}">Edit</button>
+           <button class="danger" data-coverage-del="${c.id}">Delete</button>
+         </div>` : "";
+    return `<div class="coverage-item">
+      <h3>${esc(c.name)}</h3>
+      <div class="who">${esc(c.reviewer_name || c.reviewer_email)} · ${esc(c.reviewer_email)}</div>
+      <div>${chips}</div>
+      ${actions}
+    </div>`;
+  }).join("");
+
+  host.querySelectorAll("[data-coverage-edit]").forEach(btn => {
+    btn.addEventListener("click", () => startEditCoverage(Number(btn.dataset.coverageEdit)));
+  });
+  host.querySelectorAll("[data-coverage-del]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this coverage? The reviewer will no longer be able to sign off those tickets.")) return;
+      try {
+        const d = await api(`/api/review/coverages/${btn.dataset.coverageDel}`, { method: "DELETE" });
+        COVER.coverages = d.coverages || [];
+        renderCoverages();
+        show($("msg-coverage"), "Coverage removed.", "ok");
+      } catch (e) { show($("msg-coverage"), e.message, "err"); }
+    });
+  });
+}
+
+function renderAssigneePick() {
+  const host = $("cov-assignees");
+  const selected = new Set(
+    [...host.querySelectorAll("input:checked")].map(cb => cb.value)
+  );
+  host.innerHTML = COVER.assignees.map(n => `
+    <label class="${selected.has(n) ? "on" : ""}">
+      <input type="checkbox" value="${esc(n)}" ${selected.has(n) ? "checked" : ""}>
+      ${esc(n)}
+    </label>`).join("") || `<span class="muted">Fetch some tickets first so assignee names appear here.</span>`;
+  host.querySelectorAll("input").forEach(cb => {
+    cb.addEventListener("change", () =>
+      cb.closest("label").classList.toggle("on", cb.checked));
+  });
+}
+
+function showChosenReviewer() {
+  const r = COVER.reviewer;
+  $("cov-reviewer-chosen").textContent = r
+    ? `Selected: ${r.name} (${r.email})`
+    : "";
+}
+
+function startEditCoverage(id) {
+  const c = COVER.coverages.find(x => x.id === id);
+  if (!c) return;
+  COVER.editingId = id;
+  COVER.reviewer = { email: c.reviewer_email, name: c.reviewer_name || c.reviewer_email };
+  $("cov-name").value = c.name;
+  $("coverage-form-title").textContent = "Edit coverage";
+  $("cov-cancel").style.display = "";
+  showChosenReviewer();
+  $("cov-assignees").querySelectorAll("input").forEach(cb => {
+    cb.checked = (c.assignees || []).includes(cb.value);
+    cb.closest("label").classList.toggle("on", cb.checked);
+  });
+}
+
+function resetCoverageForm() {
+  COVER.editingId = null;
+  COVER.reviewer = null;
+  $("cov-name").value = "";
+  $("cov-reviewer-q").value = "";
+  $("coverage-form-title").textContent = "Add coverage";
+  $("cov-cancel").style.display = "none";
+  showChosenReviewer();
+  $("cov-assignees").querySelectorAll("input").forEach(cb => {
+    cb.checked = false;
+    cb.closest("label").classList.remove("on");
+  });
+}
+
 function applyReadOnly() {
   if (DATA.can_edit) return;
   document.body.classList.add("readonly");
@@ -622,6 +808,11 @@ async function load() {
 
   renderUsers(DATA.users);
   renderAudit(DATA.audit);
+  try {
+    await loadCoverages();
+  } catch (e) {
+    show($("msg-coverage"), e.message, "err");
+  }
 
   applyReadOnly();
   $("loading").style.display = "none";
@@ -671,6 +862,71 @@ $("invite-btn").addEventListener("click", async () => {
     show($("msg-users"), `${email} can now sign in.`, "ok");
   } catch (e) { show($("msg-users"), e.message, "err"); }
 });
+
+(function wireCoverage() {
+  const input = $("cov-reviewer-q");
+  const drop = $("cov-reviewer-results");
+  let timer = null;
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const q = input.value.trim();
+      try {
+        const d = await api(`/api/directory/reviewers?q=${encodeURIComponent(q)}`);
+        const results = d.results || [];
+        if (!results.length) {
+          drop.innerHTML = `<button type="button" disabled class="ghost">${
+            d.ok === false ? esc(d.message || "Directory unavailable")
+              : "No matches with a @" + (DATA.allowed_domain || "spotdraft.com") + " email"}</button>`;
+          drop.classList.add("open");
+          return;
+        }
+        drop.innerHTML = results.map(r =>
+          `<button type="button" data-email="${esc(r.email)}" data-name="${esc(r.name)}">${esc(r.name)} <span class="muted">${esc(r.email)}</span></button>`
+        ).join("");
+        drop.classList.add("open");
+        drop.querySelectorAll("button[data-email]").forEach(btn => {
+          btn.addEventListener("click", () => {
+            COVER.reviewer = { email: btn.dataset.email, name: btn.dataset.name };
+            showChosenReviewer();
+            drop.classList.remove("open");
+            input.value = "";
+          });
+        });
+      } catch (e) {
+        drop.innerHTML = `<button type="button" disabled>${esc(e.message)}</button>`;
+        drop.classList.add("open");
+      }
+    }, 180);
+  });
+  document.addEventListener("click", ev => {
+    if (!$("cov-reviewer-picker").contains(ev.target)) drop.classList.remove("open");
+  });
+
+  $("cov-save").addEventListener("click", async () => {
+    const assignees = [...$("cov-assignees").querySelectorAll("input:checked")].map(cb => cb.value);
+    if (!COVER.reviewer) {
+      show($("msg-coverage"), "Pick a reviewer from Slack.", "err");
+      return;
+    }
+    try {
+      const d = await api("/api/review/coverages", {
+        method: "PUT",
+        body: JSON.stringify({
+          id: COVER.editingId || undefined,
+          name: $("cov-name").value,
+          reviewer_email: COVER.reviewer.email,
+          reviewer_name: COVER.reviewer.name,
+          assignees,
+        }),
+      });
+      setCoverages(d);
+      resetCoverageForm();
+      show($("msg-coverage"), "Coverage saved.", "ok");
+    } catch (e) { show($("msg-coverage"), e.message, "err"); }
+  });
+  $("cov-cancel").addEventListener("click", resetCoverageForm);
+})();
 
 wireSaveButtons();
 QC.ready.then(() => load()).catch(e => {

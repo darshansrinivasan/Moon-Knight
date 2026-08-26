@@ -149,7 +149,7 @@ CREDENTIAL_SPECS = [
         "key": "slack_bot_token",
         "legacy_env": "SLACK_BOT_TOKEN",
         "label": "Slack bot token",
-        "help": "xoxb-… token with chat:write. Used to post QC reports.",
+        "help": "xoxb-… token with chat:write, users:read, and users:read.email. Used to post QC reports and to pick reviewers by email.",
         "testable": True,
     },
     {

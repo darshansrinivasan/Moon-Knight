@@ -77,6 +77,44 @@ def _price_for(model: str) -> tuple:
     return (0.30, 2.50)   # assume flash-class if unknown
 
 
+def _tokens_from_usage(usage) -> tuple[int, int]:
+    """Normalize Vertex usage metadata (object, dict, or pydantic) into (prompt, output)."""
+    if usage is None:
+        return 0, 0
+    data = usage
+    for attr in ("model_dump", "to_dict", "to_json_dict"):
+        fn = getattr(data, attr, None)
+        if callable(fn):
+            try:
+                dumped = fn()
+                if isinstance(dumped, dict):
+                    data = dumped
+                    break
+            except Exception:
+                pass
+    if isinstance(data, dict):
+        prompt = (data.get("prompt_token_count") or data.get("prompt_tokens")
+                  or data.get("input_tokens") or 0)
+        output = (data.get("candidates_token_count") or data.get("output_tokens")
+                  or data.get("completion_tokens") or 0)
+        total = data.get("total_token_count") or data.get("total_tokens") or 0
+    else:
+        prompt = (getattr(data, "prompt_token_count", None)
+                  or getattr(data, "prompt_tokens", None)
+                  or getattr(data, "input_tokens", None) or 0)
+        output = (getattr(data, "candidates_token_count", None)
+                  or getattr(data, "output_tokens", None)
+                  or getattr(data, "completion_tokens", None) or 0)
+        total = (getattr(data, "total_token_count", None)
+                 or getattr(data, "total_tokens", None) or 0)
+    prompt = int(prompt or 0)
+    output = int(output or 0)
+    total = int(total or 0)
+    if output == 0 and total > prompt:
+        output = total - prompt
+    return prompt, output
+
+
 class RunStats:
     """Token and model accounting for one scoring run.
 
@@ -92,9 +130,7 @@ class RunStats:
         self.models: dict = {}     # model -> call count
 
     def record(self, model: str, usage) -> None:
-        prompt = getattr(usage, "prompt_token_count", 0) or 0
-        total  = getattr(usage, "total_token_count", 0) or 0
-        output = max(total - prompt, getattr(usage, "candidates_token_count", 0) or 0)
+        prompt, output = _tokens_from_usage(usage)
         with self._lock:
             self.calls += 1
             self.prompt_tokens += prompt
@@ -534,8 +570,9 @@ def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
                     response_schema=RESPONSE_SCHEMA,
                 ),
             )
-            if stats is not None and getattr(response, "usage_metadata", None):
-                stats.record(model_name, response.usage_metadata)
+            usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
+            if stats is not None and usage is not None:
+                stats.record(model_name, usage)
             return response.text
         except Exception as e:
             last_err = e

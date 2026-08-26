@@ -220,6 +220,36 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_audit_ts          ON audit_log(ts);
         CREATE INDEX IF NOT EXISTS idx_sched_trigger     ON scheduled_runs(trigger_date);
         CREATE INDEX IF NOT EXISTS idx_qcruns_date       ON qc_runs(date);
+
+        -- Human sign-off of a ticket's QC. Append-only; latest row wins.
+        -- AI grades in ai_checks are never overwritten.
+        CREATE TABLE IF NOT EXISTS ticket_reviews (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id       TEXT NOT NULL,
+            decision        TEXT NOT NULL,  -- Pass | Fail
+            kept_ai         INTEGER NOT NULL DEFAULT 0,
+            reviewer_email  TEXT NOT NULL,
+            reviewer_name   TEXT,
+            note            TEXT,
+            reviewed_at     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reviews_ticket ON ticket_reviews(ticket_id, id);
+
+        -- Region / group coverage: one reviewer owns a named set of assignees.
+        -- App admins bypass this and can review every ticket.
+        CREATE TABLE IF NOT EXISTS review_coverages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT NOT NULL,
+            reviewer_email  TEXT NOT NULL,
+            reviewer_name   TEXT,
+            updated_by      TEXT,
+            updated_at      TEXT
+        );
+        CREATE TABLE IF NOT EXISTS review_coverage_assignees (
+            coverage_id   INTEGER NOT NULL,
+            assignee_name TEXT NOT NULL,
+            PRIMARY KEY (coverage_id, assignee_name)
+        );
         """)
 
 
@@ -349,7 +379,53 @@ def search_accounts(q: str, limit: int = 25) -> list[dict]:
                 " ORDER BY name LIMIT ?",
                 (limit,),
             ).fetchall()
-    return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+
+
+def latest_qc_run(date_str: str) -> dict | None:
+    """Most recent scoring run for a day — used to show cost on the dashboard."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, status, prompt_tokens, output_tokens, cost_usd, model_used, finished_at"
+            " FROM qc_runs WHERE date = ? ORDER BY id DESC LIMIT 1",
+            (date_str,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def ticket_stats(date: str | None = None) -> dict:
+    """Pass/Fail/NR counts using the latest human review when present, else the AI grade."""
+    where = "WHERE t.fetch_date = ?" if date else ""
+    params = (date,) if date else ()
+    with get_conn() as conn:
+        row = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total_tickets,
+                SUM(CASE WHEN COALESCE(rev.decision, ac.overall_result) = 'Pass'
+                         THEN 1 ELSE 0 END) AS pass_count,
+                SUM(CASE WHEN COALESCE(rev.decision, ac.overall_result) = 'Fail'
+                         THEN 1 ELSE 0 END) AS fail_count,
+                SUM(CASE WHEN COALESCE(rev.decision, ac.overall_result) = 'Needs Review'
+                         THEN 1 ELSE 0 END) AS review_count,
+                COUNT(ac.ticket_id) AS ai_done,
+                SUM(CASE WHEN ac.ticket_id IS NOT NULL AND rev.id IS NULL
+                         THEN 1 ELSE 0 END) AS unreviewed
+            FROM tickets t
+            LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
+            LEFT JOIN (
+                SELECT r.* FROM ticket_reviews r
+                JOIN (
+                    SELECT ticket_id, MAX(id) AS max_id
+                    FROM ticket_reviews GROUP BY ticket_id
+                ) x ON x.max_id = r.id
+            ) rev ON rev.ticket_id = t.id
+            {where}
+        """, params).fetchone()
+    out = dict(row)
+    for k, v in out.items():
+        if v is None:
+            out[k] = 0
+    return out
 
 
 def get_ticket_messages(ticket_id: str):

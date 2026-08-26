@@ -318,6 +318,7 @@ async def post_test(channel: str | None = None) -> dict:
 _dir_lock = asyncio.Lock()
 _dir_users: dict[str, str] = {}
 _dir_groups: dict[str, str] = {}
+_dir_people: dict[str, dict] = {}   # id -> {id, name, email}
 _dir_at: float = 0
 _DIR_TTL = 600
 
@@ -337,8 +338,9 @@ async def _api_get(method: str, params: dict | None = None) -> dict:
 
 async def _refresh_directory() -> None:
     """Load workspace users and user-groups. Failure leaves the previous cache."""
-    global _dir_users, _dir_groups, _dir_at
+    global _dir_users, _dir_groups, _dir_people, _dir_at
     users: dict[str, str] = {}
+    people: dict[str, dict] = {}
     cursor = None
     while True:
         params: dict = {"limit": 200}
@@ -354,7 +356,9 @@ async def _refresh_directory() -> None:
             profile = u.get("profile") or {}
             name = (profile.get("real_name") or profile.get("display_name")
                     or u.get("name") or uid)
+            email = (profile.get("email") or "").strip().lower()
             users[uid] = name
+            people[uid] = {"id": uid, "name": name, "email": email}
         cursor = (data.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
             break
@@ -370,7 +374,7 @@ async def _refresh_directory() -> None:
     except Exception as e:
         logger.warning("Slack usergroups.list failed: %s", e)
 
-    _dir_users, _dir_groups, _dir_at = users, groups, time.time()
+    _dir_users, _dir_groups, _dir_people, _dir_at = users, groups, people, time.time()
 
 
 async def directory(force: bool = False) -> tuple[dict[str, str], dict[str, str]]:
@@ -407,9 +411,35 @@ async def search_directory(q: str, kind: str = "user", limit: int = 25) -> list[
     """Name search over the cached Slack directory. `kind` is user or group."""
     q = (q or "").strip().lower()
     users, groups = await directory()
-    src = users if kind != "group" else groups
-    items = [{"id": i, "name": n} for i, n in src.items()]
+    if kind == "group":
+        items = [{"id": i, "name": n} for i, n in groups.items()]
+    else:
+        async with _dir_lock:
+            items = [
+                {"id": p["id"], "name": p["name"], "email": p.get("email") or ""}
+                for p in _dir_people.values()
+            ]
+        if not items:
+            items = [{"id": i, "name": n, "email": ""} for i, n in users.items()]
     if q:
-        items = [e for e in items if q in e["name"].lower()]
+        items = [e for e in items if q in e["name"].lower() or q in (e.get("email") or "")]
+    items.sort(key=lambda e: e["name"].lower())
+    return items[:limit]
+
+
+async def search_reviewers(q: str, domain: str, limit: int = 25) -> list[dict]:
+    """Slack people who have an email on the login domain — they can be reviewers."""
+    domain = (domain or "").lower().lstrip("@")
+    suffix = f"@{domain}"
+    q = (q or "").strip().lower()
+    await directory()
+    async with _dir_lock:
+        people = [dict(p) for p in _dir_people.values()]
+    items = [p for p in people if (p.get("email") or "").endswith(suffix)]
+    if q:
+        items = [
+            p for p in items
+            if q in p["name"].lower() or q in (p.get("email") or "")
+        ]
     items.sort(key=lambda e: e["name"].lower())
     return items[:limit]
