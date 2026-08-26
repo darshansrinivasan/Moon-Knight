@@ -405,7 +405,7 @@ async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
 
     try:
         with db.advisory_lock(f"qc:{date_str}", user["email"], ttl_seconds=3600):
-            result = await asyncio.to_thread(qc_runner.run_qc_date, date_str)
+            result = await asyncio.to_thread(qc_runner.run_qc_date, date_str, user["email"])
     except db.LockBusy as e:
         raise HTTPException(409, str(e))
     except qc_runner.VertexNotConfigured as e:
@@ -460,6 +460,86 @@ async def get_ticket(ticket_id: str, user: dict = Depends(auth.require_user)):
     if not ticket:
         raise HTTPException(404, "Ticket not found")
     return {"ticket": ticket, "messages": messages}
+
+
+# ── run history ───────────────────────────────────────────────────────────────
+
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_page(user: dict = Depends(auth.require_user)):
+    return _page("runs.html")
+
+
+@app.get("/api/runs")
+async def list_runs(date: str | None = None, user: dict = Depends(auth.require_user)):
+    def query():
+        with db.get_conn() as conn:
+            where, params = ("WHERE date = ?", (date,)) if date else ("", ())
+            scoring = [dict(r) for r in conn.execute(
+                f"SELECT * FROM qc_runs {where} ORDER BY id DESC LIMIT 50", params
+            ).fetchall()]
+        return scoring
+    return {
+        "runs":      await asyncio.to_thread(query),
+        "scheduled": scheduler.recent_runs(25),
+    }
+
+
+@app.get("/api/runs/{run_id}")
+async def run_detail(run_id: int, user: dict = Depends(auth.require_user)):
+    def query():
+        with db.get_conn() as conn:
+            run = conn.execute("SELECT * FROM qc_runs WHERE id = ?", (run_id,)).fetchone()
+            if not run:
+                return None
+            run = dict(run)
+            try:
+                run["config"] = json.loads(run.pop("config_json") or "{}")
+            except json.JSONDecodeError:
+                run["config"] = {}
+
+            diff = []
+            prev_id = run.get("compared_to")
+            if prev_id:
+                rows = conn.execute("""
+                    SELECT cur.number, cur.ticket_id,
+                           t.title, t.assignee_name, t.link,
+                           old.overall_result AS before_overall,
+                           cur.overall_result AS after_overall,
+                           old.a1 b1, cur.a1 n1, old.a3 b3, cur.a3 n3,
+                           old.a4 b4, cur.a4 n4, old.a5 b5, cur.a5 n5,
+                           old.r_fails AS before_r, cur.r_fails AS after_r
+                    FROM qc_run_results cur
+                    JOIN qc_run_results old
+                      ON old.ticket_id = cur.ticket_id AND old.run_id = ?
+                    LEFT JOIN tickets t ON t.id = cur.ticket_id
+                    WHERE cur.run_id = ?
+                """, (prev_id, run_id)).fetchall()
+                for r in rows:
+                    d = dict(r)
+                    moved = []
+                    if d["before_overall"] != d["after_overall"]:
+                        moved.append(("Overall", d["before_overall"], d["after_overall"]))
+                    for label, b, n in (("A1", d["b1"], d["n1"]), ("A3", d["b3"], d["n3"]),
+                                        ("A4", d["b4"], d["n4"]), ("A5", d["b5"], d["n5"])):
+                        if b != n:
+                            moved.append((label, b, n))
+                    if d["before_r"] != d["after_r"]:
+                        moved.append(("R-fails", d["before_r"] or "none", d["after_r"] or "none"))
+                    if moved:
+                        diff.append({
+                            "number": d["number"], "title": d["title"],
+                            "assignee": d["assignee_name"], "link": d["link"],
+                            "changes": [{"check": c, "before": b, "after": a}
+                                        for c, b, a in moved],
+                        })
+                diff.sort(key=lambda x: x["number"] or 0)
+            run["diff"] = diff
+            return run
+
+    run = await asyncio.to_thread(query)
+    if not run:
+        raise HTTPException(404, "Run not found")
+    return run
 
 
 # ── CSV export ───────────────────────────────────────────────────────────────

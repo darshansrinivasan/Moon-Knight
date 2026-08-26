@@ -181,6 +181,7 @@
   <div class="spacer"></div>
   <span class="who" id="who"></span>
   <a class="link-btn" href="/">← Dashboard</a>
+  <a class="link-btn" href="/runs">Runs</a>
   <a class="link-btn" href="/auth/logout">Sign out</a>
 </header>
 
@@ -333,7 +334,9 @@
     <!-- Runs -->
     <div class="card">
       <h2>Recent runs</h2>
-      <p class="card-sub">Every automated and manual pipeline run, with what it produced.</p>
+      <p class="card-sub">Every automated and manual pipeline run, with what it produced.
+        The <a href="/runs" style="color:var(--accent2)">Runs page</a> has the full history —
+        per-run config, token cost, grade stability, and exact diffs between runs.</p>
       <table>
         <thead><tr>
           <th>Date</th><th>Trigger</th><th>Status</th>

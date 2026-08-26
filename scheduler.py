@@ -148,7 +148,7 @@ async def run_pipeline(target: date, triggered_by: str,
     try:
         with db.advisory_lock(LOCK_NAME, triggered_by, ttl_seconds=7200):
             fetched = await app.fetch_and_store(target)
-            qc = await asyncio.to_thread(qc_runner.run_qc_date, date_str)
+            qc = await asyncio.to_thread(qc_runner.run_qc_date, date_str, triggered_by)
 
             slack_ok = None
             if notify_slack:

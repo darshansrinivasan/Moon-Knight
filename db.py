@@ -170,6 +170,41 @@ def init_db():
             slack_ok     INTEGER
         );
 
+        -- One row per AI scoring run. The config that produced the scores is
+        -- snapshotted here so results are explainable after settings change.
+        CREATE TABLE IF NOT EXISTS qc_runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            date          TEXT,      -- the QC target date
+            triggered_by  TEXT,      -- user email or 'scheduler'
+            started_at    TEXT,
+            finished_at   TEXT,
+            status        TEXT,      -- running | success | partial | error
+            total         INTEGER,   -- tickets eligible this run
+            scored        INTEGER,
+            skipped       INTEGER,
+            model_used    TEXT,      -- models that actually graded, with call counts
+            config_json   TEXT,      -- full effective config snapshot
+            prompt_tokens INTEGER,
+            output_tokens INTEGER,
+            cost_usd      REAL,      -- estimate from the price table
+            compared_to   INTEGER,   -- previous run id for the same date, if any
+            stability     REAL,      -- % of tickets whose overall matched that run
+            changed       INTEGER,   -- tickets whose overall changed vs that run
+            error         TEXT
+        );
+
+        -- Full end-of-run grade snapshot per ticket, so any two runs of the
+        -- same day can be diffed exactly instead of guessing from memory.
+        CREATE TABLE IF NOT EXISTS qc_run_results (
+            run_id    INTEGER,
+            ticket_id TEXT,
+            number    INTEGER,
+            a1 TEXT, a2 TEXT, a3 TEXT, a4 TEXT, a5 TEXT,
+            r_fails   TEXT,    -- comma list of failing R-checks at snapshot time
+            overall_result TEXT,
+            PRIMARY KEY (run_id, ticket_id)
+        );
+
         -- Advisory locks so a scheduled run and a human can never collide.
         CREATE TABLE IF NOT EXISTS run_locks (
             name        TEXT PRIMARY KEY,
@@ -184,6 +219,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_ai_fetch_date     ON ai_checks(fetch_date);
         CREATE INDEX IF NOT EXISTS idx_audit_ts          ON audit_log(ts);
         CREATE INDEX IF NOT EXISTS idx_sched_trigger     ON scheduled_runs(trigger_date);
+        CREATE INDEX IF NOT EXISTS idx_qcruns_date       ON qc_runs(date);
         """)
 
 

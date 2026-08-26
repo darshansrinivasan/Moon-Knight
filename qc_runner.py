@@ -28,6 +28,89 @@ BATCH_SIZE  = 6
 
 VERTEX_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
+# ── determinism ───────────────────────────────────────────────────────────────
+# Grades must not drift between runs on unchanged input. Three things pin them:
+# temperature 0 (no sampling), a fixed seed (ties broken the same way every
+# time), and a response schema with enums (the model cannot answer outside the
+# rubric, and parsing can't fail into the solo-rescore path, which changed
+# batch context and was itself a source of drift).
+PROMPT_VERSION  = "v2"
+GEN_TEMPERATURE = 0.0
+GEN_SEED        = 7
+
+_GRADE_PFR   = {"type": "STRING", "enum": ["Pass", "Fail", "Needs Review"]}
+RESPONSE_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "idx": {"type": "INTEGER"},
+            "a1":  _GRADE_PFR,
+            "a2":  {"type": "STRING",
+                    "enum": ["Positive", "Neutral", "Concerned", "Frustrated", "Urgent"]},
+            "a3":  {"type": "STRING", "enum": ["Good", "Needs Improvement", "Poor"]},
+            "a4":  _GRADE_PFR,
+            "a5":  {"type": "STRING", "enum": ["Pass", "Fail", "Needs Review", "N/A"]},
+            "ai_notes": {"type": "STRING"},
+        },
+        "required": ["idx", "a1", "a2", "a3", "a4", "a5", "ai_notes"],
+    },
+}
+
+# USD per 1M tokens on Vertex, longest-prefix match. Estimates for the run
+# cost display — adjust here when Google reprices.
+MODEL_PRICES = {
+    "gemini-2.5-pro":        (1.25, 10.00),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
+    "gemini-2.5-flash":      (0.30, 2.50),
+    "gemini-2.0-flash-lite": (0.075, 0.30),
+    "gemini-2.0-flash":      (0.10, 0.40),
+    "gemini-1.5-pro":        (1.25, 5.00),
+    "gemini-1.5-flash":      (0.075, 0.30),
+}
+
+
+def _price_for(model: str) -> tuple:
+    for prefix in sorted(MODEL_PRICES, key=len, reverse=True):
+        if model.startswith(prefix):
+            return MODEL_PRICES[prefix]
+    return (0.30, 2.50)   # assume flash-class if unknown
+
+
+class RunStats:
+    """Token and model accounting for one scoring run.
+
+    One instance per run, shared across the worker threads that score batches,
+    so two concurrent runs (different dates) can never pool their tokens.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.prompt_tokens = 0
+        self.output_tokens = 0
+        self.calls = 0
+        self.models: dict = {}     # model -> call count
+
+    def record(self, model: str, usage) -> None:
+        prompt = getattr(usage, "prompt_token_count", 0) or 0
+        total  = getattr(usage, "total_token_count", 0) or 0
+        output = max(total - prompt, getattr(usage, "candidates_token_count", 0) or 0)
+        with self._lock:
+            self.calls += 1
+            self.prompt_tokens += prompt
+            self.output_tokens += output
+            self.models[model] = self.models.get(model, 0) + 1
+
+    def cost_usd(self) -> float:
+        # Weight by the dominant model; runs almost always use exactly one.
+        model = max(self.models, key=self.models.get) if self.models else "gemini-2.5-flash"
+        p_in, p_out = _price_for(model)
+        return round((self.prompt_tokens * p_in + self.output_tokens * p_out) / 1_000_000, 6)
+
+    def model_summary(self) -> str:
+        return ", ".join(f"{m} \u00d7{n}" for m, n in
+                         sorted(self.models.items(), key=lambda kv: -kv[1]))
+
 
 class VertexNotConfigured(RuntimeError):
     """Raised when Vertex AI project/credentials have not been set up."""
@@ -232,6 +315,13 @@ AI NOTES: one concise string. For every Fail or Needs Review check, write a spec
   Be concrete — never write generic phrases like "fix needed" or "review required" without explaining what to fix or review.
   If all AI checks pass, write a one-sentence summary of what was handled well.
 
+CONSISTENCY RULES:
+  Grade strictly from the evidence in the ticket block. Identical input must
+  produce identical grades.
+  When evidence is genuinely ambiguous between Pass and Fail, grade Needs
+  Review — never guess. Reserve Fail for cases the rubric clearly covers.
+  Do not let one ticket's grade influence another's; each is independent.
+
 Message roles: is_customer=1 → message visible to requester; is_private=1 → internal note (exclude from customer-response logic).
 For internal tickets the "requester" is a colleague — treat is_customer=1 messages as internal thread replies, not external customer communication.
 
@@ -409,8 +499,12 @@ def _build_ticket_block(t: dict, idx: int) -> str:
     return "\n".join(lines)
 
 
-def _call_gemini(prompt: str) -> str:
-    """Call Gemini on Vertex, cascading through models on quota errors."""
+def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
+    """Call Gemini on Vertex, cascading through models on quota errors.
+
+    Generation is pinned (temperature 0, fixed seed, enum-constrained JSON
+    schema) so the same input grades the same way on every run.
+    """
     client = get_vertex_client()
     last_err: Exception | None = None
 
@@ -421,9 +515,15 @@ def _call_gemini(prompt: str) -> str:
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
-                    temperature=0.2,
+                    temperature=GEN_TEMPERATURE,
+                    seed=GEN_SEED,
+                    candidate_count=1,
+                    response_mime_type="application/json",
+                    response_schema=RESPONSE_SCHEMA,
                 ),
             )
+            if stats is not None and getattr(response, "usage_metadata", None):
+                stats.record(model_name, response.usage_metadata)
             return response.text
         except Exception as e:
             last_err = e
@@ -444,14 +544,16 @@ def _parse_response(text: str) -> list[dict]:
     return json.loads(text)
 
 
-def _score_single(ticket: dict, idx: int = 0) -> dict:
+def _score_single(ticket: dict, idx: int = 0,
+                  stats: "RunStats | None" = None) -> dict:
     """Score one ticket solo — used as a fallback when a batch fails."""
     prompt = _build_ticket_block(ticket, idx)
-    results = _parse_response(_call_gemini(prompt))
+    results = _parse_response(_call_gemini(prompt, stats))
     return results[0]
 
 
-def _score_batch(batch: list[dict]) -> list[dict]:
+def _score_batch(batch: list[dict],
+                 stats: "RunStats | None" = None) -> list[dict]:
     """
     Score a batch of tickets.
     Results are matched back to tickets by idx (0-based position in the batch),
@@ -460,7 +562,7 @@ def _score_batch(batch: list[dict]) -> list[dict]:
     """
     prompt = "\n\n".join(_build_ticket_block(t, i) for i, t in enumerate(batch))
     try:
-        results = _parse_response(_call_gemini(prompt))
+        results = _parse_response(_call_gemini(prompt, stats))
         # Validate we got the right number of results; fall back if not.
         if len(results) != len(batch):
             raise ValueError(
@@ -478,7 +580,7 @@ def _score_batch(batch: list[dict]) -> list[dict]:
         individual = []
         for i, t in enumerate(batch):
             try:
-                individual.append(_score_single(t, idx=i))
+                individual.append(_score_single(t, idx=i, stats=stats))
             except Exception as ie:
                 logger.error("Solo score failed for ticket #%s: %s", t.get("number"), ie)
                 individual.append(None)  # placeholder — skipped in write loop
@@ -521,10 +623,73 @@ def _write_results(batch: list[dict], results: list[dict], date_str: str, now: s
     return scored, skipped
 
 
-def run_qc_date(date_str: str) -> dict:
+def _effective_config(date_str: str, triggered_by: str) -> dict:
+    """Everything that could influence this run's grades, for the run record."""
+    return {
+        "date":            date_str,
+        "triggered_by":    triggered_by,
+        "project":         vault.get_setting("vertex_project"),
+        "quota_project":   quota_project(),
+        "location":        vault.get_setting("vertex_location") or "us-central1",
+        "models":          vertex_models(),
+        "temperature":     GEN_TEMPERATURE,
+        "seed":            GEN_SEED,
+        "response_schema": "enum-constrained JSON",
+        "batch_size":      BATCH_SIZE,
+        "max_workers":     MAX_WORKERS,
+        "prompt_version":  PROMPT_VERSION,
+    }
+
+
+def _snapshot_and_compare(conn, run_id: int, date_str: str) -> tuple:
+    """Snapshot the day's end-of-run grades; measure agreement with the
+    previous run of the same date. Returns (compared_to, stability, changed)."""
+    rows = conn.execute("""
+        SELECT t.id, t.number, ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.overall_result,
+               rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8
+        FROM tickets t
+        LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
+        LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
+        WHERE t.fetch_date = ?
+    """, (date_str,)).fetchall()
+
+    for r in rows:
+        d = dict(r)
+        r_fails = ",".join(k.upper() for k in ("r1","r2","r3","r4","r5","r7","r8")
+                           if d.get(k) == "Fail")
+        conn.execute("""
+            INSERT OR REPLACE INTO qc_run_results
+                (run_id, ticket_id, number, a1, a2, a3, a4, a5, r_fails, overall_result)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (run_id, d["id"], d["number"], d["a1"], d["a2"], d["a3"], d["a4"],
+              d["a5"], r_fails, d["overall_result"]))
+
+    prev = conn.execute(
+        "SELECT id FROM qc_runs WHERE date = ? AND id < ? AND status IN ('success','partial')"
+        " ORDER BY id DESC LIMIT 1", (date_str, run_id)).fetchone()
+    if not prev:
+        return None, None, None
+
+    prev_id = prev["id"]
+    pairs = conn.execute("""
+        SELECT cur.overall_result AS now, old.overall_result AS before
+        FROM qc_run_results cur
+        JOIN qc_run_results old ON old.ticket_id = cur.ticket_id AND old.run_id = ?
+        WHERE cur.run_id = ?
+          AND cur.overall_result IS NOT NULL AND old.overall_result IS NOT NULL
+    """, (prev_id, run_id)).fetchall()
+    if not pairs:
+        return prev_id, None, None
+
+    same = sum(1 for r in pairs if r["now"] == r["before"])
+    return prev_id, round(same / len(pairs) * 100, 1), len(pairs) - same
+
+
+def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
     """Score pending or stale tickets for date_str.
     Stale = ticket was refetched after the AI check was last run.
-    Returns counts.
+    Records the run — config, tokens, cost, and grade stability vs the
+    previous run of the same date. Returns counts plus run metadata.
     """
     with db.get_conn() as conn:
         rows = conn.execute("""
@@ -548,6 +713,18 @@ def run_qc_date(date_str: str) -> dict:
     # Fail fast on misconfiguration rather than burning a call per ticket.
     get_vertex_client()
 
+    # Open the run record before scoring so a crash still leaves evidence.
+    config = _effective_config(date_str, triggered_by)
+    with db.get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO qc_runs (date, triggered_by, started_at, status, total, config_json)
+            VALUES (?, ?, ?, 'running', ?, ?)
+        """, (date_str, triggered_by, datetime.now(timezone.utc).isoformat(),
+              len(tickets), json.dumps(config)))
+        run_id = cur.lastrowid
+
+    stats = RunStats()
+
     with db.get_conn() as conn:
         for t in tickets:
             msgs = conn.execute(
@@ -564,7 +741,8 @@ def run_qc_date(date_str: str) -> dict:
     errors: list[str] = []
 
     with ThreadPoolExecutor(max_workers=min(len(batches), MAX_WORKERS)) as pool:
-        future_to_batch = {pool.submit(_score_batch, batch): batch for batch in batches}
+        future_to_batch = {pool.submit(_score_batch, batch, stats): batch
+                           for batch in batches}
 
         for future in as_completed(future_to_batch):
             batch = future_to_batch[future]
@@ -581,7 +759,31 @@ def run_qc_date(date_str: str) -> dict:
             scored  += s
             skipped += sk
 
-    result: dict = {"scored": scored, "skipped": skipped, "already_done": False}
+    status = "error" if scored == 0 and errors else \
+             "partial" if errors or skipped else "success"
+
+    # Snapshot end-of-run grades and finalise the record in one transaction.
+    with db.get_conn() as conn:
+        compared_to = stability = changed = None
+        if status != "error":
+            compared_to, stability, changed = _snapshot_and_compare(conn, run_id, date_str)
+        conn.execute("""
+            UPDATE qc_runs SET finished_at = ?, status = ?, scored = ?, skipped = ?,
+                   model_used = ?, prompt_tokens = ?, output_tokens = ?, cost_usd = ?,
+                   compared_to = ?, stability = ?, changed = ?, error = ?
+            WHERE id = ?
+        """, (datetime.now(timezone.utc).isoformat(), status, scored, skipped,
+              stats.model_summary(), stats.prompt_tokens, stats.output_tokens,
+              stats.cost_usd(), compared_to, stability, changed,
+              "; ".join(errors)[:1000] or None, run_id))
+
+    result: dict = {
+        "scored": scored, "skipped": skipped, "already_done": False,
+        "run_id": run_id, "status": status,
+        "prompt_tokens": stats.prompt_tokens, "output_tokens": stats.output_tokens,
+        "cost_usd": stats.cost_usd(), "model_used": stats.model_summary(),
+        "stability": stability, "changed": changed,
+    }
     if errors:
         result["errors"] = errors
     return result
