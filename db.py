@@ -29,25 +29,29 @@ def get_conn():
         conn.close()
 
 
+# Columns added after their table shipped. Every CREATE below also lists them,
+# so a fresh database gets them directly; these ALTERs bring an existing volume
+# up to date. Applied AFTER the CREATEs — running them first meant that on a
+# fresh database the table did not exist yet and the ALTER was silently
+# swallowed, leaving the column missing until the next boot.
+_ADDED_COLUMNS = [
+    "ALTER TABLE tickets ADD COLUMN external_issues TEXT",
+    "ALTER TABLE rule_checks ADD COLUMN r8 TEXT",
+    "ALTER TABLE rule_checks ADD COLUMN r9 TEXT",
+    "ALTER TABLE tickets ADD COLUMN customer_portal_visible INTEGER",
+    # Reasoning tokens bill at the output rate but are reported separately;
+    # cached input bills at a discount. Both were missing from the estimate.
+    "ALTER TABLE qc_runs ADD COLUMN cached_tokens INTEGER",
+    "ALTER TABLE qc_runs ADD COLUMN thought_tokens INTEGER",
+    "ALTER TABLE qc_runs ADD COLUMN cost_estimated INTEGER",
+    # Hash of the content the AI actually grades, so a refetch that changes
+    # nothing no longer rescores — and re-bills — the whole day.
+    "ALTER TABLE ai_checks ADD COLUMN qc_fingerprint TEXT",
+]
+
+
 def init_db():
     with get_conn() as conn:
-        # migrate existing DBs that predate optional columns
-        for stmt in [
-            "ALTER TABLE tickets ADD COLUMN external_issues TEXT",
-            "ALTER TABLE rule_checks ADD COLUMN r8 TEXT",
-            "ALTER TABLE rule_checks ADD COLUMN r9 TEXT",
-            "ALTER TABLE tickets ADD COLUMN customer_portal_visible INTEGER",
-            # Reasoning tokens bill at the output rate but are reported
-            # separately; cached input bills at a discount. Both were missing
-            # from the cost estimate entirely.
-            "ALTER TABLE qc_runs ADD COLUMN cached_tokens INTEGER",
-            "ALTER TABLE qc_runs ADD COLUMN thought_tokens INTEGER",
-            "ALTER TABLE qc_runs ADD COLUMN cost_estimated INTEGER",
-        ]:
-            try:
-                conn.execute(stmt)
-            except Exception:
-                pass
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS tickets (
             id            TEXT PRIMARY KEY,
@@ -113,7 +117,12 @@ def init_db():
             a1 TEXT, a2 TEXT, a3 TEXT, a4 TEXT, a5 TEXT,
             ai_notes       TEXT,
             overall_result TEXT,
-            checked_at     TEXT
+            checked_at     TEXT,
+            -- Hash of the content that produced this grade. Rescoring compares
+            -- it rather than trusting fetched_at, so a refetch that changes
+            -- nothing costs nothing. NULL means "graded before fingerprints
+            -- existed" and forces exactly one regrade.
+            qc_fingerprint TEXT
         );
 
         CREATE TABLE IF NOT EXISTS fetch_log (
@@ -258,6 +267,16 @@ def init_db():
         );
         """)
 
+        # Bring an existing volume up to date. "duplicate column name" is the
+        # expected outcome on an already-migrated database, so only that is
+        # swallowed — anything else is a real schema problem and should surface.
+        for stmt in _ADDED_COLUMNS:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+
 
 # ── advisory locks ────────────────────────────────────────────────────────────
 # Keeps a scheduled run and a human clicking "Run QC" from working on the same
@@ -392,11 +411,37 @@ def latest_qc_run(date_str: str) -> dict | None:
     """Most recent scoring run for a day — used to show cost on the dashboard."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, status, prompt_tokens, output_tokens, cost_usd, model_used, finished_at"
+            "SELECT id, status, prompt_tokens, output_tokens, cost_usd,"
+            " cached_tokens, thought_tokens, cost_estimated, model_used, finished_at"
             " FROM qc_runs WHERE date = ? ORDER BY id DESC LIMIT 1",
             (date_str,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def qc_spend_for_date(date_str: str) -> dict:
+    """Cumulative scoring spend for a date, across every run.
+
+    Showing only the newest run made the cost look like it reset each time a
+    day was rescored. Spend accumulates, so report the total and let the caller
+    show the latest run's share separately.
+    """
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT COUNT(*)                       AS runs,
+                   COALESCE(SUM(cost_usd), 0)     AS total_cost_usd,
+                   COALESCE(SUM(prompt_tokens),0) AS total_prompt_tokens,
+                   COALESCE(SUM(output_tokens),0) AS total_output_tokens,
+                   COALESCE(SUM(thought_tokens),0) AS total_thought_tokens,
+                   MAX(COALESCE(cost_estimated, 0)) AS any_estimated
+            FROM qc_runs
+            WHERE date = ? AND status IN ('success', 'partial')
+        """, (date_str,)).fetchone()
+
+    out = dict(row)
+    out["total_cost_usd"] = round(out["total_cost_usd"] or 0, 6)
+    out["any_estimated"] = bool(out["any_estimated"])
+    return out
 
 
 def ticket_stats(date: str | None = None) -> dict:

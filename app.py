@@ -488,6 +488,40 @@ async def fetch_day(date_str: str, user: dict = Depends(auth.require_user)):
 
 # ── run AI checks (A1–A5) for a day ──────────────────────────────────────────
 
+@app.get("/api/qc/{date_str}/preview")
+async def preview_qc(date_str: str, user: dict = Depends(auth.require_user)):
+    """What running QC on this date would do, and what it has already cost.
+
+    Uses the same eligibility function as the run itself, so the count shown
+    here cannot disagree with what actually happens.
+    """
+    _require_date(date_str)
+
+    def load():
+        eligible, in_scope = qc_runner.eligible_for_scoring(date_str)
+        return len(eligible), in_scope, db.qc_spend_for_date(date_str)
+
+    eligible, in_scope, spend = await asyncio.to_thread(load)
+    if in_scope == 0:
+        reason = "No tickets in scope for this date."
+    elif eligible == 0:
+        reason = "Every ticket on this date is already scored and unchanged."
+    elif eligible == in_scope:
+        reason = f"All {in_scope} in-scope tickets need scoring."
+    else:
+        reason = (f"{eligible} of {in_scope} tickets changed or were never "
+                  "scored; the rest are unchanged and will be skipped.")
+
+    return {
+        "date": date_str,
+        "eligible": eligible,
+        "in_scope": in_scope,
+        "reason": reason,
+        "has_run": spend["runs"] > 0,
+        "spend": spend,
+    }
+
+
 @app.post("/api/qc/{date_str}")
 async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
     _require_date(date_str)
@@ -495,6 +529,10 @@ async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
     log = await asyncio.to_thread(db.get_fetch_log, date_str)
     if not log:
         raise HTTPException(404, "Day not fetched yet — fetch tickets first")
+
+    # Captured before the run so the response can show what this run added
+    # versus what the date had already cost.
+    spend_before = await asyncio.to_thread(db.qc_spend_for_date, date_str)
 
     try:
         with db.advisory_lock(f"qc:{date_str}", user["email"], ttl_seconds=3600):
@@ -506,8 +544,21 @@ async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
     except Exception as e:
         raise HTTPException(502, qc_runner.explain_vertex_error(e))
 
+    spend_after = await asyncio.to_thread(db.qc_spend_for_date, date_str)
     vault.audit(user["email"], "qc.run", f"{date_str} scored={result.get('scored')}")
-    return {"date": date_str, **result}
+    return {
+        "date": date_str,
+        **result,
+        "cost_split": {
+            "before": spend_before["total_cost_usd"],
+            "this_run": round(
+                spend_after["total_cost_usd"] - spend_before["total_cost_usd"], 6
+            ),
+            "total": spend_after["total_cost_usd"],
+            "runs": spend_after["runs"],
+            "any_estimated": spend_after["any_estimated"],
+        },
+    }
 
 
 # ── tickets for a day ─────────────────────────────────────────────────────────
@@ -517,15 +568,19 @@ async def get_day(date_str: str, user: dict = Depends(auth.require_user)):
     def load():
         log = db.get_fetch_log(date_str)
         tickets = review.annotate_tickets(db.get_day_tickets(date_str), user)
-        return log, tickets, db.latest_qc_run(date_str)
+        return (log, tickets, db.latest_qc_run(date_str),
+                db.qc_spend_for_date(date_str))
 
-    log, tickets, last_run = await asyncio.to_thread(load)
+    log, tickets, last_run, spend = await asyncio.to_thread(load)
     return {
         "date": date_str,
         "fetched": log is not None,
         "ticket_count": len(tickets),
         "tickets": tickets,
         "last_run": last_run,
+        # Cumulative across every run for the date, so a rescore adds to the
+        # figure rather than appearing to reset it.
+        "spend": spend,
     }
 
 

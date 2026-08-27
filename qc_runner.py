@@ -7,6 +7,7 @@ application-default login`, or the attached service account in GCP). No API
 keys. The GCP project and region are admin settings.
 """
 
+import hashlib
 import json
 import logging
 import threading
@@ -43,6 +44,11 @@ MAX_OUTPUT_TOKENS = 8192
 # thread could otherwise blow the context window for its five batch-mates.
 MAX_MESSAGE_CHARS = 4000
 MAX_TICKET_CHARS  = 24000
+
+# The R-checks that feed the overall verdict, in one place. r6 is never computed
+# and r9 always returns N/A (both dead per SPEC.md's R1–R8 rule set), but they
+# stay in the tuple because existing rows carry values for them.
+R_CHECK_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9")
 
 VERTEX_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
@@ -605,7 +611,7 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
 
 
 def _compute_overall(r_checks: dict, a: dict) -> str:
-    r_keys = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9"]
+    r_keys = R_CHECK_KEYS
     if any(r_checks.get(k) == "Fail" for k in r_keys):
         return "Fail"
     if a.get("a3") == "Poor" or a.get("a5") == "Fail":
@@ -625,6 +631,51 @@ def _is_retryable_error(exc: Exception) -> bool:
         "too many requests", "503", "unavailable", "service unavailable",
         "overloaded", "high demand", "try again",
     ])
+
+
+def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
+    """Hash of everything that can change a ticket's AI grade.
+
+    Rescoring used to be triggered by `tickets.fetched_at > ai_checks.checked_at`,
+    which meant any refetch marked the entire day stale and the next run rescored
+    it at full price — three runs existed for 2026-08-26, two of them identical.
+    Comparing content instead makes a no-op refetch genuinely free.
+
+    Deliberately covers only what `_build_ticket_block` puts in the prompt, plus
+    the R-checks it prints. Fields the model never sees (`link`, `fetched_at`,
+    `updated_at`) must NOT be here, or they would force pointless rescores.
+    Keep this in step with `_build_ticket_block`: a new prompt line that is not
+    represented here will not trigger a regrade.
+    """
+    cf = ticket.get("custom_fields")
+    if isinstance(cf, str):
+        try:
+            cf = json.loads(cf or "{}")
+        except json.JSONDecodeError:
+            cf = {}
+    cf = cf or {}
+
+    payload = {
+        "state":     ticket.get("state"),
+        "assignee":  ticket.get("assignee_name"),
+        "account":   ticket.get("account_name"),
+        "acct_type": ticket.get("account_type"),
+        "source":    ticket.get("source"),
+        "cpv":       ticket.get("customer_portal_visible"),
+        "title":     ticket.get("title"),
+        "func":      _cf_val(cf.get("functionalities")),
+        "cat":       _cf_val(cf.get("request_category")),
+        # R-checks are printed into the prompt, so a changed rule verdict is a
+        # changed prompt even when the ticket itself is untouched.
+        "r":         {k: r_checks.get(k) for k in R_CHECK_KEYS},
+        # Message order matters to the model, so preserve it rather than sorting.
+        "msgs":      [
+            [m.get("is_customer"), m.get("is_private"), m.get("message_html")]
+            for m in messages
+        ],
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def _build_ticket_block(t: dict, idx: int) -> str:
@@ -834,7 +885,7 @@ def _write_results(batch: list[dict], results: list[dict], date_str: str, now: s
                     "idx mismatch: expected %d got %d for ticket #%s — using positional match",
                     i, r_idx, t.get("number"),
                 )
-            r_checks  = {k: t.get(k) for k in ["r1","r2","r3","r4","r5","r7","r8","r9"]}
+            r_checks  = {k: t.get(k) for k in R_CHECK_KEYS}
             overall   = _compute_overall(r_checks, r)
             cf        = json.loads(t.get("custom_fields") or "{}")
             r_note    = _r_check_notes(r_checks, cf,
@@ -842,14 +893,18 @@ def _write_results(batch: list[dict], results: list[dict], date_str: str, now: s
                                        account_name=t.get("account_name", ""))
             ai_note   = r.get("ai_notes") or ""
             full_note = f"{r_note} | {ai_note}".strip(" |") if r_note else ai_note
+            # Record what was graded, so the next run can tell whether anything
+            # the model actually reads has changed.
+            fingerprint = qc_fingerprint(t, t.get("messages") or [], r_checks)
             conn.execute("""
                 INSERT OR REPLACE INTO ai_checks
-                    (ticket_id, fetch_date, a1, a2, a3, a4, a5, ai_notes, overall_result, checked_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (ticket_id, fetch_date, a1, a2, a3, a4, a5, ai_notes,
+                     overall_result, checked_at, qc_fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 t["id"], date_str,
                 r.get("a1"), r.get("a2"), r.get("a3"), r.get("a4"), r.get("a5"),
-                full_note, overall, now,
+                full_note, overall, now, fingerprint,
             ))
             scored += 1
     return scored, skipped
@@ -920,13 +975,15 @@ def _snapshot_and_compare(conn, run_id: int, date_str: str) -> tuple:
     return prev_id, round(same / len(pairs) * 100, 1), len(pairs) - same
 
 
-def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
-    """Score pending or stale tickets for date_str.
-    Stale = ticket was refetched after the AI check was last run.
-    Records the run — config, tokens, cost, and grade stability vs the
-    previous run of the same date. Returns counts plus run metadata.
+def _load_in_scope(date_str: str) -> list[dict]:
+    """Every ticket eligible for AI scoring on this date, with its messages.
+
+    Loads all in-scope tickets regardless of whether they need regrading, so a
+    single function decides scope and the caller decides freshness. Excluded
+    states (typically 'archived') are filtered here.
     """
     import rules as qc_rules
+
     excluded = qc_rules.excluded_states()
     not_in = ""
     params: list = [date_str]
@@ -939,18 +996,66 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
             SELECT t.id, t.number, t.title, t.state, t.assignee_name,
                    t.account_id, t.custom_fields, t.source, t.customer_portal_visible,
                    a.name AS account_name, a.type AS account_type,
-                   rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9
+                   rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
+                   ac.ticket_id AS scored_id, ac.qc_fingerprint AS scored_fingerprint
             FROM tickets t
             LEFT JOIN accounts    a  ON t.account_id = a.id
             LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
             LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
             WHERE t.fetch_date = ?
-              AND (ac.ticket_id IS NULL OR t.fetched_at > ac.checked_at)
               {not_in}
             ORDER BY t.number
         """, params).fetchall()
 
-    tickets = [dict(r) for r in rows]
+        tickets = [dict(r) for r in rows]
+        for t in tickets:
+            msgs = conn.execute(
+                "SELECT author_name, is_customer, is_private, message_html "
+                "FROM messages WHERE ticket_id = ? ORDER BY timestamp",
+                (t["id"],),
+            ).fetchall()
+            t["messages"] = [dict(m) for m in msgs]
+
+    return tickets
+
+
+def _needs_scoring(ticket: dict) -> bool:
+    """True when this ticket has never been graded, or its content has changed.
+
+    The old test was `tickets.fetched_at > ai_checks.checked_at`, which treated
+    any refetch as a change and rescored whole days at full price. A NULL stored
+    fingerprint means the ticket was graded before fingerprints existed, so it
+    is regraded exactly once and then stabilises.
+    """
+    if not ticket.get("scored_id"):
+        return True
+    stored = ticket.get("scored_fingerprint")
+    if not stored:
+        return True
+    current = qc_fingerprint(
+        ticket, ticket.get("messages") or [],
+        {k: ticket.get(k) for k in R_CHECK_KEYS},
+    )
+    return stored != current
+
+
+def eligible_for_scoring(date_str: str) -> tuple[list[dict], int]:
+    """(tickets needing a grade, total in scope) for this date.
+
+    Used by both the run and its preview, so the preview can never promise
+    something different from what the run does.
+    """
+    in_scope = _load_in_scope(date_str)
+    return [t for t in in_scope if _needs_scoring(t)], len(in_scope)
+
+
+def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
+    """Score tickets whose content has changed, or that were never scored.
+
+    Records the run — config, tokens, cost, and grade stability vs the
+    previous run of the same date. Returns counts plus run metadata.
+    """
+    tickets, _in_scope_total = eligible_for_scoring(date_str)
     if not tickets:
         # Nothing to grade is a legitimate outcome, but it used to return
         # without recording anything — so a day that was already complete left
@@ -981,15 +1086,8 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
 
     stats = RunStats()
 
-    with db.get_conn() as conn:
-        for t in tickets:
-            msgs = conn.execute(
-                "SELECT author_name, is_customer, is_private, message_html "
-                "FROM messages WHERE ticket_id = ? ORDER BY timestamp",
-                (t["id"],),
-            ).fetchall()
-            t["messages"] = [dict(m) for m in msgs]
-
+    # Messages already arrived with the tickets: _load_in_scope needs them to
+    # compute the fingerprint, so loading them again here would be wasted work.
     batches = [tickets[i : i + BATCH_SIZE] for i in range(0, len(tickets), BATCH_SIZE)]
     now     = _utc_now()
     scored  = 0

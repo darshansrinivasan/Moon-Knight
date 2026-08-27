@@ -20,7 +20,7 @@ trap 'rm -rf "$TMP"' EXIT
 KEY=$("$PYTHON" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
 FAILED=""
 
-for suite in t_scorer t_vault t_sched t_grades t_cost t_http; do
+for suite in t_scorer t_vault t_sched t_grades t_cost t_rescore t_http; do
     printf '\n═══ %s ═══\n' "$suite"
     if QC_DB_PATH="$TMP/$suite.db" QC_MASTER_KEY="$KEY" \
        PYTHONPATH="$PWD" "$PYTHON" "tests/$suite.py" 2>/dev/null; then

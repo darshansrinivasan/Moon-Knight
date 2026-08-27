@@ -15,3 +15,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Planning spec kept local, not committed
+docs/SPEC_v3.md

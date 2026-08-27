@@ -942,6 +942,7 @@ let selDate      = null;
 let allTickets   = [];  // full list for the selected day; filter works client-side
 let statusFilter = "";  // "" = all, "Pass" / "Fail" / "Needs Review" / "pending" / "unreviewed"
 let lastRun      = null; // latest qc_runs row for the selected day (cost)
+let daySpend     = null; // cumulative spend for the day: {runs, total_cost_usd, …}
 let coverages    = [];   // review coverage groups from Admin
 const selectedGroups = new Set(); // coverage id strings, plus "ungrouped"
 let groupDefaultApplied = false;
@@ -1090,7 +1091,8 @@ async function selectDay(dateStr) {
   }
 
   const day2 = day;
-  lastRun = day2.last_run || null;
+  lastRun  = day2.last_run || null;
+  daySpend = day2.spend || null;
   document.getElementById("refetch-btn").style.display = "flex";
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
@@ -1098,6 +1100,7 @@ async function selectDay(dateStr) {
   populateAssigneeFilter(allTickets);
   populateStatusPills(allTickets);
   applyFilters();
+  setQcButtonLabel();
   loadStats(selDate);
 }
 
@@ -1114,13 +1117,15 @@ async function refetchDay() {
     await renderCalendar();
     const r2   = await fetch(`/api/day/${selDate}`);
     const day2 = await r2.json();
-    lastRun = day2.last_run || lastRun;
+    lastRun  = day2.last_run || lastRun;
+    daySpend = day2.spend || daySpend;
     document.getElementById("download-btn").style.display = "flex";
     document.getElementById("qc-btn").style.display = "flex";
-    allTickets = day2.tickets;
+    allTickets = day2.tickets || [];
     populateAssigneeFilter(allTickets);
     populateStatusPills(allTickets);
     applyFilters();
+    setQcButtonLabel();
     loadStats(selDate);
   } catch(e) {
     document.getElementById("panel-meta").textContent = `Refetch failed: ${e.message}`;
@@ -1131,16 +1136,26 @@ async function refetchDay() {
 }
 
 async function refreshDayPanel(dateStr) {
-  const r    = await fetch(`/api/day/${dateStr}`);
-  const day  = await r.json();
+  const day = await getJSON(`/api/day/${dateStr}`);
   lastRun = day.last_run || lastRun;
+  daySpend = day.spend || daySpend;
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
-  allTickets = day.tickets;
+  allTickets = day.tickets || [];
   populateAssigneeFilter(allTickets);
   populateStatusPills(allTickets);
   applyFilters();
+  setQcButtonLabel();
   loadStats(dateStr);
+}
+
+// "Run QC" on a date that has already been scored is misleading — it reads as
+// if nothing has happened yet. The label follows whether spend exists.
+function setQcButtonLabel() {
+  const btn = document.getElementById("qc-btn");
+  if (!btn) return;
+  const hasRun = (daySpend && daySpend.runs > 0) || lastRun;
+  btn.textContent = hasRun ? "▶ Re-run QC" : "▶ Run QC";
 }
 
 async function runQC() {
@@ -1148,6 +1163,30 @@ async function runQC() {
   const qcDate = selDate;
   const btn        = document.getElementById("qc-btn");
   const refetchBtn = document.getElementById("refetch-btn");
+
+  // Ask what the run would actually do before spending anything. The preview
+  // shares its eligibility query with the run, so this count is authoritative.
+  try {
+    const pre = await getJSON(`/api/qc/${qcDate}/preview`);
+    if (pre.eligible === 0) {
+      document.getElementById("panel-meta").textContent = pre.reason;
+      return;
+    }
+    if (pre.has_run) {
+      const spent = Number(pre.spend.total_cost_usd || 0).toFixed(4);
+      const ok = confirm(
+        `${pre.reason}\n\n`
+        + `Already spent on this date: ~$${spent} across ${pre.spend.runs} run(s).\n`
+        + `Re-run QC for the ${pre.eligible} ticket(s) that need it?`
+      );
+      if (!ok) return;
+    }
+  } catch (e) {
+    // A failed preview must not block the run — fall through and let the POST
+    // report any real problem.
+    console.warn("QC preview unavailable:", e.message);
+  }
+
   btn.disabled = true;
   refetchBtn.disabled = true;
   btn.textContent = "⏳ Running…";
@@ -1165,13 +1204,17 @@ async function runQC() {
   })();
 
   let fetchErr = null;
+  let costSplit = null;
   try {
     const r = await fetch(`/api/qc/${qcDate}`, { method: "POST" });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) {
       fetchErr = new Error(body.detail || r.statusText);
-    } else if (body.prompt_tokens != null || body.cost_usd != null) {
-      lastRun = body;
+    } else {
+      if (body.prompt_tokens != null || body.cost_usd != null) {
+        lastRun = body;
+      }
+      costSplit = body.cost_split || null;
     }
   } catch(e) {
     fetchErr = e;
@@ -1187,11 +1230,21 @@ async function runQC() {
 
       if (fetchErr) {
         document.getElementById("panel-meta").textContent = `QC error: ${fetchErr.message}`;
+      } else if (costSplit) {
+        // Show what this run added rather than replacing the figure, so a
+        // re-run visibly accumulates instead of appearing to reset.
+        const money = v => "$" + Number(v || 0).toFixed(4);
+        const tilde = costSplit.any_estimated ? "~" : "";
+        document.getElementById("panel-meta").textContent =
+          `Previously ${tilde}${money(costSplit.before)} · `
+          + `This run ${tilde}${money(costSplit.this_run)} · `
+          + `Total ${tilde}${money(costSplit.total)} est. `
+          + `(${costSplit.runs} run${costSplit.runs === 1 ? "" : "s"})`;
       }
 
       refetchBtn.disabled = false;
       btn.disabled = false;
-      btn.textContent = "▶ Run QC";
+      setQcButtonLabel();
     }
   }
 }
@@ -1667,7 +1720,16 @@ function setActivePill(status) {
 // Always "~": this is estimated from a local price table, not a billed amount.
 // A run whose model had no price entry says so outright, because the fallback
 // rate can be an order of magnitude wrong for a pro-tier model.
-function formatCost(run) {
+//
+// Prefers the day's CUMULATIVE spend over the latest run: a re-run adds to what
+// the date has cost, and showing only the newest run made the figure look like
+// it had reset.
+function formatCost(run, spend) {
+  if (spend && spend.runs > 0 && Number.isFinite(Number(spend.total_cost_usd))) {
+    const suffix = spend.any_estimated ? " (unpriced model)" : "";
+    const runs = spend.runs > 1 ? ` over ${spend.runs} runs` : "";
+    return `~$${Number(spend.total_cost_usd).toFixed(4)} est.${runs}${suffix}`;
+  }
   if (!run) return "";
   const tokens = (Number(run.prompt_tokens) || 0) + (Number(run.output_tokens) || 0);
   if (!tokens) return "usage not reported";
@@ -1691,7 +1753,7 @@ function applyFilters() {
   const tickets = isFiltered
     ? `${filtered.length} of ${allTickets.length} tickets`
     : `${allTickets.length} tickets`;
-  const cost = formatCost(lastRun);
+  const cost = formatCost(lastRun, daySpend);
   document.getElementById("panel-meta").textContent = cost ? `${tickets} · ${cost}` : tickets;
 }
 
