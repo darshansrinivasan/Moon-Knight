@@ -873,6 +873,26 @@ async def get_rules(user: dict = Depends(auth.require_user)):
     }
 
 
+@app.get("/api/ticket-states")
+async def ticket_states(user: dict = Depends(auth.require_user)):
+    """Every Pylon status seen across all fetched tickets, with totals.
+
+    The dashboard's status filter offers these rather than only the states
+    present on the selected day: a filter that silently changes its own options
+    as you move between days is not a filter you can rely on.
+    """
+    def query():
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT state, COUNT(*) AS n FROM tickets"
+                " WHERE state IS NOT NULL AND state != '' AND deleted_at IS NULL"
+                " GROUP BY state ORDER BY n DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    return {"states": await asyncio.to_thread(query)}
+
+
 @app.get("/api/rules/suggestions")
 async def rules_suggestions(days: int = 30,
                             user: dict = Depends(auth.require_user)):

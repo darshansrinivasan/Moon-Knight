@@ -95,7 +95,10 @@
   --pending: var(--color-neutral-800);
 
   --radius: var(--radius-md);
-  --nav-w: 200px;
+  /* 168px: the nav holds five short words, so the old 200px was mostly empty
+     gutter the ticket table could use. Nocturne's own sidebar sits at 188px
+     including wider padding; this is that, tightened. */
+  --nav-w: 168px;
   --nav-w-collapsed: 56px;
 }
 
