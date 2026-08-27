@@ -67,7 +67,6 @@
     gap: var(--space-8);
     overflow-y: auto;
   }
-  .rail.collapsed { display: none; }
   .rail-section { display: flex; flex-direction: column; gap: var(--space-3); }
   .rail-title {
     font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
@@ -98,10 +97,6 @@
     width: 18px; flex: none; font-size: 10px;
     color: color-mix(in srgb, var(--color-text) 40%, transparent);
   }
-  .rail-toggle {
-    font-size: 11px; padding: 4px 9px;
-  }
-
   /* ── the check matrix ─────────────────────────────────────────────────
      Twelve 16×20 cells replace twelve full-width chips, which used to eat the
      row and push the verdict off-screen. Every state carries a GLYPH as well as
@@ -145,8 +140,7 @@
 
   @media (max-width: 1180px) {
     /* The rail now carries the calendar, so it holds on longer than context
-       alone would justify. Below this the ticket list needs the width more,
-       and the toggle brings the rail back. */
+       alone would justify. Below this the ticket list needs the width more. */
     .rail { display: none; }
   }
 
@@ -1031,12 +1025,6 @@
   <div class="stat-pill" id="stat-total">Loading…</div>
   <div class="stat-pill" id="stat-ai">AI checks: <b>—</b></div>
   <div class="spacer"></div>
-  <!-- Real buttons, not clickable divs: these need keyboard focus and an
-       announced expanded/collapsed state. -->
-  <button class="ghost rail-toggle" id="cal-toggle" type="button"
-          aria-expanded="true" aria-controls="cal-panel">Hide calendar</button>
-  <button class="ghost rail-toggle" id="rail-toggle" type="button"
-          aria-expanded="true" aria-controls="rail">Hide insights</button>
 </header>
 
 <div class="layout">
@@ -2510,44 +2498,6 @@ function applyFilters() {
 }
 
 // ── right rail ───────────────────────────────────────────────────────────────
-const CHROME_KEY = "qc.chrome.v1";
-
-function loadChrome() {
-  try {
-    return JSON.parse(localStorage.getItem(CHROME_KEY) || "{}") || {};
-  } catch { return {}; }
-}
-
-function saveChrome(patch) {
-  try {
-    localStorage.setItem(CHROME_KEY, JSON.stringify({ ...loadChrome(), ...patch }));
-  } catch { /* storage unavailable — the layout just does not persist */ }
-}
-
-function setRailCollapsed(collapsed) {
-  const rail = document.getElementById("rail");
-  const btn = document.getElementById("rail-toggle");
-  if (rail) rail.classList.toggle("collapsed", collapsed);
-  if (btn) {
-    btn.setAttribute("aria-expanded", String(!collapsed));
-    btn.textContent = collapsed ? "Show insights" : "Hide insights";
-  }
-  saveChrome({ railCollapsed: collapsed });
-}
-
-// The calendar is a section of the right rail now, so hiding it collapses that
-// section rather than a whole column.
-function setCalCollapsed(collapsed) {
-  const cal = document.getElementById("cal-panel");
-  const btn = document.getElementById("cal-toggle");
-  if (cal) cal.style.display = collapsed ? "none" : "flex";
-  if (btn) {
-    btn.setAttribute("aria-expanded", String(!collapsed));
-    btn.textContent = collapsed ? "Show calendar" : "Hide calendar";
-  }
-  saveChrome({ calCollapsed: collapsed });
-}
-
 // The check legend is derived from CHECKS, so a renamed check cannot drift out
 // of step with the matrix heads.
 function renderRailLegend() {
@@ -2964,31 +2914,19 @@ function renderAnalytics(assignees) {
   });
 })();
 
-// Collapsible chrome. Both panes remember their state per viewer.
+// The rail and its calendar are always shown; the width breakpoint is the only
+// thing that hides them. There were "Hide calendar" and "Hide insights" buttons
+// here, which are gone.
 (function wireChrome() {
-  const railBtn = document.getElementById("rail-toggle");
-  const calBtn = document.getElementById("cal-toggle");
-  const saved = loadChrome();
-
-  // Below the rail's media-query breakpoint it is hidden by CSS anyway, so
-  // start collapsed there rather than showing a toggle that appears to do
-  // nothing.
-  const narrow = window.matchMedia("(max-width: 1400px)").matches;
-  setRailCollapsed(saved.railCollapsed ?? narrow);
-  setCalCollapsed(saved.calCollapsed ?? false);
-
-  if (railBtn) {
-    railBtn.addEventListener("click", () => {
-      const rail = document.getElementById("rail");
-      setRailCollapsed(!rail.classList.contains("collapsed"));
-    });
-  }
-  if (calBtn) {
-    calBtn.addEventListener("click", () => {
-      const cal = document.getElementById("cal-panel");
-      setCalCollapsed(cal.style.display !== "none");
-    });
-  }
+  // A viewer who collapsed a pane before the buttons were removed still has
+  // that choice in their browser, and would now be stuck with a hidden rail and
+  // nothing to click. So the saved state is actively cleared rather than merely
+  // ignored, and any inline display left on the calendar is undone.
+  try { localStorage.removeItem("qc.chrome.v1"); } catch { /* not available */ }
+  const rail = document.getElementById("rail");
+  if (rail) rail.classList.remove("collapsed");
+  const cal = document.getElementById("cal-panel");
+  if (cal) cal.style.removeProperty("display");
 
   renderRailLegend();
 })();

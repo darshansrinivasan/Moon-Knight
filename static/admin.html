@@ -8,6 +8,37 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
+  .status-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: var(--space-3); margin: var(--space-6) 0;
+  }
+  .status-row {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border); border-radius: 8px;
+    cursor: pointer; min-width: 0;
+  }
+  .status-row:hover { border-color: color-mix(in srgb, var(--color-text) 26%, transparent); }
+  /* An excluded status is tinted, not greyed out: it is a deliberate choice,
+     not a disabled control. */
+  .status-row.off {
+    background: color-mix(in srgb, var(--review) 10%, transparent);
+    border-color: color-mix(in srgb, var(--review) 34%, transparent);
+  }
+  .status-row input { flex: none; }
+  .status-name {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; font-size: 12px;
+  }
+  .status-n {
+    flex: none; font-size: 11px; font-variant-numeric: tabular-nums;
+    color: color-mix(in srgb, var(--color-text) 45%, transparent);
+  }
+  .status-row.gone .status-name {
+    color: color-mix(in srgb, var(--color-text) 45%, transparent);
+    font-style: italic;
+  }
+
   .cred { border-top: 1px solid var(--border); padding: 14px 0; }
   .cred:first-of-type { border-top: none; padding-top: 0; }
   .cred-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -97,6 +128,7 @@
       <button data-section="slack">Slack delivery</button>
       <button data-section="people">People</button>
       <button data-section="review">Review coverage</button>
+      <button data-section="statuses">Ticket statuses</button>
       <button data-section="audit" id="nav-audit">Activity log</button>
     </aside>
     <div class="content-pane">
@@ -246,6 +278,30 @@
               </div>
             </div>
             <div class="msg" id="msg-coverage"></div>
+          </div>
+        </div>
+
+        <div class="section" id="sec-statuses">
+          <div class="card">
+            <h2>Ticket statuses</h2>
+            <p class="card-sub">
+              Which Pylon statuses count as work the team is graded on. An excluded status is
+              out of scope everywhere at once — it is not scored, not counted in the
+              calendar, the day list, the leaderboard or the Slack report, and not billed.
+              It is still fetched and still stored, so excluding a status is reversible and
+              re-including one brings its history back.
+            </p>
+            <p class="card-sub">
+              The list is built from statuses actually present in fetched tickets, so a new
+              Pylon status appears here on its own once the first ticket carrying it is
+              fetched. Nothing needs a deploy.
+            </p>
+            <div id="status-summary" class="hint"></div>
+            <div id="status-list" class="status-grid"></div>
+            <div class="actions">
+              <button type="button" id="status-save">Save statuses</button>
+            </div>
+            <div class="msg" id="msg-statuses"></div>
           </div>
         </div>
 
@@ -803,10 +859,81 @@ function resetCoverageForm() {
   });
 }
 
+/* ── ticket statuses in scope ────────────────────────────────────────────────
+ * One editor for `excluded_states`, saved through the same validated PUT the
+ * Rules page uses. It PUTs only that key: rules.save merges over what is
+ * stored, so a narrow editor cannot disturb the rest of the document.
+ *
+ * The list comes from /api/ticket-states — statuses actually present in fetched
+ * tickets — so a status Pylon adds later needs no code change to appear. A
+ * status that is excluded but no longer present in any ticket is still listed,
+ * marked, so an exclusion can be found and undone rather than lingering as an
+ * invisible rule.
+ */
+let STATUS_ROWS = [];
+
+function renderStatuses(seen, excluded) {
+  const counts = new Map(seen.map(s => [s.state, s.n]));
+  const off = new Set(excluded);
+  // Every status in the data, plus any excluded one that has aged out of it.
+  const names = [...new Set([...counts.keys(), ...off])];
+  names.sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0)
+                       || a.localeCompare(b));
+
+  STATUS_ROWS = names;
+  $("status-list").innerHTML = names.map(name => {
+    const n = counts.get(name);
+    const gone = n === undefined;
+    return `<label class="status-row ${off.has(name) ? "off" : ""} ${gone ? "gone" : ""}">
+      <input type="checkbox" data-status="${esc(name)}" ${off.has(name) ? "checked" : ""}>
+      <span class="status-name" title="${esc(name)}">${esc(name)}</span>
+      <span class="status-n">${gone ? "not in any ticket" : esc(n) + " tickets"}</span>
+    </label>`;
+  }).join("");
+
+  $("status-list").querySelectorAll("input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      cb.closest(".status-row").classList.toggle("off", cb.checked);
+      summariseStatuses(counts);
+    });
+  });
+  summariseStatuses(counts);
+}
+
+// Excluding a status has a size. Saying how many tickets it removes is the
+// difference between a checkbox and an informed decision.
+function summariseStatuses(counts) {
+  const chosen = [...$("status-list").querySelectorAll("input:checked")]
+    .map(cb => cb.dataset.status);
+  let total = 0, hidden = 0;
+  for (const [, n] of counts) total += n;
+  for (const s of chosen) hidden += counts.get(s) || 0;
+  const inScope = total - hidden;
+  $("status-summary").textContent = chosen.length
+    ? `Excluding ${chosen.length} status${chosen.length === 1 ? "" : "es"} `
+      + `leaves ${inScope.toLocaleString()} of ${total.toLocaleString()} `
+      + `fetched tickets in scope (${hidden.toLocaleString()} excluded).`
+    : `Nothing excluded — all ${total.toLocaleString()} fetched tickets are `
+      + `graded and counted.`;
+}
+
+async function loadStatuses() {
+  const [states, rules] = await Promise.all([
+    api("/api/ticket-states"), api("/api/rules"),
+  ]);
+  renderStatuses(states.states || [], rules.rules.excluded_states || []);
+}
+
 function applyReadOnly() {
   if (DATA.can_edit) return;
   document.body.classList.add("readonly");
-  document.querySelectorAll("#content input, #content select, #content textarea")
+  // Buttons too. The sweep covered only fields, so every action button in every
+  // section stayed live for a member — the endpoints are all admin-gated, so
+  // pressing one produced a 403 rather than a change, but offering a control
+  // that cannot work is its own defect. The section nav sits outside #content
+  // and keeps working, so a read-only viewer can still look around.
+  document.querySelectorAll(
+    "#content input, #content select, #content textarea, #content button")
     .forEach(el => { el.disabled = true; });
   $("readonly-note").innerHTML =
     `<div class="banner info"><b>Read-only view</b>
@@ -849,10 +976,55 @@ async function load() {
     show($("msg-coverage"), e.message, "err");
   }
 
+  try {
+    await loadStatuses();
+  } catch (e) {
+    show($("msg-statuses"), e.message, "err");
+  }
+
   applyReadOnly();
   $("loading").style.display = "none";
   $("content").style.display = "block";
 }
+
+$("status-save").addEventListener("click", async () => {
+  const msg = $("msg-statuses");
+  const chosen = [...$("status-list").querySelectorAll("input:checked")]
+    .map(cb => cb.dataset.status);
+  show(msg, "Saving…", "info");
+  $("status-save").disabled = true;
+  try {
+    // Raw fetch, not QC.api: a validation failure comes back as 422 with an
+    // `errors` array and no `detail`, and QC.api would throw "Unprocessable
+    // Entity" and lose the actual reasons.
+    //
+    // Only excluded_states goes in the body. The merge in rules.save is what
+    // makes that safe — a partial save used to reset every key it omitted.
+    const r = await fetch("/api/rules", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rules: {excluded_states: chosen}}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 422) {
+      show(msg, "Rejected — nothing was saved. "
+                + (d.errors || []).join("; "), "err");
+      return;
+    }
+    if (!r.ok) {
+      show(msg, d.detail || `HTTP ${r.status}`, "err");
+      return;
+    }
+    show(msg, chosen.length
+      ? `Saved. ${chosen.join(", ")} ${chosen.length === 1 ? "is" : "are"} now out `
+        + `of scope everywhere — scoring, the calendar, the leaderboard and Slack. `
+        + `Existing grades are kept; re-including a status brings them back.`
+      : "Saved. Every status is in scope.", "ok");
+  } catch (e) {
+    show(msg, e.message, "err");
+  } finally {
+    $("status-save").disabled = !(DATA && DATA.can_edit);
+  }
+});
 
 $("test-slack").addEventListener("click", async () => {
   const msg = $("msg-slack");

@@ -87,3 +87,68 @@ blocks = slack._summary_blocks(s2, "https://x")
 text = str(blocks)
 assert "could not be graded" in text, "a real gap must raise an alarm line"
 print("PASS: real scoring gaps still alarm loudly")
+print()
+
+# ── every surface must agree about what is in scope ──────────────────────────
+# /api/analytics carried the soft-delete guard but not the excluded-state
+# filter, so with 'archived' excluded from scoring, archived tickets still
+# counted toward every assignee's total and sat as "pending" forever: waiting
+# for a grade the scorer would never give them, because it agreed they were out
+# of scope. In production that read as 1,691 tickets with 860 pending on the
+# Analytics page against 877 and 83 on the leaderboard, same month, same data.
+# The predicate now has one home in rules.excluded_state_clause; this asserts
+# every reader uses it.
+import leaderboard
+
+IN_SCOPE, ARCHIVED = 41, 23     # 40 seeded + the 'gap' ticket added above
+
+print("=== every surface agrees about scope ===")
+
+cal = db.get_calendar_day("2026-08-26")
+print(f"  calendar cell count   = {cal['ticket_count']}")
+assert cal["ticket_count"] == IN_SCOPE, cal["ticket_count"]
+
+month = {c["fetch_date"]: c for c in db.get_calendar_month(2026, 8)}
+print(f"  calendar month cell   = {month['2026-08-26']['ticket_count']}")
+assert month["2026-08-26"]["ticket_count"] == IN_SCOPE
+
+day = db.get_day_tickets("2026-08-26")
+print(f"  day list length       = {len(day)}")
+assert len(day) == IN_SCOPE
+assert not any(t["state"] == "archived" for t in day), \
+    "an archived ticket must not appear in the work queue"
+
+print(f"  slack total           = {s2['total']}")
+assert s2["total"] == IN_SCOPE
+
+lb = leaderboard.build("2026-08-26", "2026-08-26")
+print(f"  leaderboard in_scope  = {lb['totals']['in_scope']}")
+assert lb["totals"]["in_scope"] == IN_SCOPE, lb["totals"]
+
+print(f"  excluded, counted once= {db.excluded_ticket_count('2026-08-26')}")
+assert db.excluded_ticket_count("2026-08-26") == ARCHIVED
+print("PASS: calendar, day list, Slack and leaderboard all count the same day")
+print()
+
+# Turning the exclusion off must bring them back everywhere, together — the
+# setting is the single control, not four independent ones.
+vault.set_raw_setting("qc_rules_json", '{"excluded_states": []}', "test")
+qc_rules.invalidate()
+print("=== with nothing excluded, every surface includes them again ===")
+both = IN_SCOPE + ARCHIVED
+print(f"  calendar={db.get_calendar_day('2026-08-26')['ticket_count']} "
+      f"day={len(db.get_day_tickets('2026-08-26'))} "
+      f"slack={slack.build_summary('2026-08-26')['total']} "
+      f"leaderboard={leaderboard.build('2026-08-26','2026-08-26')['totals']['in_scope']}")
+assert db.get_calendar_day("2026-08-26")["ticket_count"] == both
+assert len(db.get_day_tickets("2026-08-26")) == both
+assert slack.build_summary("2026-08-26")["total"] == both
+assert leaderboard.build("2026-08-26", "2026-08-26")["totals"]["in_scope"] == both
+assert db.excluded_ticket_count("2026-08-26") == 0
+print("PASS: one setting moves every surface together")
+
+# Restore, so the file leaves the DB as it found it.
+vault.set_raw_setting("qc_rules_json", '{"excluded_states": ["archived"]}', "test")
+qc_rules.invalidate()
+print()
+print("ALL GRADE ASSERTIONS PASSED")

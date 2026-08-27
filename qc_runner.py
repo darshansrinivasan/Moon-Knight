@@ -925,12 +925,9 @@ def _load_in_scope(date_str: str) -> list[dict]:
     """
     import rules as qc_rules
 
-    excluded = qc_rules.excluded_states()
-    not_in = ""
-    params: list = [date_str]
-    if excluded:
-        not_in = f"AND t.state NOT IN ({','.join('?' * len(excluded))})"
-        params += excluded
+    clause, extra = qc_rules.excluded_state_clause("t")
+    not_in = f"AND {clause}" if clause else ""
+    params: list = [date_str, *extra]
 
     with db.get_conn() as conn:
         rows = conn.execute(f"""

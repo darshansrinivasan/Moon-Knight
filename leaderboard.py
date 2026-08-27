@@ -113,10 +113,10 @@ def _load_rows(start: str | None, end: str | None) -> list[dict]:
         clauses.append("t.fetch_date BETWEEN ? AND ?")
         params += [start, end]
 
-    excluded = qc_rules.excluded_states()
-    if excluded:
-        clauses.append(f"t.state NOT IN ({','.join('?' * len(excluded))})")
-        params += excluded
+    clause, extra = qc_rules.excluded_state_clause("t")
+    if clause:
+        clauses.append(clause)
+        params += extra
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rule_sums = ",\n".join(

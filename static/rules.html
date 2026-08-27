@@ -10,13 +10,14 @@
 <style>
   .no-params { font-size: 12px; color: var(--muted); font-style: italic; }
   .state-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  /* Read-only chips: this is a view of the scope, not a control. Admin →
+     Ticket statuses owns the setting, so no pointer cursor is offered here. */
   .state-chip {
     display: inline-flex; align-items: center; gap: 6px;
     background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 14px; padding: 4px 11px; font-size: 12px; cursor: pointer;
+    border-radius: 14px; padding: 4px 11px; font-size: 12px;
     user-select: none; font-family: ui-monospace, Menlo, monospace;
   }
-  .state-chip input { accent-color: var(--accent); cursor: pointer; }
   .state-chip.on { border-color: var(--accent); background: color-mix(in srgb, var(--color-accent) 14%, transparent); color: var(--accent2); }
   body.readonly .state-chip { pointer-events: none; }
   .rubric {
@@ -181,10 +182,18 @@
         <div class="card">
           <h2>Scoring scope</h2>
           <p class="what">
-            Tickets in a checked state are skipped by AI scoring — they get no grades and never
-            appear in the Slack report. Deterministic R-checks still run at fetch time.
+            An excluded status is out of scope everywhere at once: not scored, not counted in
+            the calendar, the day list, the leaderboard or the Slack report, and not billed.
+            Deterministic R-checks still run at fetch time, and the tickets are still fetched
+            and stored, so an exclusion is reversible.
           </p>
           <div class="state-row" id="states"></div>
+          <p class="hint" style="margin-top:var(--space-4)">
+            Shown here for context. Statuses are chosen in
+            <a href="/admin">Admin → Ticket statuses</a>, which lists every status Pylon has
+            actually sent with the number of tickets in each, so you can see what excluding
+            one costs before you do it. Keeping one editor means the two cannot disagree.
+          </p>
         </div>
       </div>
 
@@ -518,16 +527,15 @@ function renderStates(excluded) {
     "new","waiting_on_you","waiting_on_customer","waiting_on_csm","waiting_on_engg",
     "waiting_on_product","waiting_on_legal","investigating","on_hold","closed","archived",
     ...excluded]);
+  // Read-only: Admin → Ticket statuses owns this setting. Rendered as chips
+  // rather than checkboxes so the page does not offer a control it will not
+  // honour — this form's save no longer carries excluded_states at all.
   $("states").innerHTML = [...known].map(st => {
     const on = excluded.includes(st);
-    return `<label class="state-chip ${on ? "on" : ""}">
-      <input type="checkbox" data-state="${esc(st)}" ${on ? "checked" : ""}
-             ${DATA.can_edit ? "" : "disabled"}>${esc(st)}</label>`;
+    return `<span class="state-chip ${on ? "on" : ""}"
+       title="${on ? "Excluded from scoring and every count"
+                   : "In scope — graded and counted"}">${esc(st)}</span>`;
   }).join("");
-  $("states").querySelectorAll("input").forEach(cb => {
-    cb.addEventListener("change", () =>
-      cb.closest(".state-chip").classList.toggle("on", cb.checked));
-  });
 }
 
 function collect() {
@@ -538,8 +546,6 @@ function collect() {
   for (const k of CSVS)  rules[k] = $(k).value.split(",").map(x => x.trim()).filter(Boolean);
   rules.r4_sla_hours = Number($("r4_sla_hours").value);
   Object.assign(rules, draftPrompt());
-  rules.excluded_states = [...$("states").querySelectorAll("input:checked")]
-    .map(cb => cb.dataset.state);
   const gs = {};
   for (const line of $("r5_group_states").value.split("\n")) {
     const [st, tags] = line.split(":");

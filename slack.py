@@ -115,32 +115,31 @@ def build_summary(date_str: str) -> dict:
     excluded from AI scoring are reported separately from genuinely pending
     ones: counting them as "not scored" made a completely healthy run look like
     it had silently dropped a third of the day.
+
+    Scope is decided by the query, not here. `get_day_tickets` returns only
+    tickets in scope, so every count below is over in-scope tickets and the
+    excluded ones are counted separately for the one line that names them. This
+    function used to re-derive the exclusion per ticket in three places, which is
+    three chances to disagree with the scorer about what the day contained.
     """
-    import rules as qc_rules
     import review
 
     tickets  = review.apply_effective_grades(db.get_day_tickets(date_str))
-    excluded_states = set(qc_rules.excluded_states())
+    excluded = db.excluded_ticket_count(date_str)
 
     counts   = {"Pass": 0, "Fail": 0, "Needs Review": 0}
     pending  = 0
-    excluded = 0
     for t in tickets:
         result = t.get("overall_result")
         if result in counts:
             counts[result] += 1
-        elif (t.get("state") or "") in excluded_states:
-            excluded += 1
         else:
             pending += 1
 
-    # Excluded tickets are out of scope, so they are out of the denominator too.
-    total = len(tickets) - excluded
+    total = len(tickets)
 
     rule_fails = {}
     for t in tickets:
-        if (t.get("state") or "") in excluded_states:
-            continue
         for key in RULE_LABELS:
             if t.get(key) == "Fail":
                 rule_fails[key] = rule_fails.get(key, 0) + 1

@@ -1223,17 +1223,28 @@ async def get_analytics(
         _require_month(month)
 
     def query():
+        import rules as qc_rules
+
         # Every branch carries the soft-delete guard: a ticket removed at source
         # must not keep counting toward anyone's leaderboard.
         if start and end:
             where  = "WHERE t.deleted_at IS NULL AND t.fetch_date BETWEEN ? AND ?"
-            params = (start, end)
+            params = [start, end]
         elif month:
             where  = "WHERE t.deleted_at IS NULL AND t.fetch_date LIKE ?"
-            params = (f"{month}-%",)
+            params = [f"{month}-%"]
         else:
             where  = "WHERE t.deleted_at IS NULL"
-            params = ()
+            params = []
+
+        # Out-of-scope states, on the same terms as scoring and the leaderboard.
+        # Without this, archived tickets counted toward every assignee's total
+        # and sat as "pending" forever — waiting for a grade the scorer would
+        # never give them, because it excluded them too.
+        clause, extra = qc_rules.excluded_state_clause("t")
+        if clause:
+            where += f" AND {clause}"
+            params += extra
         with db.get_conn() as conn:
             rows = conn.execute(f"""
                 SELECT

@@ -171,6 +171,60 @@ check("members cannot spend money or requery",
       and '$("sug-days").querySelectorAll("button").forEach(b => b.disabled = true)' in RULES)
 
 print()
+print("=== excluded statuses have exactly one editor ===")
+# Two editors for one setting means two chances to disagree, and the loser
+# silently wins whichever saved last. Admin owns it; Rules shows it.
+ADMIN = (STATIC / "admin.html").read_text()
+RULES = (STATIC / "rules.html").read_text()
+
+check("Admin has the statuses section", 'id="sec-statuses"' in ADMIN)
+check("Admin has a nav entry for it", 'data-section="statuses"' in ADMIN)
+check("Admin saves it", 'id="status-save"' in ADMIN)
+check("Admin PUTs only that key",
+      'JSON.stringify({rules: {excluded_states: chosen}})' in ADMIN)
+# QC.api throws on 422 without surfacing `errors`, so this save must use raw
+# fetch or a rejected status list reports "Unprocessable Entity" and no reason.
+check("Admin reads the 422 body itself", "r.status === 422" in ADMIN)
+
+# The list must come from the data, not a literal, or a status Pylon adds later
+# is invisible until someone edits the page.
+check("Admin builds the list from fetched tickets",
+      '"/api/ticket-states"' in ADMIN)
+for literal in ("waiting_on_customer", "waiting_on_engg", "investigating"):
+    check(f"Admin does not hardcode '{literal}'", literal not in ADMIN)
+
+# Rules may read it, but must not send it.
+check("Rules still shows the scope", "renderStates" in RULES)
+check("Rules does not write it",
+      "rules.excluded_states =" not in RULES)
+check("Rules points at the owner", "Admin → Ticket statuses" in RULES)
+check("Rules renders it as chips, not controls",
+      'data-state=' not in RULES)
+
+print()
+print("=== the read-only sweep covers buttons, not just fields ===")
+# It swept input/select/textarea only, so every action button in every section
+# stayed live for a member. The endpoints are admin-gated, so pressing one gave
+# a 403 rather than a change — but offering a control that cannot work is a
+# defect of its own.
+check("buttons are disabled too", "#content button" in ADMIN)
+check("the section nav is left alone",
+      '#admin-nav' in ADMIN and 'id="admin-nav"' in ADMIN)
+
+print()
+print("=== the removed chrome toggles left nothing behind ===")
+for gone in ("rail-toggle", "cal-toggle", "CHROME_KEY", "saveChrome",
+             "loadChrome", "setRailCollapsed", "setCalCollapsed",
+             "rail.collapsed"):
+    check(f"no trace of {gone}", gone not in INDEX)
+# A viewer who collapsed a pane before the buttons went would otherwise be stuck
+# with a hidden rail and nothing to click.
+check("the stale preference is cleared, not just ignored",
+      'removeItem("qc.chrome.v1")' in INDEX)
+check("the rail and its calendar are still there",
+      'id="rail"' in INDEX and 'id="cal-panel"' in INDEX)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

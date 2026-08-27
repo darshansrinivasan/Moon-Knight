@@ -164,6 +164,31 @@ def excluded_states() -> list:
     return [s for s in current().get("excluded_states", []) if s]
 
 
+def excluded_state_clause(alias: str = "t") -> tuple:
+    """SQL predicate dropping out-of-scope states, plus its params.
+
+    Returns ("", []) when nothing is excluded, so callers can skip the clause
+    entirely rather than emitting a tautology.
+
+    This exists because four queries needed the same predicate and three of them
+    wrote it out themselves. The fourth — /api/analytics — simply did not, so
+    with `archived` excluded from scoring, 814 archived tickets still counted
+    toward every assignee's total and appeared as a permanent "pending" backlog:
+    tickets awaiting a grade that the scorer would never give them, because the
+    scorer agreed they were out of scope. For August that read as 1,691 tickets
+    with 860 pending on the Analytics page against 877 and 83 on the
+    leaderboard, for the same month and the same data.
+
+    Reporting and scoring must not hold separate opinions about what a day
+    contains, so the opinion lives in one function.
+    """
+    states = excluded_states()
+    if not states:
+        return "", []
+    return (f"{alias}.state NOT IN ({','.join('?' * len(states))})",
+            list(states))
+
+
 def oncall_categories() -> set:
     return {str(c).strip().lower() for c in current().get("r8_oncall_categories", [])}
 

@@ -444,7 +444,23 @@ def get_fetch_log(date_str: str):
         return dict(row) if row else None
 
 
+def _scope_clause(alias: str = "t") -> tuple:
+    """The excluded-state predicate, or ("", []) when nothing is excluded.
+
+    Deferred import: `rules` imports this module, so it cannot be imported at
+    module level here. Wrapped rather than called directly so that every
+    counting query in this module reads the same way.
+    """
+    import rules as qc_rules
+    return qc_rules.excluded_state_clause(alias)
+
+
 def get_day_tickets(date_str: str):
+    # Excluded states are out of scope for evaluation, so they are not in the
+    # work queue either. Listing a ticket nobody may grade invites someone to
+    # try, and makes the day's count disagree with every other surface.
+    clause, extra = _scope_clause("t")
+    scope = f" AND {clause}" if clause else ""
     with get_conn() as conn:
         rows = conn.execute("""
             SELECT
@@ -460,9 +476,30 @@ def get_day_tickets(date_str: str):
             LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
             LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
             WHERE t.fetch_date = ? AND t.deleted_at IS NULL
+        """ + scope + """
             ORDER BY t.number
-        """, (date_str,)).fetchall()
+        """, (date_str, *extra)).fetchall()
         return [dict(r) for r in rows]
+
+
+def excluded_ticket_count(date_str: str) -> int:
+    """How many of a day's tickets are out of scope for evaluation.
+
+    Reported rather than dropped. "Not scored: 23" once described 23 archived
+    tickets as a failure to score, which made a healthy run look like it had
+    silently lost a third of the day. Naming them as excluded is the whole point,
+    so the count has to survive their removal from the work queue.
+    """
+    clause, extra = _scope_clause("t")
+    if not clause:
+        return 0
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM tickets t"
+            f" WHERE t.fetch_date = ? AND t.deleted_at IS NULL AND NOT ({clause})",
+            (date_str, *extra),
+        ).fetchone()
+    return row["n"] if row else 0
 
 
 # One definition of a calendar cell, used for both a month and a single day, so
@@ -472,9 +509,10 @@ def get_day_tickets(date_str: str):
 _CALENDAR_CELL_SQL = """
     SELECT
         t.fetch_date,
-        -- Count tickets actually stored. fetch_log.ticket_count records only the
-        -- non-archived count at fetch time, so it drifts below what the day
-        -- panel lists once tickets are archived.
+        -- Count tickets actually stored, in scope only. fetch_log.ticket_count
+        -- records the count at fetch time, so it drifts as tickets are
+        -- archived; and counting archived tickets here made the badge disagree
+        -- with the day panel, which excludes them.
         COUNT(DISTINCT t.id) AS ticket_count,
         SUM(CASE WHEN rc.r1='Fail' OR rc.r2='Fail' OR rc.r3='Fail'
                       OR rc.r4='Fail' OR rc.r5='Fail' OR rc.r7='Fail'
@@ -487,16 +525,23 @@ _CALENDAR_CELL_SQL = """
     LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
     LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
     LEFT JOIN fetch_log   fl ON fl.fetch_date = t.fetch_date
-    WHERE ({where}) AND t.deleted_at IS NULL
+    WHERE ({where}) AND t.deleted_at IS NULL {scope}
     GROUP BY t.fetch_date
 """
 
 
+def _calendar_sql(where: str) -> tuple:
+    """The cell query for one WHERE shape, with the scope filter folded in."""
+    clause, extra = _scope_clause("t")
+    return (_CALENDAR_CELL_SQL.format(
+        where=where, scope=f"AND {clause}" if clause else ""), extra)
+
+
 def get_calendar_month(year: int, month: int):
     prefix = f"{year:04d}-{month:02d}-"
-    sql = _CALENDAR_CELL_SQL.format(where="t.fetch_date LIKE ?")
+    sql, extra = _calendar_sql("t.fetch_date LIKE ?")
     with get_conn() as conn:
-        rows = conn.execute(sql, (prefix + "%",)).fetchall()
+        rows = conn.execute(sql, (prefix + "%", *extra)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -506,9 +551,9 @@ def get_calendar_day(date_str: str) -> dict | None:
     Refetching the whole month to update one square meant overlapping requests
     could land out of order and leave a stale count on screen.
     """
-    sql = _CALENDAR_CELL_SQL.format(where="t.fetch_date = ?")
+    sql, extra = _calendar_sql("t.fetch_date = ?")
     with get_conn() as conn:
-        row = conn.execute(sql, (date_str,)).fetchone()
+        row = conn.execute(sql, (date_str, *extra)).fetchone()
     return dict(row) if row else None
 
 

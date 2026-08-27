@@ -181,10 +181,10 @@ def _build_where(predicate: str, assignee: str | None,
         clauses.append(clause)
         params += values
 
-    excluded = qc_rules.excluded_states()
-    if excluded:
-        clauses.append(f"t.state NOT IN ({','.join('?' * len(excluded))})")
-        params += excluded
+    clause, extra = qc_rules.excluded_state_clause("t")
+    if clause:
+        clauses.append(clause)
+        params += extra
 
     return " AND ".join(clauses), params
 
