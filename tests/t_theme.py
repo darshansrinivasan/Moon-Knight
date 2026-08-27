@@ -81,6 +81,19 @@ for name in ["--pass", "--fail", "--review"]:
           "--color-accent" not in line and line.strip() != "", line.strip())
 
 print()
+print("=== no old-palette rgba() survivals ===")
+# The hex sweep above cannot see these: the same colours were also written as
+# rgba() triples, which is how the sidebar stayed indigo after the migration.
+RGBA = re.compile(r"rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})")
+for page in [*PAGES, STATIC / "shell.css"]:
+    bad = [
+        m.group(0) for m in RGBA.finditer(page.read_text())
+        # rgba(0,0,0,x) is ambient shade, which the system allows for shadows.
+        if m.groups() != ("0", "0", "0")
+    ]
+    check(f"{page.name}: colours come from tokens", not bad, ", ".join(bad[:3]))
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

@@ -58,7 +58,7 @@
      The ticket list is the thing you came for; this is supporting detail, so
      it gives way first when the window is narrow. */
   .rail {
-    width: 258px;
+    width: 268px;
     flex-shrink: 0;
     border-left: 1px solid var(--border);
     padding: var(--space-6);
@@ -136,50 +136,55 @@
     color: transparent;
   }
 
-  @media (max-width: 1400px) {
-    /* The rail is context; below this the ticket list needs the width more. */
+  @media (max-width: 1180px) {
+    /* The rail now carries the calendar, so it holds on longer than context
+       alone would justify. Below this the ticket list needs the width more,
+       and the toggle brings the rail back. */
     .rail { display: none; }
   }
 
-  /* ── left: calendar ── */
-  .cal-panel {
-    width: 280px;
-    min-width: 240px;
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    flex-shrink: 0;
-  }
+  /* ── calendar, now inside the right rail ──────────────────────────────
+     It used to be its own 280px left column, which cost the ticket list that
+     width and split navigation across both edges of the window. */
+  .cal-panel { display: flex; flex-direction: column; gap: var(--space-3); }
   .cal-nav {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 16px 10px;
-    flex-shrink: 0;
+    gap: var(--space-3);
   }
-  .cal-nav h2 { font-size: 15px; font-weight: 600; }
+  .cal-nav h2 {
+    font-size: 12px; font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+  }
+  .cal-nav-btns { display: flex; gap: 2px; }
   .nav-btn {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: var(--radius);
-    width: 30px; height: 30px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: color-mix(in srgb, var(--color-text) 55%, transparent);
+    border-radius: var(--radius-sm);
+    width: 20px; height: 20px;
     cursor: pointer;
-    font-size: 16px;
+    font-size: 13px; padding: 0;
     display: flex; align-items: center; justify-content: center;
-    transition: background .15s;
   }
   .nav-btn:hover {
     background: color-mix(in srgb, var(--color-accent) 14%, transparent);
     border-color: var(--color-accent);
+    color: var(--color-text);
   }
+  .cal-key {
+    display: flex; gap: var(--space-4); font-size: 10px;
+    color: color-mix(in srgb, var(--color-text) 45%, transparent);
+  }
+  .cal-key span { display: flex; align-items: center; gap: 4px; }
+  .cal-key .dot {
+    width: 5px; height: 5px; border-radius: 50%; display: inline-block;
+  }
+  .cal-key .dot-qc { background: var(--color-accent-500); }
+  .cal-key .dot-fail { background: var(--fail); }
 
-  .cal-grid {
-    flex: 1;
-    overflow-y: auto;
-    padding: 0 12px 12px;
-  }
+  .cal-grid { flex: none; }
   .weekdays {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
@@ -201,8 +206,10 @@
     gap: 4px;
   }
   .day-cell {
-    aspect-ratio: 1;
-    border-radius: var(--radius);
+    /* Fixed height rather than aspect-ratio: in the narrow rail a square cell
+       became too tall and pushed the rest of the rail off-screen. */
+    height: 26px;
+    border-radius: var(--radius-sm);
     border: 1px solid transparent;
     cursor: pointer;
     display: flex;
@@ -221,7 +228,7 @@
   }
   .day-cell.selected {
     border-color: var(--accent) !important;
-    background: rgba(99,102,241,.15) !important;
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent) !important;
   }
   .day-num { font-size: 13px; font-weight: 500; line-height: 1; }
   .day-badge {
@@ -234,15 +241,15 @@
 
   /* day status colors */
   .day-cell.status-none     { background: var(--surface); }
-  .day-cell.status-fetched  { background: rgba(99,102,241,.1); border-color: rgba(99,102,241,.3); }
-  .day-cell.status-pass     { background: rgba(34,197,94,.08); border-color: rgba(34,197,94,.3); }
-  .day-cell.status-review   { background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.3); }
-  .day-cell.status-fail     { background: rgba(239,68,68,.08); border-color: rgba(239,68,68,.3); }
+  .day-cell.status-fetched  { background: color-mix(in srgb, var(--color-accent) 10%, transparent); border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+  .day-cell.status-pass     { background: color-mix(in srgb, var(--pass) 8%, transparent); border-color: color-mix(in srgb, var(--pass) 30%, transparent); }
+  .day-cell.status-review   { background: color-mix(in srgb, var(--review) 8%, transparent); border-color: color-mix(in srgb, var(--review) 30%, transparent); }
+  .day-cell.status-fail     { background: color-mix(in srgb, var(--fail) 8%, transparent); border-color: color-mix(in srgb, var(--fail) 30%, transparent); }
 
-  .badge-fetched  { background: rgba(99,102,241,.2);  color: var(--accent2); }
-  .badge-pass     { background: rgba(34,197,94,.2);   color: var(--pass); }
-  .badge-review   { background: rgba(245,158,11,.2);  color: var(--review); }
-  .badge-fail     { background: rgba(239,68,68,.2);   color: var(--fail); }
+  .badge-fetched  { background: color-mix(in srgb, var(--color-accent) 20%, transparent);  color: var(--accent2); }
+  .badge-pass     { background: color-mix(in srgb, var(--pass) 20%, transparent);   color: var(--pass); }
+  .badge-review   { background: color-mix(in srgb, var(--review) 20%, transparent);  color: var(--review); }
+  .badge-fail     { background: color-mix(in srgb, var(--fail) 20%, transparent);   color: var(--fail); }
 
   /* ── right: ticket panel ── */
   .ticket-panel {
@@ -281,12 +288,12 @@
   }
   .refetch-btn:hover { border-color: var(--accent); color: var(--text); }
   .qc-btn {
-    background: rgba(99,102,241,.15);
-    border: 1px solid rgba(99,102,241,.4);
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 40%, transparent);
     color: var(--accent2);
     font-weight: 600;
   }
-  .qc-btn:hover { background: rgba(99,102,241,.3); border-color: var(--accent2); }
+  .qc-btn:hover { background: color-mix(in srgb, var(--color-accent) 30%, transparent); border-color: var(--accent2); }
   .download-btn {
     background: var(--surface2);
     border: 1px solid var(--border);
@@ -401,12 +408,12 @@
     white-space: nowrap;
   }
   .status-pill:hover { border-color: var(--accent); color: var(--text); }
-  .status-pill.active-all     { border-color: var(--accent); background: rgba(99,102,241,.15); color: var(--accent2); }
-  .status-pill.active-pass    { border-color: rgba(34,197,94,.5);  background: rgba(34,197,94,.15);  color: var(--pass); }
-  .status-pill.active-fail    { border-color: rgba(239,68,68,.5);  background: rgba(239,68,68,.15);  color: var(--fail); }
-  .status-pill.active-review  { border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.15); color: var(--review); }
+  .status-pill.active-all     { border-color: var(--accent); background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--accent2); }
+  .status-pill.active-pass    { border-color: color-mix(in srgb, var(--pass) 50%, transparent);  background: color-mix(in srgb, var(--pass) 15%, transparent);  color: var(--pass); }
+  .status-pill.active-fail    { border-color: color-mix(in srgb, var(--fail) 50%, transparent);  background: color-mix(in srgb, var(--fail) 15%, transparent);  color: var(--fail); }
+  .status-pill.active-review  { border-color: color-mix(in srgb, var(--review) 50%, transparent); background: color-mix(in srgb, var(--review) 15%, transparent); color: var(--review); }
   .status-pill.active-pending { border-color: var(--border);       background: var(--pending);       color: var(--muted); }
-  .status-pill.active-unreviewed { border-color: var(--accent); background: rgba(99,102,241,.12); color: var(--accent2); }
+  .status-pill.active-unreviewed { border-color: var(--accent); background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--accent2); }
 
   .ticket-list {
     flex: 1;
@@ -486,10 +493,10 @@
     font-weight: 600;
     white-space: nowrap;
   }
-  .overall-Pass         { background: rgba(34,197,94,.2);  color: var(--pass); }
-  .overall-Fail         { background: rgba(239,68,68,.2);  color: var(--fail); }
+  .overall-Pass         { background: color-mix(in srgb, var(--pass) 20%, transparent);  color: var(--pass); }
+  .overall-Fail         { background: color-mix(in srgb, var(--fail) 20%, transparent);  color: var(--fail); }
   .overall-Needs\.Review,
-  .overall-NeedsReview  { background: rgba(245,158,11,.2); color: var(--review); }
+  .overall-NeedsReview  { background: color-mix(in srgb, var(--review) 20%, transparent); color: var(--review); }
   .overall-pending      { background: var(--pending);      color: var(--muted); }
 
   .card-meta {
@@ -521,13 +528,13 @@
     letter-spacing: .3px;
   }
   .check-Pass, .check-Good, .check-Positive
-                      { background: rgba(34,197,94,.15);   color: var(--pass);   border: 1px solid rgba(34,197,94,.3); }
+                      { background: color-mix(in srgb, var(--pass) 15%, transparent);   color: var(--pass);   border: 1px solid color-mix(in srgb, var(--pass) 30%, transparent); }
   .check-Fail, .check-Poor, .check-Frustrated, .check-Urgent
-                      { background: rgba(239,68,68,.15);   color: var(--fail);   border: 1px solid rgba(239,68,68,.3); }
+                      { background: color-mix(in srgb, var(--fail) 15%, transparent);   color: var(--fail);   border: 1px solid color-mix(in srgb, var(--fail) 30%, transparent); }
   .check-NeedsReview, .check-NeedsImprovement, .check-Concerned
-                      { background: rgba(245,158,11,.15);  color: var(--review); border: 1px solid rgba(245,158,11,.3); }
+                      { background: color-mix(in srgb, var(--review) 15%, transparent);  color: var(--review); border: 1px solid color-mix(in srgb, var(--review) 30%, transparent); }
   .check-NA, .check-Neutral
-                      { background: rgba(71,85,105,.2);    color: var(--na);     border: 1px solid rgba(71,85,105,.3); }
+                      { background: color-mix(in srgb, var(--color-neutral-700) 20%, transparent); color: var(--na); border: 1px solid color-mix(in srgb, var(--color-neutral-700) 30%, transparent); }
   .check-pending      { background: var(--pending);        color: var(--muted);  border: 1px solid var(--border); }
 
   /* tooltip */
@@ -587,8 +594,8 @@
     border: 1px solid var(--border); background: var(--surface); color: var(--text);
   }
   .review-bar button:hover { border-color: var(--accent); }
-  .review-bar button.pass { border-color: rgba(34,197,94,.45); color: var(--pass); }
-  .review-bar button.fail { border-color: rgba(239,68,68,.45); color: var(--fail); }
+  .review-bar button.pass { border-color: color-mix(in srgb, var(--pass) 45%, transparent); color: var(--pass); }
+  .review-bar button.fail { border-color: color-mix(in srgb, var(--fail) 45%, transparent); color: var(--fail); }
   .review-bar button.accept { border-color: var(--accent); color: var(--accent2); }
   .review-bar button.change { border-color: var(--accent); color: var(--accent2); }
   .review-bar button.revert { color: var(--muted); }
@@ -604,7 +611,7 @@
   }
   .review-modal.open { display: flex; }
   .review-modal-backdrop {
-    position: absolute; inset: 0; background: rgba(15,23,42,.72);
+    position: absolute; inset: 0; background: color-mix(in srgb, var(--color-neutral-900) 80%, transparent);
   }
   .review-modal-card {
     position: relative; z-index: 1;
@@ -622,10 +629,10 @@
   }
   .review-choice:hover { border-color: var(--accent); color: var(--text); }
   .review-choice[data-choice="Pass"].on {
-    border-color: rgba(34,197,94,.7); background: rgba(34,197,94,.16); color: var(--pass);
+    border-color: color-mix(in srgb, var(--pass) 70%, transparent); background: color-mix(in srgb, var(--pass) 16%, transparent); color: var(--pass);
   }
   .review-choice[data-choice="Fail"].on {
-    border-color: rgba(239,68,68,.7); background: rgba(239,68,68,.16); color: var(--fail);
+    border-color: color-mix(in srgb, var(--fail) 70%, transparent); background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail);
   }
   .review-modal-card label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
   .review-modal-card textarea {
@@ -664,8 +671,8 @@
     max-width: 90%;
   }
   .message-bubble.customer {
-    background: rgba(99,102,241,.1);
-    border: 1px solid rgba(99,102,241,.2);
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
     margin-right: auto;
   }
   .message-bubble.internal {
@@ -838,7 +845,7 @@
     background: var(--bg);
   }
   .lb-table tbody tr {
-    border-bottom: 1px solid rgba(51,65,85,.5);
+    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 50%, transparent);
     transition: background .12s;
   }
   .lb-table tbody tr:hover { background: var(--surface); }
@@ -898,30 +905,14 @@
   <!-- Real buttons, not clickable divs: these need keyboard focus and an
        announced expanded/collapsed state. -->
   <button class="ghost rail-toggle" id="cal-toggle" type="button"
-          aria-expanded="true" aria-controls="cal-panel">‹ Calendar</button>
+          aria-expanded="true" aria-controls="cal-panel">Hide calendar</button>
   <button class="ghost rail-toggle" id="rail-toggle" type="button"
-          aria-expanded="true" aria-controls="rail">Insights ›</button>
+          aria-expanded="true" aria-controls="rail">Hide insights</button>
 </header>
 
 <div class="layout">
 
   <!-- Calendar -->
-  <div class="cal-panel" id="cal-panel">
-    <div class="cal-nav">
-      <button class="nav-btn" id="prev-month">&#8249;</button>
-      <h2 id="cal-title"></h2>
-      <button class="nav-btn" id="next-month">&#8250;</button>
-    </div>
-    <div class="cal-grid">
-      <div class="weekdays">
-        <div class="weekday">Su</div><div class="weekday">Mo</div>
-        <div class="weekday">Tu</div><div class="weekday">We</div>
-        <div class="weekday">Th</div><div class="weekday">Fr</div>
-        <div class="weekday">Sa</div>
-      </div>
-      <div class="days-grid" id="days-grid"></div>
-    </div>
-  </div>
 
   <!-- Ticket panel -->
   <div class="ticket-panel">
@@ -977,7 +968,33 @@
   <!-- ── right rail: where checks fail, and what the checks mean ──
        Collapsible, because on a laptop the ticket list is the thing you came
        for and this is context. State persists per viewer. -->
-  <aside class="rail" id="rail" aria-label="Check insights">
+  <aside class="rail" id="rail" aria-label="Calendar and check insights">
+    <!-- The calendar lives here, at the top of the right rail, matching the
+         design. It was previously its own left-hand column, which cost the
+         ticket list ~280px and split navigation across both edges. -->
+    <section class="rail-section" id="cal-panel">
+      <div class="cal-nav">
+        <h2 id="cal-title"></h2>
+        <div class="cal-nav-btns">
+          <button class="nav-btn" id="prev-month" aria-label="Previous month">&#8249;</button>
+          <button class="nav-btn" id="next-month" aria-label="Next month">&#8250;</button>
+        </div>
+      </div>
+      <div class="cal-grid">
+        <div class="weekdays">
+          <div class="weekday">S</div><div class="weekday">M</div>
+          <div class="weekday">T</div><div class="weekday">W</div>
+          <div class="weekday">T</div><div class="weekday">F</div>
+          <div class="weekday">S</div>
+        </div>
+        <div class="days-grid" id="days-grid"></div>
+      </div>
+      <div class="cal-key">
+        <span><i class="dot dot-qc"></i>QC'd</span>
+        <span><i class="dot dot-fail"></i>has fails</span>
+      </div>
+    </section>
+
     <section class="rail-section">
       <div class="rail-title">Where checks fail · 7 days</div>
       <div id="rail-fails" class="rail-bars">
@@ -2174,18 +2191,20 @@ function setRailCollapsed(collapsed) {
   if (rail) rail.classList.toggle("collapsed", collapsed);
   if (btn) {
     btn.setAttribute("aria-expanded", String(!collapsed));
-    btn.textContent = collapsed ? "‹ Insights" : "Insights ›";
+    btn.textContent = collapsed ? "Show insights" : "Hide insights";
   }
   saveChrome({ railCollapsed: collapsed });
 }
 
+// The calendar is a section of the right rail now, so hiding it collapses that
+// section rather than a whole column.
 function setCalCollapsed(collapsed) {
-  const cal = document.querySelector(".cal-panel");
+  const cal = document.getElementById("cal-panel");
   const btn = document.getElementById("cal-toggle");
   if (cal) cal.style.display = collapsed ? "none" : "flex";
   if (btn) {
     btn.setAttribute("aria-expanded", String(!collapsed));
-    btn.textContent = collapsed ? "Calendar ›" : "‹ Calendar";
+    btn.textContent = collapsed ? "Show calendar" : "Hide calendar";
   }
   saveChrome({ calCollapsed: collapsed });
 }

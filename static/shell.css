@@ -131,23 +131,28 @@ h1, h2, h3, h4, h5, h6 {
     var(--color-divider) calc(100% - 48px), transparent);
 }
 
-/* ── app nav ── */
+/* ── app nav ──
+   Nocturne's sidebar: no surface fill, just a hairline edge. 188px, brand at
+   the top with the accent carried on "QC" only, nav rows with a rounded hover
+   tint, and a quiet footer. */
 .app-nav {
   width: var(--nav-w);
   flex-shrink: 0;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  background: transparent;
+  border-right: 1px solid var(--color-divider);
   display: flex;
   flex-direction: column;
-  padding: 12px 10px;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-4);
 }
 .app-nav-brand {
-  font-size: 15px;
-  font-weight: 650;
-  padding: 8px 10px 16px;
-  letter-spacing: .2px;
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  font-size: 16px;
+  padding: 0 var(--space-3);
+  letter-spacing: -0.01em;
 }
-.app-nav-brand span { color: var(--accent2); }
+.app-nav-brand span { color: var(--color-accent); }
 .app-nav-links { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .app-nav a, .app-nav button.nav-link {
   display: block;
@@ -155,20 +160,23 @@ h1, h2, h3, h4, h5, h6 {
   text-align: left;
   background: transparent;
   border: none;
-  color: var(--muted);
+  color: color-mix(in srgb, var(--color-text) 55%, transparent);
   text-decoration: none;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 400;
   font-family: inherit;
-  padding: 8px 10px;
-  border-radius: var(--radius);
+  padding: 7px var(--space-3);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
-.app-nav a:hover, .app-nav button.nav-link:hover { background: var(--surface2); color: var(--text); }
+.app-nav a:hover, .app-nav button.nav-link:hover {
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  color: var(--color-text);
+}
+/* The active row is a tint plus full-strength text, never a flooded accent. */
 .app-nav a.active, .app-nav button.nav-link.active {
-  background: rgba(99,102,241,.16);
-  color: var(--accent2);
-  font-weight: 600;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-text);
 }
 .app-nav-foot {
   border-top: 1px solid var(--border);
@@ -251,7 +259,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 .subnav button:hover, .subnav a.subnav-item:hover { background: var(--surface); }
 .subnav button.active, .subnav a.subnav-item.active {
-  background: rgba(99,102,241,.16);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
   color: var(--accent2);
   font-weight: 600;
 }
@@ -324,7 +332,7 @@ button.ghost:hover {
   background: color-mix(in srgb, var(--color-text) 7%, transparent);
 }
 button.ghost:active { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
-button.danger { background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.4); color: var(--fail); }
+button.danger { background: color-mix(in srgb, var(--fail) 15%, transparent); border: 1px solid color-mix(in srgb, var(--fail) 40%, transparent); color: var(--fail); }
 
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
 .toggle-row { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
@@ -335,24 +343,24 @@ button.danger { background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,6
   font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 10px;
   letter-spacing: .3px;
 }
-.pill.set   { background: rgba(34,197,94,.15); color: var(--pass); border: 1px solid rgba(34,197,94,.3); }
-.pill.unset { background: rgba(148,163,184,.12); color: var(--muted); border: 1px solid var(--border); }
-.pill.env   { background: rgba(99,102,241,.15); color: var(--accent2); border: 1px solid rgba(99,102,241,.35); }
+.pill.set   { background: color-mix(in srgb, var(--pass) 15%, transparent); color: var(--pass); border: 1px solid color-mix(in srgb, var(--pass) 30%, transparent); }
+.pill.unset { background: color-mix(in srgb, var(--color-text) 12%, transparent); color: var(--muted); border: 1px solid var(--border); }
+.pill.env   { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--accent2); border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent); }
 
 .banner {
   border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
   font-size: 13px; line-height: 1.6;
 }
-.banner.warn { background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.35); color: var(--review); }
-.banner.bad  { background: rgba(239,68,68,.1);  border: 1px solid rgba(239,68,68,.35);  color: var(--fail); }
-.banner.info { background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.35); color: var(--accent2); }
-.banner.ok   { background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.35); color: var(--pass); }
+.banner.warn { background: color-mix(in srgb, var(--review) 10%, transparent); border: 1px solid color-mix(in srgb, var(--review) 35%, transparent); color: var(--review); }
+.banner.bad  { background: color-mix(in srgb, var(--fail) 10%, transparent);  border: 1px solid color-mix(in srgb, var(--fail) 35%, transparent);  color: var(--fail); }
+.banner.info { background: color-mix(in srgb, var(--color-accent) 10%, transparent); border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent); color: var(--accent2); }
+.banner.ok   { background: color-mix(in srgb, var(--pass) 10%, transparent); border: 1px solid color-mix(in srgb, var(--pass) 35%, transparent); color: var(--pass); }
 .banner b { color: var(--text); }
 .banner ul { margin: 4px 0 0 16px; }
 
 .msg { font-size: 12px; margin-top: 8px; padding: 7px 10px; border-radius: 6px; display: none; line-height: 1.5; }
-.msg.ok  { display: block; background: rgba(34,197,94,.12); color: var(--pass); border: 1px solid rgba(34,197,94,.3); }
-.msg.err { display: block; background: rgba(239,68,68,.12); color: var(--fail); border: 1px solid rgba(239,68,68,.3); }
+.msg.ok  { display: block; background: color-mix(in srgb, var(--pass) 12%, transparent); color: var(--pass); border: 1px solid color-mix(in srgb, var(--pass) 30%, transparent); }
+.msg.err { display: block; background: color-mix(in srgb, var(--fail) 12%, transparent); color: var(--fail); border: 1px solid color-mix(in srgb, var(--fail) 30%, transparent); }
 .msg.info{ display: block; background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
 
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -360,7 +368,7 @@ th {
   text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px;
   color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--border); font-weight: 600;
 }
-td { padding: 8px 10px; border-bottom: 1px solid rgba(51,65,85,.5); vertical-align: middle; }
+td { padding: 8px 10px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 50%, transparent); vertical-align: middle; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
 .status { font-weight: 600; }
