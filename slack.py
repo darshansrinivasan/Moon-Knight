@@ -6,6 +6,7 @@ bot token from the admin credential vault.
 """
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -233,14 +234,20 @@ def _summary_blocks(s: dict, base_url: str) -> list:
     return blocks
 
 
-def _assignee_sections(s: dict, base_url: str) -> list:
-    """One or more section blocks per person, each listing their tickets."""
+def _assignee_sections(s: dict, base_url: str, mentions: dict | None = None) -> list:
+    """One or more section blocks per person, each listing their tickets.
+
+    `mentions` maps assignee name -> Slack user ID for names that resolved
+    unambiguously. Anyone absent is rendered as plain text: see
+    resolve_assignee_ids for why guessing is not an option.
+    """
     day_link = f"{base_url.rstrip('/')}/?date={s['date']}"
     blocks = []
 
     for name, tickets in s["groups"]:
         plural = "s" if len(tickets) != 1 else ""
-        current = (f"*{_esc(name)}* \u2014 {len(tickets)} "
+        who = mention_or_name(name, mentions) if mentions else _esc(name)
+        current = (f"*{who}* \u2014 {len(tickets)} "
                    f"ticket{plural} needing attention")
 
         for t in tickets:
@@ -273,8 +280,6 @@ def _chunk(blocks: list, size: int = MAX_BLOCKS_PER_MESSAGE) -> list:
     serialised payload sails past Slack's size ceiling, which fails the whole
     message rather than trimming it. Chunk on both.
     """
-    import json
-
     out, current, current_size = [], [], 0
     for block in blocks:
         block_size = len(json.dumps(block))
@@ -300,18 +305,34 @@ async def post_day_report(date_str: str, channel: str | None = None) -> dict:
     base_url = vault.get_setting("dashboard_base_url")
     rate = f"{summary['pass_rate']}%" if summary["pass_rate"] is not None else "\u2014"
 
+    mode = mention_mode()
+    mentions: dict = {}
+    unresolved: list = []
+    if mode == MENTION_ALL:
+        names = [name for name, _ in summary["groups"]]
+        mentions = await resolve_assignee_ids(names)
+        unresolved = sorted(n for n in names
+                            if n != "Unassigned" and not mentions.get(n))
+        if unresolved:
+            logger.info(
+                "No Slack id for %d assignee(s), posting their names as plain "
+                "text: %s", len(unresolved), ", ".join(unresolved),
+            )
+
+    lead_blocks = await _lead_mention_blocks(summary) if mode != MENTION_OFF else []
+
     parent = await _post("chat.postMessage", {
         "channel": channel,
         "text": (f"Support QC {date_str}: {summary['total']} tickets, "
                  f"{summary['pass']} pass / {summary['fail']} fail ({rate})"),
-        "blocks": _summary_blocks(summary, base_url),
+        "blocks": _summary_blocks(summary, base_url) + lead_blocks,
     })
 
     # Detail lives in the thread so the channel stays readable, split across as
     # many replies as the day needs rather than being cut short.
     thread_ts = parent.get("ts")
     replies = 0
-    for chunk in _chunk(_assignee_sections(summary, base_url)):
+    for chunk in _chunk(_assignee_sections(summary, base_url, mentions)):
         await _post("chat.postMessage", {
             "channel": channel,
             "thread_ts": thread_ts,
@@ -320,7 +341,51 @@ async def post_day_report(date_str: str, channel: str | None = None) -> dict:
         })
         replies += 1
 
-    return {**parent, "thread_replies": replies}
+    return {**parent, "thread_replies": replies,
+            "mention_mode": mode, "unresolved_names": unresolved}
+
+
+async def _lead_mention_blocks(summary: dict) -> list:
+    """A context block tagging the lead of each team that has work to address.
+
+    Leads are coverage reviewers, identified by email \u2014 which Slack can resolve
+    directly, so this needs none of the name-matching caution above.
+    """
+    import leaderboard
+
+    owners = {name for name, _ in summary["groups"]}
+    if not owners:
+        return []
+
+    membership, leads, _ = leaderboard._team_membership()
+    affected = sorted({
+        team for assignee in owners for team in membership.get(assignee, [])
+    })
+    if not affected:
+        return []
+
+    try:
+        await directory()
+        async with _dir_lock:
+            by_email = {
+                (p.get("email") or "").lower(): p["id"]
+                for p in _dir_people.values() if p.get("email")
+            }
+    except Exception as e:
+        logger.warning("Could not resolve lead mentions: %s", e)
+        by_email = {}
+
+    parts = []
+    for team in affected:
+        lead = leads.get(team) or {}
+        email = (lead.get("lead_email") or "").lower()
+        sid = by_email.get(email)
+        who = f"<@{sid}>" if sid else _esc(lead.get("lead_name") or email or "?")
+        parts.append(f"{_esc(team)}: {who}")
+
+    return [{"type": "context", "elements": [
+        {"type": "mrkdwn", "text": "Leads to review \u2014 " + " \u00b7 ".join(parts)}
+    ]}]
 
 
 async def post_failure(date_str: str, error: str, channel: str | None = None) -> dict:
@@ -461,6 +526,104 @@ async def search_directory(q: str, kind: str = "user", limit: int = 25) -> list[
         items = [e for e in items if q in e["name"].lower() or q in (e.get("email") or "")]
     items.sort(key=lambda e: e["name"].lower())
     return items[:limit]
+
+
+# ── @-mention identity resolution ─────────────────────────────────────────────
+# tickets.assignee_name is a display string; Slack needs a user ID. Fuzzy
+# matching is not acceptable here: searching the live directory for "Deepak"
+# returns both "Aditya Deepak" and "Deepak Kayala", and @-mentioning the wrong
+# colleague in a shared channel about someone else's failed ticket is the worst
+# thing this feature can do. So: an explicit map first, then an EXACT match that
+# must be unique, then plain text. Never a guess.
+
+IDENTITY_MAP_KEY = "qc_slack_identity_map"
+
+MENTION_OFF, MENTION_LEADS, MENTION_ALL = "off", "leads", "all"
+MENTION_MODES = (MENTION_OFF, MENTION_LEADS, MENTION_ALL)
+
+
+def identity_map() -> dict:
+    """Admin-maintained assignee name -> Slack user ID overrides."""
+    raw = vault.get_raw_setting(IDENTITY_MAP_KEY)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Slack identity map is not valid JSON — ignoring it")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k).strip(): str(v).strip() for k, v in data.items() if k and v}
+
+
+def mention_mode() -> str:
+    """off | leads | all. Defaults to leads.
+
+    `all` @-mentions every assignee with failures. It is available but not the
+    default on purpose: a daily automated mention about someone's own failed
+    tickets, in a group channel, is a performance conversation happening in
+    public. Making it a setting means it can be turned down without a deploy.
+    """
+    mode = (vault.get_setting("slack_mention_mode") or MENTION_LEADS).strip()
+    return mode if mode in MENTION_MODES else MENTION_LEADS
+
+
+def _exact_matches(name: str, people: list[dict]) -> list[dict]:
+    target = (name or "").strip().casefold()
+    if not target:
+        return []
+    return [p for p in people if (p.get("name") or "").strip().casefold() == target]
+
+
+async def resolve_assignee_ids(names) -> dict:
+    """Map assignee display names to Slack user IDs, or None when unsure.
+
+    Resolution order, stopping at the first hit:
+      1. the admin identity map
+      2. a case-insensitive full-name match that is UNIQUE in the directory
+      3. None — the caller must render plain text rather than guess
+    """
+    wanted = {n for n in (names or []) if n and n != "Unassigned"}
+    if not wanted:
+        return {}
+
+    overrides = identity_map()
+    out = {n: overrides.get(n) for n in wanted}
+    unresolved = [n for n, v in out.items() if not v]
+    if not unresolved:
+        return out
+
+    try:
+        await directory()
+        async with _dir_lock:
+            people = [dict(p) for p in _dir_people.values()]
+    except SlackNotConfigured:
+        return out
+    except Exception as e:
+        logger.warning("Slack directory unavailable for mentions: %s", e)
+        return out
+
+    for name in unresolved:
+        matches = _exact_matches(name, people)
+        if len(matches) == 1:
+            out[name] = matches[0]["id"]
+        elif len(matches) > 1:
+            logger.info(
+                "Not mentioning %r — %d Slack users share that name",
+                name, len(matches),
+            )
+    return out
+
+
+def mention_or_name(name: str, resolved: dict) -> str:
+    """`<@ID>` when confidently resolved, otherwise the escaped plain name.
+
+    The only place raw <@…> may appear in a payload; everything else goes
+    through _esc.
+    """
+    sid = (resolved or {}).get(name)
+    return f"<@{sid}>" if sid else _esc(name)
 
 
 async def search_reviewers(q: str, domain: str, limit: int = 25) -> list[dict]:

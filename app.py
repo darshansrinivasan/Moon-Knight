@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1203,6 +1204,53 @@ async def gcp_models(project: str | None = None, location: str | None = None,
         return {"ok": False, "message": str(e), "models": []}
     except Exception as e:
         return {"ok": False, "message": qc_runner.explain_vertex_error(e), "models": []}
+
+
+@app.get("/api/admin/slack/identities")
+async def slack_identities(user: dict = Depends(auth.require_user)):
+    """Which assignees can be @-mentioned, and which cannot.
+
+    An unresolvable name is not an error — the report falls back to plain text —
+    but it is invisible unless surfaced here, so admins can add a mapping.
+    """
+    names = await asyncio.to_thread(review.list_assignee_names)
+    names = [n for n in names if n != "Unassigned"]
+    try:
+        resolved = await slack.resolve_assignee_ids(names)
+    except slack.SlackNotConfigured:
+        resolved = {}
+
+    return {
+        "mode": slack.mention_mode(),
+        "modes": list(slack.MENTION_MODES),
+        "mapped": slack.identity_map(),
+        "resolved": {n: resolved.get(n) for n in names},
+        "unresolved": sorted(n for n in names if not resolved.get(n)),
+        "can_edit": user["role"] == "admin",
+    }
+
+
+@app.put("/api/admin/slack/identities")
+async def put_slack_identities(request: Request,
+                               user: dict = Depends(auth.require_admin)):
+    """Replace the assignee-name → Slack-user-ID overrides."""
+    body = await request.json()
+    mapping = body.get("mapped")
+    if not isinstance(mapping, dict):
+        raise HTTPException(400, 'Body must be {"mapped": {"Name": "U…"}}')
+
+    cleaned = {}
+    for name, sid in mapping.items():
+        name, sid = str(name).strip(), str(sid).strip()
+        if not name or not sid:
+            continue
+        if not re.fullmatch(r"[UW][A-Z0-9]{4,}", sid):
+            raise HTTPException(400, f"{sid!r} is not a Slack user ID")
+        cleaned[name] = sid
+
+    vault.set_raw_setting(slack.IDENTITY_MAP_KEY, json.dumps(cleaned), user["email"])
+    vault.audit(user["email"], "slack.identities.save", f"{len(cleaned)} mapped")
+    return {"ok": True, "mapped": cleaned}
 
 
 @app.post("/api/admin/slack/test")

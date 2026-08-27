@@ -214,6 +214,10 @@ SETTING_SPECS = [
     {"key": "vertex_models",      "legacy_env": "VERTEX_MODELS",    "default": ""},
     {"key": "slack_enabled",      "legacy_env": "SLACK_ENABLED",    "default": "0", "bool": True},
     {"key": "slack_channel",      "legacy_env": "SLACK_CHANNEL",    "default": ""},
+    # off | leads | all. Defaults to leads: @-mentioning every assignee about
+    # their own failed tickets, daily, in a group channel is a deliberate choice
+    # and needs to be reversible without a deploy.
+    {"key": "slack_mention_mode", "default": "leads"},
     {"key": "dashboard_base_url", "env": "QC_BASE_URL",             "default": ""},
     {"key": "schedule_enabled",   "legacy_env": "SCHEDULE_ENABLED", "default": "0", "bool": True},
     {"key": "schedule_time",      "legacy_env": "SCHEDULE_TIME",    "default": "09:30"},
