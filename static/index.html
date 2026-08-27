@@ -1664,13 +1664,17 @@ function setActivePill(status) {
   });
 }
 
+// Always "~": this is estimated from a local price table, not a billed amount.
+// A run whose model had no price entry says so outright, because the fallback
+// rate can be an order of magnitude wrong for a pro-tier model.
 function formatCost(run) {
   if (!run) return "";
   const tokens = (Number(run.prompt_tokens) || 0) + (Number(run.output_tokens) || 0);
   if (!tokens) return "usage not reported";
   const usd = Number(run.cost_usd);
   if (!Number.isFinite(usd)) return "usage not reported";
-  return `~$${usd.toFixed(4)}`;
+  const suffix = run.cost_estimated ? " (unpriced model)" : "";
+  return `~$${usd.toFixed(4)} est.${suffix}`;
 }
 
 function applyFilters() {

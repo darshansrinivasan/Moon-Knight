@@ -219,8 +219,38 @@ function renderRuns(runs) {
     const toks = (r.prompt_tokens || r.output_tokens)
       ? `${((r.prompt_tokens||0)/1000).toFixed(1)}k / ${((r.output_tokens||0)/1000).toFixed(1)}k`
       : "—";
-    const cost = toks === "—" ? "usage not reported"
-      : r.cost_usd != null ? "$" + Number(r.cost_usd).toFixed(4) : "—";
+    // Reasoning and cached tokens change what a run really costs, so make them
+    // inspectable rather than folding them invisibly into the two headline
+    // numbers. Older runs predate these columns and simply omit the lines.
+    const parts = [
+      `Input:  ${(r.prompt_tokens || 0).toLocaleString()}`,
+      `Output: ${(r.output_tokens || 0).toLocaleString()}`,
+    ];
+    if (r.thought_tokens) {
+      parts.push(`  of which reasoning: ${r.thought_tokens.toLocaleString()}`
+                 + " (billed at the output rate)");
+    }
+    if (r.cached_tokens) {
+      parts.push(`  of input, cached: ${r.cached_tokens.toLocaleString()}`
+                 + " (billed at a discount)");
+    }
+    const tokenBreakdownText = parts.join("\n");
+    const costNoteText = r.cost_estimated
+      ? "Estimated from a local price table. This run used a model with no "
+        + "price entry, so the rate is a flash-class guess and could be well "
+        + "off. Check your cloud billing for the real figure."
+      : "Estimated from a local price table, not a billed amount.";
+    // Every cost here is an estimate from a local price table, never a billed
+    // figure. "~" marks the worse case: a model with no price entry at all,
+    // where the fallback rate can be an order of magnitude off.
+    let cost;
+    if (toks === "—") {
+      cost = "usage not reported";
+    } else if (r.cost_usd == null) {
+      cost = "—";
+    } else {
+      cost = (r.cost_estimated ? "~$" : "$") + Number(r.cost_usd).toFixed(4);
+    }
     return `<tr class="run-row" data-id="${r.id}">
       <td class="num muted">#${r.id}</td>
       <td>${esc(r.date)}</td>
@@ -230,8 +260,8 @@ function renderRuns(runs) {
       <td><span class="status-pill ${esc(r.status)}">${esc(r.status)}</span></td>
       <td class="num">${r.scored ?? "—"}/${r.total ?? "—"}</td>
       <td class="muted">${esc(r.model_used || "—")}</td>
-      <td class="num muted">${toks}</td>
-      <td class="num">${cost}</td>
+      <td class="num muted" title="${esc(tokenBreakdownText)}">${toks}</td>
+      <td class="num" title="${esc(costNoteText)}">${cost}</td>
       <td>${stab}</td>
     </tr>
     <tr class="detail-row" id="detail-${r.id}" hidden><td colspan="11" class="detail-cell"></td></tr>`;

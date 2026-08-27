@@ -13,6 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 from google import genai
 from google.genai import types
@@ -91,49 +92,106 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _price_for(model: str) -> tuple:
+# Vertex bills context-cached input at a fraction of the standard input rate.
+# Approximate: the exact multiplier varies by model, and this whole figure is
+# an estimate. Ignoring caching entirely over-charged every repeated prompt.
+CACHED_INPUT_DISCOUNT = 0.25
+
+# Used when a model is absent from MODEL_PRICES. Flash-class, so a pro-tier
+# model would be badly under-priced — hence `cost_is_estimated()`.
+FALLBACK_PRICE = (0.30, 2.50)
+
+
+def _price_prefix(model: str) -> str | None:
+    """Longest matching prefix in the price table, or None."""
     for prefix in sorted(MODEL_PRICES, key=len, reverse=True):
         if model.startswith(prefix):
-            return MODEL_PRICES[prefix]
-    return (0.30, 2.50)   # assume flash-class if unknown
+            return prefix
+    return None
 
 
-def _tokens_from_usage(usage) -> tuple[int, int]:
-    """Normalize Vertex usage metadata (object, dict, or pydantic) into (prompt, output)."""
-    if usage is None:
-        return 0, 0
-    data = usage
+def _has_price(model: str) -> bool:
+    return _price_prefix(model) is not None
+
+
+def _price_for(model: str) -> tuple:
+    prefix = _price_prefix(model)
+    return MODEL_PRICES[prefix] if prefix else FALLBACK_PRICE
+
+
+class TokenUsage(NamedTuple):
+    """One call's billable token counts, split by how each class is priced.
+
+    `output` already includes reasoning tokens: Vertex reports them separately
+    in `thoughts_token_count` and excludes them from `candidates_token_count`,
+    but bills them at the output rate. Counting only the visible candidates
+    understated the cost of every thinking-capable model.
+
+    `cached` is the portion of `prompt` served from context cache, which bills
+    at a fraction of the input rate. It is a subset of `prompt`, not an addition.
+    """
+
+    prompt: int = 0
+    output: int = 0
+    cached: int = 0
+    thoughts: int = 0
+
+
+def _usage_as_mapping(usage) -> dict:
+    """Best-effort dict view of provider usage metadata.
+
+    The SDK returns a pydantic model, but this is an adapter boundary: older
+    versions returned plain objects and dicts, so normalise before reading.
+    """
     for attr in ("model_dump", "to_dict", "to_json_dict"):
-        fn = getattr(data, attr, None)
+        fn = getattr(usage, attr, None)
         if callable(fn):
             try:
                 dumped = fn()
                 if isinstance(dumped, dict):
-                    data = dumped
-                    break
+                    return dumped
             except Exception:
                 pass
-    if isinstance(data, dict):
-        prompt = (data.get("prompt_token_count") or data.get("prompt_tokens")
-                  or data.get("input_tokens") or 0)
-        output = (data.get("candidates_token_count") or data.get("output_tokens")
-                  or data.get("completion_tokens") or 0)
-        total = data.get("total_token_count") or data.get("total_tokens") or 0
-    else:
-        prompt = (getattr(data, "prompt_token_count", None)
-                  or getattr(data, "prompt_tokens", None)
-                  or getattr(data, "input_tokens", None) or 0)
-        output = (getattr(data, "candidates_token_count", None)
-                  or getattr(data, "output_tokens", None)
-                  or getattr(data, "completion_tokens", None) or 0)
-        total = (getattr(data, "total_token_count", None)
-                 or getattr(data, "total_tokens", None) or 0)
-    prompt = int(prompt or 0)
-    output = int(output or 0)
-    total = int(total or 0)
+    if isinstance(usage, dict):
+        return usage
+    return {}
+
+
+def _first_int(source, keys: tuple[str, ...]) -> int:
+    """First present, non-null value among `keys`, coerced to int."""
+    for key in keys:
+        value = source.get(key) if isinstance(source, dict) else getattr(source, key, None)
+        if value:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def _tokens_from_usage(usage) -> TokenUsage:
+    """Normalize Vertex usage metadata into billable token classes."""
+    if usage is None:
+        return TokenUsage()
+
+    data = _usage_as_mapping(usage) or usage
+
+    prompt = _first_int(data, ("prompt_token_count", "prompt_tokens", "input_tokens"))
+    visible = _first_int(data, ("candidates_token_count", "output_tokens",
+                               "completion_tokens"))
+    thoughts = _first_int(data, ("thoughts_token_count", "reasoning_token_count",
+                                 "reasoning_tokens"))
+    cached = _first_int(data, ("cached_content_token_count", "cached_tokens"))
+    total = _first_int(data, ("total_token_count", "total_tokens"))
+
+    output = visible + thoughts
+    # Some responses report only a total. Deriving output from it captures
+    # reasoning tokens implicitly, so don't add `thoughts` on top again.
     if output == 0 and total > prompt:
         output = total - prompt
-    return prompt, output
+
+    return TokenUsage(prompt=prompt, output=output,
+                      cached=min(cached, prompt), thoughts=thoughts)
 
 
 class RunStats:
@@ -147,22 +205,53 @@ class RunStats:
         self._lock = threading.Lock()
         self.prompt_tokens = 0
         self.output_tokens = 0
+        self.cached_tokens = 0
+        self.thought_tokens = 0
         self.calls = 0
-        self.models: dict = {}     # model -> call count
+        self.models: dict = {}          # model -> call count
+        # Per-model totals, so a cascade prices each model's own tokens rather
+        # than charging everything at the dominant model's rate.
+        self.by_model: dict = {}        # model -> TokenUsage-like running dict
 
     def record(self, model: str, usage) -> None:
-        prompt, output = _tokens_from_usage(usage)
+        tokens = _tokens_from_usage(usage)
         with self._lock:
             self.calls += 1
-            self.prompt_tokens += prompt
-            self.output_tokens += output
+            self.prompt_tokens  += tokens.prompt
+            self.output_tokens  += tokens.output
+            self.cached_tokens  += tokens.cached
+            self.thought_tokens += tokens.thoughts
             self.models[model] = self.models.get(model, 0) + 1
+            bucket = self.by_model.setdefault(
+                model, {"prompt": 0, "output": 0, "cached": 0}
+            )
+            bucket["prompt"] += tokens.prompt
+            bucket["output"] += tokens.output
+            bucket["cached"] += tokens.cached
 
     def cost_usd(self) -> float:
-        # Weight by the dominant model; runs almost always use exactly one.
-        model = max(self.models, key=self.models.get) if self.models else "gemini-2.5-flash"
-        p_in, p_out = _price_for(model)
-        return round((self.prompt_tokens * p_in + self.output_tokens * p_out) / 1_000_000, 6)
+        """Estimated spend. Prices each model's own tokens.
+
+        Cached input bills at a fraction of the normal input rate, so it is
+        subtracted from the full-price prompt tokens rather than ignored.
+        """
+        total = 0.0
+        for model, tokens in self.by_model.items():
+            p_in, p_out = _price_for(model)
+            uncached = max(0, tokens["prompt"] - tokens["cached"])
+            total += (uncached * p_in
+                      + tokens["cached"] * p_in * CACHED_INPUT_DISCOUNT
+                      + tokens["output"] * p_out)
+        return round(total / 1_000_000, 6)
+
+    def cost_is_estimated(self) -> bool:
+        """True when any model used had no entry in the price table.
+
+        Unpriced models fall back to a flash-class guess, which can be wrong by
+        an order of magnitude for a pro-tier model. Callers should label the
+        figure rather than presenting it as exact.
+        """
+        return any(not _has_price(m) for m in self.models)
 
     def model_summary(self) -> str:
         return ", ".join(f"{m} \u00d7{n}" for m, n in
@@ -948,18 +1037,26 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
         conn.execute("""
             UPDATE qc_runs SET finished_at = ?, status = ?, scored = ?, skipped = ?,
                    model_used = ?, prompt_tokens = ?, output_tokens = ?, cost_usd = ?,
+                   cached_tokens = ?, thought_tokens = ?, cost_estimated = ?,
                    compared_to = ?, stability = ?, changed = ?, error = ?
             WHERE id = ?
         """, (_utc_now(), status, scored, skipped,
               stats.model_summary(), stats.prompt_tokens, stats.output_tokens,
-              stats.cost_usd(), compared_to, stability, changed,
+              stats.cost_usd(), stats.cached_tokens, stats.thought_tokens,
+              1 if stats.cost_is_estimated() else 0,
+              compared_to, stability, changed,
               "; ".join(errors)[:1000] or None, run_id))
 
     result: dict = {
         "scored": scored, "skipped": skipped, "already_done": False,
         "run_id": run_id, "status": status,
         "prompt_tokens": stats.prompt_tokens, "output_tokens": stats.output_tokens,
+        "cached_tokens": stats.cached_tokens,
+        "thought_tokens": stats.thought_tokens,
         "cost_usd": stats.cost_usd(), "model_used": stats.model_summary(),
+        # Every cost here is an estimate; this flags the ones that are worse
+        # than usual because a model had no entry in the price table.
+        "cost_estimated": stats.cost_is_estimated(),
         "stability": stability, "changed": changed,
     }
     if errors:

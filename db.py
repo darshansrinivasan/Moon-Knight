@@ -37,6 +37,12 @@ def init_db():
             "ALTER TABLE rule_checks ADD COLUMN r8 TEXT",
             "ALTER TABLE rule_checks ADD COLUMN r9 TEXT",
             "ALTER TABLE tickets ADD COLUMN customer_portal_visible INTEGER",
+            # Reasoning tokens bill at the output rate but are reported
+            # separately; cached input bills at a discount. Both were missing
+            # from the cost estimate entirely.
+            "ALTER TABLE qc_runs ADD COLUMN cached_tokens INTEGER",
+            "ALTER TABLE qc_runs ADD COLUMN thought_tokens INTEGER",
+            "ALTER TABLE qc_runs ADD COLUMN cost_estimated INTEGER",
         ]:
             try:
                 conn.execute(stmt)
