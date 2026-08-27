@@ -285,8 +285,20 @@ async def admin_page(user: dict = Depends(auth.require_user)):
 
 @app.get("/api/calendar/{year}/{month}")
 async def get_calendar(year: int, month: int, user: dict = Depends(auth.require_user)):
+    if not 1 <= month <= 12:
+        raise HTTPException(400, "Month must be 1–12")
     data = await asyncio.to_thread(db.get_calendar_month, year, month)
     return {"year": year, "month": month, "days": data}
+
+
+# Not /api/calendar/day/{date}: that is matched first by {year}/{month} above,
+# which then fails parsing "day" as an int and returns 422.
+@app.get("/api/calendar-day/{date_str}")
+async def get_calendar_day(date_str: str, user: dict = Depends(auth.require_user)):
+    """One day's calendar counts, for updating a single square after a fetch."""
+    _require_date(date_str)
+    day = await asyncio.to_thread(db.get_calendar_day, date_str)
+    return {"date": date_str, "day": day}
 
 
 # ── fetch a day from Pylon ────────────────────────────────────────────────────

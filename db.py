@@ -347,30 +347,51 @@ def get_day_tickets(date_str: str):
         return [dict(r) for r in rows]
 
 
+# One definition of a calendar cell, used for both a month and a single day, so
+# the two can never disagree. Driven from `tickets` rather than `fetch_log`: a
+# day whose fetch partly failed has tickets but no log row, and keying off the
+# log made it invisible on the calendar even though the data was there.
+_CALENDAR_CELL_SQL = """
+    SELECT
+        t.fetch_date,
+        -- Count tickets actually stored. fetch_log.ticket_count records only the
+        -- non-archived count at fetch time, so it drifts below what the day
+        -- panel lists once tickets are archived.
+        COUNT(DISTINCT t.id) AS ticket_count,
+        SUM(CASE WHEN rc.r1='Fail' OR rc.r2='Fail' OR rc.r3='Fail'
+                      OR rc.r4='Fail' OR rc.r5='Fail' OR rc.r7='Fail'
+                      OR rc.r8='Fail' OR rc.r9='Fail' THEN 1 ELSE 0 END) AS rule_fails,
+        SUM(CASE WHEN ac.overall_result = 'Fail'         THEN 1 ELSE 0 END) AS ai_fails,
+        SUM(CASE WHEN ac.overall_result = 'Needs Review' THEN 1 ELSE 0 END) AS needs_review,
+        COUNT(ac.ticket_id) AS ai_done_count,
+        MAX(CASE WHEN fl.fetch_date IS NOT NULL THEN 1 ELSE 0 END) AS logged
+    FROM tickets t
+    LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
+    LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
+    LEFT JOIN fetch_log   fl ON fl.fetch_date = t.fetch_date
+    WHERE {where}
+    GROUP BY t.fetch_date
+"""
+
+
 def get_calendar_month(year: int, month: int):
     prefix = f"{year:04d}-{month:02d}-"
+    sql = _CALENDAR_CELL_SQL.format(where="t.fetch_date LIKE ?")
     with get_conn() as conn:
-        rows = conn.execute("""
-            SELECT
-                fl.fetch_date,
-                -- Count the tickets actually stored for the day. fl.ticket_count
-                -- records only the non-archived count at fetch time, so it drifts
-                -- below what the day panel lists once tickets are archived.
-                COUNT(DISTINCT t.id) AS ticket_count,
-                SUM(CASE WHEN rc.r1='Fail' OR rc.r2='Fail' OR rc.r3='Fail'
-                              OR rc.r4='Fail' OR rc.r5='Fail' OR rc.r7='Fail'
-                              OR rc.r8='Fail' OR rc.r9='Fail' THEN 1 ELSE 0 END) AS rule_fails,
-                SUM(CASE WHEN ac.overall_result = 'Fail'        THEN 1 ELSE 0 END) AS ai_fails,
-                SUM(CASE WHEN ac.overall_result = 'Needs Review' THEN 1 ELSE 0 END) AS needs_review,
-                COUNT(ac.ticket_id) AS ai_done_count
-            FROM fetch_log fl
-            LEFT JOIN tickets      t  ON fl.fetch_date = t.fetch_date
-            LEFT JOIN rule_checks  rc ON t.id = rc.ticket_id
-            LEFT JOIN ai_checks    ac ON t.id = ac.ticket_id
-            WHERE fl.fetch_date LIKE ?
-            GROUP BY fl.fetch_date
-        """, (prefix + "%",)).fetchall()
-        return [dict(r) for r in rows]
+        rows = conn.execute(sql, (prefix + "%",)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_calendar_day(date_str: str) -> dict | None:
+    """One day's calendar cell, for patching a single square after a fetch.
+
+    Refetching the whole month to update one square meant overlapping requests
+    could land out of order and leave a stale count on screen.
+    """
+    sql = _CALENDAR_CELL_SQL.format(where="t.fetch_date = ?")
+    with get_conn() as conn:
+        row = conn.execute(sql, (date_str,)).fetchone()
+    return dict(row) if row else None
 
 
 def account_names(ids: list[str]) -> dict[str, str]:

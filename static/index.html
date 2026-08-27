@@ -943,8 +943,51 @@ let allTickets   = [];  // full list for the selected day; filter works client-s
 let statusFilter = "";  // "" = all, "Pass" / "Fail" / "Needs Review" / "pending" / "unreviewed"
 let lastRun      = null; // latest qc_runs row for the selected day (cost)
 let daySpend     = null; // cumulative spend for the day: {runs, total_cost_usd, …}
+
+// Filter selections. Declared here, above the persistence helpers that read
+// them, rather than beside their UI code further down.
+const selectedAssignees = new Set();
+const selectedGroups    = new Set(); // coverage id strings, plus "ungrouped"
+
+// ── filter persistence ───────────────────────────────────────────────────────
+// Filters used to reset on every day change and vanish on reload. Kept per
+// viewer in localStorage, which every read and write must treat as optional:
+// private windows and storage-blocking settings throw on access, and the
+// dashboard has to render anyway.
+const FILTER_KEY = "qc.filters.v1";
+
+function saveFilters() {
+  try {
+    localStorage.setItem(FILTER_KEY, JSON.stringify({
+      status:    statusFilter,
+      assignees: [...selectedAssignees],
+      groups:    [...selectedGroups],
+    }));
+  } catch { /* storage unavailable — filters simply do not persist */ }
+}
+
+function loadSavedFilters() {
+  try {
+    const raw = localStorage.getItem(FILTER_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    return {
+      status:    typeof saved.status === "string" ? saved.status : "",
+      assignees: Array.isArray(saved.assignees) ? saved.assignees : [],
+      groups:    Array.isArray(saved.groups) ? saved.groups : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearSavedFilters() {
+  statusFilter = "";
+  selectedAssignees.clear();
+  selectedGroups.clear();
+  try { localStorage.removeItem(FILTER_KEY); } catch { /* nothing to clear */ }
+}
 let coverages    = [];   // review coverage groups from Admin
-const selectedGroups = new Set(); // coverage id strings, plus "ungrouped"
 let groupDefaultApplied = false;
 
 // ── calendar rendering ───────────────────────────────────────────────────────
@@ -973,17 +1016,51 @@ function dayBadge(info) {
   return `<span class="day-badge badge-${cls}">${label}</span>`;
 }
 
+// Monotonic token so a slow earlier month load cannot overwrite a newer one.
+// Selecting several days in sequence fires one load each, and out-of-order
+// responses were leaving stale counts on screen.
+let calReq = 0;
+
+// Update one square without refetching the month. Used after a fetch or a QC
+// run, where only the affected day can have changed.
+async function refreshCalendarDay(dateStr) {
+  try {
+    const d = await getJSON(`/api/calendar-day/${dateStr}`);
+    if (d.day) {
+      calData[dateStr] = d.day;
+    } else {
+      delete calData[dateStr];
+    }
+    paintCalendarCell(dateStr);
+  } catch (e) {
+    console.warn("Could not refresh calendar day:", e.message);
+  }
+}
+
+// Repaint one cell from calData, using the same markup renderCalendar builds so
+// a patched cell is indistinguishable from a freshly rendered one.
+function paintCalendarCell(dateStr) {
+  const cell = document.querySelector(`.day-cell[data-date="${dateStr}"]`);
+  if (!cell) return;
+  const info = calData[dateStr];
+  const dayNum = Number(dateStr.slice(8, 10));
+  cell.className = cell.className.replace(/status-\S+/, `status-${dayStatus(info)}`);
+  cell.innerHTML = `<span class="day-num">${dayNum}</span>${dayBadge(info)}`;
+}
+
 async function renderCalendar() {
   document.getElementById("cal-title").textContent =
     `${MONTHS[curMonth-1]} ${curYear}`;
 
   // load from server
+  const token = ++calReq;
   try {
-    const r = await fetch(`/api/calendar/${curYear}/${curMonth}`);
-    const d = await r.json();
+    const d = await getJSON(`/api/calendar/${curYear}/${curMonth}`);
+    if (token !== calReq) return;   // a newer load already landed
     calData = {};
     for (const row of d.days) calData[row.fetch_date] = row;
   } catch(e) { console.error(e); }
+  if (token !== calReq) return;
 
   const grid = document.getElementById("days-grid");
   grid.innerHTML = "";
@@ -1041,11 +1118,12 @@ async function selectDay(dateStr) {
   dlBtn.style.display      = "none"; dlBtn.disabled      = false;
   document.getElementById("assignee-ms").style.display = "none";
   document.getElementById("group-ms").style.display = "none";
-  selectedAssignees.clear();
+  // Filters deliberately survive a day change — they are the user's working
+  // view, not a property of the date. populateAssigneeFilter reconciles them
+  // against what this day actually contains.
   _updateAssigneeBtn();
-  statusFilter = "";
   document.getElementById("filter-bar").style.display = "none";
-  setActivePill("");
+  setActivePill(statusFilter);
 
   showLoading();
 
@@ -1079,7 +1157,7 @@ async function selectDay(dateStr) {
       return;
     }
     if (selDate !== dateStr) return;
-    await renderCalendar();
+    await refreshCalendarDay(dateStr);
     try {
       day = await getJSON(`/api/day/${dateStr}`);
     } catch (e) {
@@ -1114,9 +1192,8 @@ async function refetchDay() {
   try {
     const fr = await fetch(`/api/fetch/${selDate}`, { method: "POST" });
     if (!fr.ok) throw new Error(await fr.text());
-    await renderCalendar();
-    const r2   = await fetch(`/api/day/${selDate}`);
-    const day2 = await r2.json();
+    await refreshCalendarDay(selDate);
+    const day2 = await getJSON(`/api/day/${selDate}`);
     lastRun  = day2.last_run || lastRun;
     daySpend = day2.spend || daySpend;
     document.getElementById("download-btn").style.display = "flex";
@@ -1199,7 +1276,12 @@ async function runQC() {
     while (polling) {
       await new Promise(res => setTimeout(res, 3000));
       if (!polling || selDate !== qcDate) break;
-      try { await refreshDayPanel(qcDate); } catch {}
+      // Patch the day panel and its calendar square together, so the count in
+      // the grid tracks the tickets appearing in the list.
+      try {
+        await refreshDayPanel(qcDate);
+        await refreshCalendarDay(qcDate);
+      } catch {}
     }
   })();
 
@@ -1224,7 +1306,7 @@ async function runQC() {
     if (selDate === qcDate) {
       // Always do a definitive render when the run ends (success or partial).
       try {
-        await renderCalendar();
+        await refreshCalendarDay(qcDate);
         await refreshDayPanel(qcDate);
       } catch {}
 
@@ -1539,7 +1621,6 @@ async function getJSON(url, options) {
 }
 
 // ── assignee multi-select state ───────────────────────────────────────────────
-const selectedAssignees = new Set();
 
 function _updateAssigneeBtn() {
   const btn = document.getElementById("assignee-ms-btn");
@@ -1641,6 +1722,7 @@ function populateGroupFilter(tickets) {
       _updateGroupBtn();
       populateStatusPills();
       applyFilters();
+      saveFilters();
     });
   });
   _updateGroupBtn();
@@ -1674,6 +1756,7 @@ function populateAssigneeFilter(tickets) {
       _updateAssigneeBtn();
       populateStatusPills();
       applyFilters();
+      saveFilters();
     });
   });
 
@@ -1748,8 +1831,35 @@ function applyFilters() {
   } else if (statusFilter) {
     filtered = filtered.filter(t => t.overall_result === statusFilter);
   }
-  renderTickets(filtered);
   const isFiltered = selectedAssignees.size > 0 || selectedGroups.size > 0 || statusFilter;
+
+  // Filters now persist across days, so a filter carried onto a day it matches
+  // nothing on would otherwise show an empty list with no explanation. Offer
+  // the way out instead.
+  if (isFiltered && filtered.length === 0 && allTickets.length > 0) {
+    document.getElementById("ticket-list").innerHTML = `
+      <div class="empty-state">
+        <div class="icon">🔍</div>
+        <p>${allTickets.length} ticket${allTickets.length === 1 ? "" : "s"} on this day,
+           all hidden by your filters.</p>
+        <p><button id="clear-filters-btn" class="btn">Clear filters</button></p>
+      </div>`;
+    const clearBtn = document.getElementById("clear-filters-btn");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", () => {
+        clearSavedFilters();
+        _updateAssigneeBtn();
+        _updateGroupBtn();
+        setActivePill("");
+        populateAssigneeFilter(allTickets);
+        populateStatusPills(allTickets);
+        applyFilters();
+      });
+    }
+  } else {
+    renderTickets(filtered);
+  }
+
   const tickets = isFiltered
     ? `${filtered.length} of ${allTickets.length} tickets`
     : `${allTickets.length} tickets`;
@@ -2137,6 +2247,7 @@ document.querySelectorAll(".status-pill").forEach(pill => {
     statusFilter = pill.dataset.status;
     setActivePill(statusFilter);
     applyFilters();
+    saveFilters();
   });
 });
 document.getElementById("refetch-btn").addEventListener("click", refetchDay);
@@ -2159,6 +2270,23 @@ document.getElementById("next-month").addEventListener("click", () => {
     coverages = d.coverages || [];
     applyDefaultGroupFilter();
   } catch {}
+
+  // Restore the viewer's own filters, which take precedence over the coverage
+  // default applied above — an explicit choice should outlive a reload.
+  const saved = loadSavedFilters();
+  if (saved) {
+    statusFilter = saved.status;
+    selectedAssignees.clear();
+    saved.assignees.forEach(n => selectedAssignees.add(n));
+    if (saved.groups.length) {
+      selectedGroups.clear();
+      saved.groups.forEach(g => selectedGroups.add(g));
+    }
+    setActivePill(statusFilter);
+    _updateAssigneeBtn();
+    _updateGroupBtn();
+  }
+
   await renderCalendar();
   const params = new URLSearchParams(location.search);
   if (params.get("view") === "analytics") {
