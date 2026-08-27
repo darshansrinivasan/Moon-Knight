@@ -120,6 +120,57 @@ for page in [*PAGES, STATIC / "shell.css"]:
     check(f"{page.name}: colours come from tokens", not bad, ", ".join(bad[:3]))
 
 print()
+print("=== Rules page: prompt editors and learned suggestions ===")
+# These pin the Rules page against the two contracts it reads: prompts.py's
+# section list (which it must NOT hardcode) and suggestions.build's payload.
+# There is no browser here, so these are structural — the behavioural pass runs
+# in jsdom, which is not a dependency of this suite.
+import prompts as _prompts
+
+RULES = (STATIC / "rules.html").read_text()
+
+# The section list lives in prompts.SECTION_KEYS. The page builds its editors
+# from /api/rules, so a hardcoded key here would drift the day a section is
+# added or renamed.
+hardcoded = [k for k in _prompts.SECTION_KEYS if k in RULES]
+check("rules.html does not hardcode section keys", not hardcoded,
+      ", ".join(hardcoded))
+check("rules.html builds editors from prompt_sections",
+      "prompt_sections" in RULES and "ps-" in RULES)
+check("rules.html renders the read-only fixed blocks", "prompt_fixed" in RULES)
+check("rules.html shows the per-section limit", "prompt_limit" in RULES)
+check("each section offers a reset to default", "data-reset" in RULES)
+check("a diverged section is marked", "data-edited" in RULES)
+
+# rules.save persists only the keys the PUT carries and _load fills the rest
+# from defaults, so a save that omitted a section would silently reset it.
+check("every save carries every prompt section",
+      "Object.assign(rules, draftPrompt())" in RULES)
+check("the dry-run tests the whole rubric, not just guidance",
+      "{...draftPrompt(), limit: DRY_LIMIT}" in RULES)
+check("the dry-run sends no key the server would ignore",
+      "{guidance:" not in RULES)
+
+# The assembled prompt is now mostly editable, so the old label was a lie.
+check("the assembled-prompt view is not called the fixed part",
+      "the fixed part of every run" not in RULES)
+for word in ["stale", "regrade", "re-billed"]:
+    check(f"the prompt editors warn about {word}", word in RULES)
+
+# A stored Pylon link is outside text: escaping leaves the scheme intact, so
+# `javascript:` survives esc() and stays clickable.
+check("ticket links are scheme-guarded", r"/^https?:\/\//i" in RULES)
+check("an unlinkable ticket is plain text, not an anchor",
+      'class="num"' in RULES)
+check("the noise gate is explained, not silent",
+      "gated_out" in RULES and "five overrides" in RULES)
+check("the window selector offers 7 / 30 / 90",
+      all('data-days="%d"' % d in RULES for d in (7, 30, 90)))
+check("members cannot spend money or requery",
+      '$("dry-run").disabled = true' in RULES
+      and '$("sug-days").querySelectorAll("button").forEach(b => b.disabled = true)' in RULES)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

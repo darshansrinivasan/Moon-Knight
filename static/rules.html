@@ -132,7 +132,35 @@
   table.dry .k { color: var(--muted); }
   table.dry tr.chg td { background: color-mix(in srgb, var(--review) 10%, transparent); }
   table.dry tr.chg td.to { color: var(--review); font-weight: 600; }
+
+  /* ── per-section prompt editors ── */
+  .psec { padding: var(--space-4) 0; border-top: 1px solid var(--color-divider); }
+  .psec:first-child { border-top: 0; }
+  .psec-head {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: var(--space-3); margin-bottom: var(--space-1);
+  }
+  .psec-head h3 {
+    margin: 0; font-size: 12.5px; text-transform: none;
+    letter-spacing: -0.015em; color: var(--color-text);
+  }
+  .psec-head .spacer { flex: 1; }
+  .tag.edited { color: var(--color-accent-300); border-color: var(--color-accent-700); }
+  button.sm { font-size: 11px; padding: var(--space-1) var(--space-3); }
+  .grades {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: var(--space-2); margin-bottom: var(--space-2);
+  }
+  .grades .ev-label { margin: 0; }
+  .grades .hint { margin: 0; flex: 1 1 260px; min-width: 0; }
+  .psec-foot {
+    display: flex; justify-content: flex-end; margin: var(--space-1) 0 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .psec-foot.over { color: var(--fail); }
+  table.dry tr.overall td { border-top: 1px solid var(--color-neutral-800); font-weight: 600; }
 </style>
+
 
 </head>
 <body class="shell" data-page="rules">
@@ -232,23 +260,51 @@
       <div class="section" id="sec-a">
         <div class="card">
           <h2 id="t-a"></h2><p class="what" id="d-a"></p>
-          <details><summary>Show the full grading rubric (read-only — the fixed part of every run)</summary>
+          <details><summary>Show the assembled prompt (read-only — exactly what the next run sends, with your edits in it)</summary>
             <div class="rubric" id="rubric"></div>
           </details>
           <h3>Workspace-specific guidance</h3>
           <div class="hint">
-            Appended to the rubric on every run. Changing this can shift grades: each run records
-            whether guidance was active. Max 4000 characters.
+            Appended to the rubric on every run, after the sections below. Changing this can shift
+            grades: each run records whether guidance was active. Max 4000 characters.
           </div>
           <textarea id="a_guidance" rows="5" placeholder="e.g. Tickets titled 'Zapier - Intake Created' are automated intakes; do not penalise missing replies on them." spellcheck="false"></textarea>
+        </div>
 
-          <h3>Prompt dry-run</h3>
-          <div class="hint">
-            Grades a handful of already-scored tickets with the <b>draft</b> guidance in the box
-            above and shows what would move. A dry-run <b>does not save the guidance</b> and
-            <b>does not write grades</b>: no ticket's stored verdict changes and no run is
-            recorded. To keep a change, press <b>Validate &amp; save</b>.
+        <div class="card">
+          <h2>The grading prompt, section by section</h2>
+          <p class="what">
+            This is the grading policy itself — what “Good” means, how strict A5 is, how ties are
+            broken. It used to be a string literal in the scorer, which made policy a deploy.
+            Editing a section here is a normal, audited rules change. An empty box is valid and
+            falls back to the shipped default. <span id="prompt-hash"></span>
+          </p>
+          <div class="banner warn">
+            <b>Editing these changes what “Pass” means.</b> The assembled prompt is hashed into
+            every ticket's fingerprint, so a save marks existing grades stale: re-running a date
+            will regrade it rather than skip it. Nothing is re-billed until someone deliberately
+            re-runs a specific date — a save on its own costs nothing and rewrites no grade.
           </div>
+          <div id="prompt-sections"></div>
+          <details><summary>Show the fixed blocks (not editable — the wire contract, not policy)</summary>
+            <div class="hint">
+              These describe the mechanism: how results are correlated back to tickets and what
+              JSON shape must come back. Editing them would not change a grade, it would break
+              scoring, so they stay in code.
+            </div>
+            <div id="prompt-fixed"></div>
+          </details>
+        </div>
+
+        <div class="card">
+          <h2>Prompt dry-run</h2>
+          <p class="what">
+            Grades a handful of already-scored tickets with the <b>draft</b> text in the boxes
+            above — the guidance and every rubric section as currently typed — and shows what
+            would move. A dry-run <b>saves nothing</b> and <b>writes no grades</b>: no ticket's
+            stored verdict changes and no run is recorded. To keep an edit, press
+            <b>Validate &amp; save</b>.
+          </p>
           <div class="banner warn">
             <b>This spends money.</b> A dry-run makes real AI calls — five tickets sent to the
             model, billed like any other scoring. The figure reported afterwards is an estimate,
@@ -446,6 +502,12 @@ function fillForm(r, labels) {
   for (const k of CSVS) $(k).value = (r[k] || []).join(", ");
   $("r4_sla_hours").value = r.r4_sla_hours ?? 24;
   $("a_guidance").value = r.a_guidance || "";
+  for (const s of DATA.prompt_sections || []) {
+    const el = $("ps-" + s.key);
+    // `r` is either the saved rules or the defaults document; both carry every
+    // section key, so a missing one means the server dropped it.
+    if (el) { el.value = r[s.key] ?? s.default ?? ""; syncSection(s.key); }
+  }
   $("r5_group_states").value = Object.entries(r.r5_group_states || {})
     .map(([st, tags]) => `${st}: ${(tags || []).join(", ")}`).join("\n");
   renderStates(r.excluded_states || []);
@@ -475,7 +537,7 @@ function collect() {
   }
   for (const k of CSVS)  rules[k] = $(k).value.split(",").map(x => x.trim()).filter(Boolean);
   rules.r4_sla_hours = Number($("r4_sla_hours").value);
-  rules.a_guidance = $("a_guidance").value.trim();
+  Object.assign(rules, draftPrompt());
   rules.excluded_states = [...$("states").querySelectorAll("input:checked")]
     .map(cb => cb.dataset.state);
   const gs = {};
@@ -530,6 +592,8 @@ async function load() {
   }
   $("rubric").textContent = DATA.rubric;
   renderNav();
+  renderPromptSections();
+  renderPromptFixed();
   fillForm(DATA.rules, DATA.labels);
   renderMeta();
 
@@ -581,6 +645,107 @@ $("save").addEventListener("click", async () => {
     $("save").disabled = false;
   }
 });
+
+/* ── the grading prompt, section by section ─────────────────────────────────
+ * The rubric is no longer a literal in the scorer: /api/rules serves it as
+ * `prompt_sections`, one editable block each, and the wire contract as
+ * `prompt_fixed`. Two things about the contract shape the code below:
+ *
+ *   · rules.save merges the PUT over what is stored, so a save changes only the
+ *     keys it carries. Sending every section every time is therefore no longer
+ *     load-bearing — it just keeps this form's PUT a faithful picture of the
+ *     form. (It WAS load-bearing: save used to replace the whole document, so
+ *     any omitted section silently reverted to its default. That is fixed in
+ *     rules.save rather than here, because a client is the wrong place to keep
+ *     an invariant that protects stored policy.)
+ *   · a blank section means "use the default" server-side, so an empty box is
+ *     valid and must not be blocked.
+ */
+
+// Structure only, built once. Values are written by fillForm, so "Load defaults
+// into form" fills these boxes the same way it fills every other control.
+function renderPromptSections() {
+  const sections = DATA.prompt_sections || [];
+  $("prompt-hash").innerHTML = DATA.prompt_hash
+    ? `Prompt hash <b style="color:var(--accent2)">${esc(DATA.prompt_hash)}</b>.`
+    : "";
+  $("prompt-sections").innerHTML = sections.map(s => {
+    const grades = s.grades || [];
+    return `<div class="psec">
+      <div class="psec-head">
+        <h3>${esc(s.title)}</h3>
+        <span class="tag edited" data-edited="${esc(s.key)}" hidden
+              title="This section differs from the shipped default.">Edited</span>
+        <span class="spacer"></span>
+        ${DATA.can_edit ? `<button type="button" class="ghost sm"
+          data-reset="${esc(s.key)}">Reset to default</button>` : ""}
+      </div>
+      <div class="hint">${esc(s.help)}</div>
+      ${grades.length ? `<div class="grades">
+        <span class="ev-label">Grades</span>
+        ${grades.map(g => `<span class="flow">${esc(g)}</span>`).join("")}
+        <span class="hint">Fixed. The same constant spells these in the prompt and
+          constrains the API's response schema, so rubric prose cannot change
+          them — and must not try to.</span>
+      </div>` : ""}
+      <textarea id="ps-${esc(s.key)}" rows="4" spellcheck="false"></textarea>
+      <div class="hint psec-foot" data-count="${esc(s.key)}"></div>
+    </div>`;
+  }).join("");
+
+  $("prompt-sections").querySelectorAll("[data-reset]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const s = sections.find(x => x.key === btn.dataset.reset);
+      if (!s) return;
+      $("ps-" + s.key).value = s.default || "";
+      syncSection(s.key);
+      show("info", `<b>${esc(s.title)}</b> reset to its default in the form —
+        nothing is saved until you press <b>Validate &amp; save</b>.`);
+    });
+  });
+  $("prompt-sections").querySelectorAll("textarea").forEach(el => {
+    el.addEventListener("input", () => syncSection(el.id.slice(3)));
+  });
+}
+
+// The character count and the "Edited" mark, kept true while typing: a box that
+// matches the default is not a divergence, whether or not it was ever saved.
+function syncSection(key) {
+  const s = (DATA.prompt_sections || []).find(x => x.key === key);
+  const el = $("ps-" + key);
+  if (!s || !el) return;
+  const limit = DATA.prompt_limit || 2000;
+  const len = el.value.trim().length;
+  const foot = $("prompt-sections").querySelector(`[data-count="${key}"]`);
+  if (foot) {
+    foot.textContent = len > limit
+      ? `${len} / ${limit} characters — over the limit, this will be rejected`
+      : `${len} / ${limit} characters`;
+    foot.classList.toggle("over", len > limit);
+  }
+  const badge = $("prompt-sections").querySelector(`[data-edited="${key}"]`);
+  if (badge) badge.hidden = el.value.trim() === String(s.default || "").trim();
+  // Grow to fit rather than making the admin scroll a 4-line window through a
+  // 20-line rubric. Capped so one long section cannot own the page.
+  el.rows = Math.min(16, Math.max(3, el.value.split("\n").length + 1));
+}
+
+function renderPromptFixed() {
+  $("prompt-fixed").innerHTML = (DATA.prompt_fixed || []).map(b =>
+    `<h3>${esc(b.title)}</h3><div class="rubric">${esc(b.text)}</div>`).join("")
+    || `<p class="hint">None reported by the server.</p>`;
+}
+
+// Every editable prompt field as the admin has it right now. Used by the dry-run
+// (which grades against it) and by collect() (which saves it).
+function draftPrompt() {
+  const draft = {a_guidance: $("a_guidance").value.trim()};
+  for (const s of DATA.prompt_sections || []) {
+    const el = $("ps-" + s.key);
+    if (el) draft[s.key] = el.value;
+  }
+  return draft;
+}
 
 /* ── Learned suggestions ────────────────────────────────────────────────────
  * Read-only evidence from /api/rules/suggestions: where reviewers overrode the
@@ -756,8 +921,14 @@ const A_CHECK_LABELS = {
   overall: "Overall verdict",
 };
 
+// A-checks in prompt order, then the verdict they add up to. Object key order
+// happens to match today; ranking it means a server-side reorder cannot bury
+// `overall` in the middle of the grid.
+const DRY_ORDER = ["a1", "a2", "a3", "a4", "a5", "overall"];
+const dryRank = k => (DRY_ORDER.indexOf(k) < 0 ? DRY_ORDER.length : DRY_ORDER.indexOf(k));
+
 function dryRow(key, before, after, changed) {
-  return `<tr class="${changed ? "chg" : ""}">
+  return `<tr class="${changed ? "chg" : ""}${key === "overall" ? " overall" : ""}">
     <td>${esc(A_CHECK_LABELS[key] || String(key).toUpperCase())}
         <span class="k">${esc(key)}</span></td>
     <td>${before == null ? "—" : esc(before)}</td>
@@ -766,13 +937,25 @@ function dryRow(key, before, after, changed) {
 }
 
 function dryTicket(r) {
+  if (r.error) {
+    return `<div class="dry-tk">
+      <div class="dry-head">
+        ${ticketRef(r)}<span class="ttl">${esc(r.title || "")}</span>
+        <span class="tag">not compared</span>
+      </div>
+      <p class="hint">${esc(r.error)}</p>
+    </div>`;
+  }
   const current = r.current || {};
   const draft = r.draft || {};
-  const keys = [...new Set([...Object.keys(current), ...Object.keys(draft)])];
+  const keys = [...new Set([...Object.keys(current), ...Object.keys(draft)])]
+    .sort((a, b) => dryRank(a) - dryRank(b));
   // The server's `changed` is authoritative, but a value that differs is a
   // change whether or not it was listed.
   const changed = new Set(r.changed || []);
-  for (const k of keys) if (current[k] !== draft[k]) changed.add(k);
+  for (const k of keys) {
+    if (current[k] != null && draft[k] != null && current[k] !== draft[k]) changed.add(k);
+  }
   const moved = keys.filter(k => changed.has(k)).length;
   const rows = keys.map(k => dryRow(k, current[k], draft[k], changed.has(k))).join("");
   return `<div class="dry-tk">
@@ -790,6 +973,12 @@ function dryTicket(r) {
 function renderDryRun(d) {
   const results = d.results || [];
   const moved = results.filter(r => (r.changed || []).length).length;
+  // Nothing to sample is not the same as nothing moving, and a draft identical
+  // to the saved rubric cannot move anything — say which it was.
+  const caveat = !results.length && d.note ? ` ${d.note}`
+    : d.prompt_changed === false
+      ? " The draft is identical to the saved guidance, so nothing could move."
+      : "";
   // Always presented as an estimate: even a figure the API reports back is an
   // estimate of what the same guidance would cost across a whole run.
   const basis = d.cost_estimated === false
@@ -798,7 +987,7 @@ function renderDryRun(d) {
   QC.show($("dry-msg"),
     `${d.sampled ?? results.length} tickets sampled · ${moved} would change · `
     + `estimated cost ~$${Number(d.cost_usd || 0).toFixed(4)} (${basis}). `
-    + `Nothing was saved and no grade was written.`, "info");
+    + `Nothing was saved and no grade was written.${caveat}`, "info");
   $("dry-out").innerHTML = results.length
     ? results.map(dryTicket).join("")
     : `<p class="hint">No tickets came back to compare.</p>`;
@@ -813,7 +1002,10 @@ $("dry-run").addEventListener("click", async () => {
   try {
     const r = await fetch("/api/rules/dry-run", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({guidance: $("a_guidance").value.trim(), limit: DRY_LIMIT}),
+      // Real rules keys, not a "guidance" field: the endpoint lays the draft
+      // over the saved rules by key name and silently ignores a key it does not
+      // know, which would bill for comparing the saved rubric against itself.
+      body: JSON.stringify({...draftPrompt(), limit: DRY_LIMIT}),
     });
     if (r.status === 404 || r.status === 405 || r.status === 501) {
       QC.show($("dry-msg"), "Dry-run is not available yet.", "info");

@@ -247,12 +247,30 @@ def validate(candidate: dict) -> list:
 
 
 def save(candidate: dict, updated_by: str) -> list:
-    """Validate and persist. Returns [] on success, else the error list."""
+    """Validate and persist. Returns [] on success, else the error list.
+
+    The candidate is merged over what is already stored, not written in its
+    place. This used to be a straight replace, which meant any key absent from
+    the payload silently reverted to its default — no error, no trace, and the
+    only thing standing between an admin's rubric and a reset was every client
+    remembering to send all of it back. That is an invariant living in the
+    wrong place. Now a save can only change the keys it actually carries.
+
+    Absent and empty are deliberately different: a key that is present with an
+    empty value is a real edit (clearing `excluded_states` must clear it), while
+    a key that is missing means "not part of this change".
+    """
     known = set(defaults().keys())
     cleaned = {k: v for k, v in candidate.items() if k in known}
-    errors = validate(cleaned)
+
+    merged = _load()
+    merged.update(cleaned)
+
+    # Validate the whole merged document rather than the fragment: what gets
+    # stored is what has to be coherent.
+    errors = validate(merged)
     if errors:
         return errors
-    vault.set_raw_setting(RULES_KEY, json.dumps(cleaned), updated_by)
+    vault.set_raw_setting(RULES_KEY, json.dumps(merged), updated_by)
     invalidate()
     return []

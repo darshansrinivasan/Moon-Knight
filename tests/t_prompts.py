@@ -160,6 +160,44 @@ ok("every section has a label and help text",
        for key in prompts.SECTION_KEYS))
 
 print()
+print("=== a partial save cannot silently revert what it omits ===")
+# save() used to replace the stored document, so any key absent from the payload
+# reverted to its default with no error and no trace. The only thing protecting
+# an admin's rubric was every client remembering to send all of it back — an
+# invariant in the wrong place. A save now changes only the keys it carries.
+import db
+db.init_db()
+
+check("a partial save applies", rules.save(
+    {"a3_rubric": "HOUSE A3", "a1_rubric": "HOUSE A1"}, "t@x"), [])
+check("both keys took", (rules.current()["a3_rubric"],
+                         rules.current()["a1_rubric"]),
+      ("HOUSE A3", "HOUSE A1"))
+
+check("a later partial save applies", rules.save({"a1_rubric": "NEW A1"}, "t@x"), [])
+check("the key it omitted is untouched", rules.current()["a3_rubric"], "HOUSE A3")
+check("the key it carried changed", rules.current()["a1_rubric"], "NEW A1")
+
+# Present-but-empty is a real edit; absent is not. Clearing a list must clear it.
+rules.save({"excluded_states": ["archived"]}, "t@x")
+check("a list can be set", rules.current()["excluded_states"], ["archived"])
+check("and cleared", (rules.save({"excluded_states": []}, "t@x"),
+                      rules.current()["excluded_states"]), ([], []))
+check("clearing did not disturb the rubric", rules.current()["a3_rubric"], "HOUSE A3")
+
+# A blank section is stored as blank and resolves to the default at assembly
+# time, which is different from never having been sent.
+rules.save({"a3_rubric": ""}, "t@x")
+check("a blank section is stored", rules.current()["a3_rubric"], "")
+ok("and assembles as the default",
+   "vague or incomplete but serviceable" in prompts.system_prompt(rules.current()),
+   "a blank box must never send the model an empty check")
+
+bad = rules.save({"a1_rubric": "x" * 5000}, "t@x")
+ok("an invalid partial is refused", bad != [])
+check("and nothing was written", rules.current()["a1_rubric"], "NEW A1")
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)
