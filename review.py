@@ -165,10 +165,18 @@ def latest_reviews(ticket_ids: list[str]) -> dict[str, dict]:
     return {r["ticket_id"]: dict(r) for r in rows}
 
 
-def annotate_tickets(tickets: list[dict], user: dict) -> list[dict]:
-    """Attach effective grade, review record, and whether this user may sign off."""
+def apply_effective_grades(tickets: list[dict]) -> list[dict]:
+    """Overlay the latest human sign-off onto each ticket's `overall_result`.
+
+    The effective grade of a ticket is the latest review decision, else the AI
+    grade; `ai_result` always keeps the machine's own verdict. Every surface
+    that reports a grade must go through here, or the same ticket reads Pass on
+    the dashboard and Fail in Slack. Mutates and returns `tickets`.
+
+    This carries no authorization: it says what the grade *is*, not who may
+    change it. Use `annotate_tickets` for anything a signed-in user sees.
+    """
     reviews = latest_reviews([t["id"] for t in tickets])
-    covered = None if is_admin(user) else assignees_for(user)
     for t in tickets:
         ai = t.get("overall_result")
         rev = _active_review(reviews.get(t["id"]))
@@ -182,6 +190,14 @@ def annotate_tickets(tickets: list[dict], user: dict) -> list[dict]:
             "reviewed_at": rev["reviewed_at"],
             "note": rev.get("note") or "",
         } if rev else None
+    return tickets
+
+
+def annotate_tickets(tickets: list[dict], user: dict) -> list[dict]:
+    """Effective grades plus whether *this* user may sign each ticket off."""
+    apply_effective_grades(tickets)
+    covered = None if is_admin(user) else assignees_for(user)
+    for t in tickets:
         assignee = t.get("assignee_name") or "Unassigned"
         t["can_review"] = True if covered is None else assignee in covered
     return tickets

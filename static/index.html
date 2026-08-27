@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pylon QC Dashboard</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1047,8 +1048,18 @@ async function selectDay(dateStr) {
 
   showLoading();
 
-  const r   = await fetch(`/api/day/${dateStr}`);
-  let   day = await r.json();
+  // An unguarded fetch here left the spinner up forever on any 500: the
+  // rejection became an unhandled promise and the user saw no error, no retry.
+  let day;
+  try {
+    day = await getJSON(`/api/day/${dateStr}`);
+  } catch (e) {
+    if (selDate !== dateStr) return;
+    document.getElementById("panel-meta").textContent = "Could not load";
+    refetchBtn.style.display = "flex";
+    showError(`Could not load this day: ${e.message}. Use ↻ Refetch to retry.`);
+    return;
+  }
   if (selDate !== dateStr) return; // user clicked another day meanwhile
 
   if (!day.fetched) {
@@ -1068,8 +1079,13 @@ async function selectDay(dateStr) {
     }
     if (selDate !== dateStr) return;
     await renderCalendar();
-    const r2 = await fetch(`/api/day/${dateStr}`);
-    day = await r2.json();
+    try {
+      day = await getJSON(`/api/day/${dateStr}`);
+    } catch (e) {
+      if (selDate !== dateStr) return;
+      showError(`Fetched, but could not load the results: ${e.message}`);
+      return;
+    }
     if (selDate !== dateStr) return;
   }
 
@@ -1078,7 +1094,7 @@ async function selectDay(dateStr) {
   document.getElementById("refetch-btn").style.display = "flex";
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
-  allTickets = day2.tickets;
+  allTickets = day2.tickets || [];
   populateAssigneeFilter(allTickets);
   populateStatusPills(allTickets);
   applyFilters();
@@ -1457,6 +1473,18 @@ function esc(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+// Fetch JSON or throw with a message worth showing. Every caller needs the
+// status check: without it a 500 rejects inside .json() and, if unguarded,
+// silently strands the UI on its loading state.
+async function getJSON(url, options) {
+  const r = await fetch(url, options);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || `${r.status} ${r.statusText}`);
+  }
+  return r.json();
+}
+
 // ── assignee multi-select state ───────────────────────────────────────────────
 const selectedAssignees = new Set();
 
@@ -1697,8 +1725,9 @@ function showLoading() {
     `<div class="loading"><div class="spinner"></div> Loading…</div>`;
 }
 function showError(msg) {
+  // esc() because callers now pass server error text, not just literals.
   document.getElementById("ticket-list").innerHTML =
-    `<div class="empty-state"><div class="icon">⚠️</div><p>${msg}</p></div>`;
+    `<div class="empty-state"><div class="icon">⚠️</div><p>${esc(msg)}</p></div>`;
 }
 
 function downloadCSV() {

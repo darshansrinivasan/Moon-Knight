@@ -107,21 +107,39 @@ def ticket_reasons(ai_notes) -> list:
 
 
 def build_summary(date_str: str) -> dict:
-    """Aggregate a day's results into the numbers the report needs."""
-    tickets = db.get_day_tickets(date_str)
-    total   = len(tickets)
+    """Aggregate a day's results into the numbers the report needs.
 
-    counts = {"Pass": 0, "Fail": 0, "Needs Review": 0}
-    pending = 0
+    Grades come from `review.effective_grades`, so a ticket a human has signed
+    off reads the same here as it does on the dashboard. Tickets whose state is
+    excluded from AI scoring are reported separately from genuinely pending
+    ones: counting them as "not scored" made a completely healthy run look like
+    it had silently dropped a third of the day.
+    """
+    import rules as qc_rules
+    import review
+
+    tickets  = review.apply_effective_grades(db.get_day_tickets(date_str))
+    excluded_states = set(qc_rules.excluded_states())
+
+    counts   = {"Pass": 0, "Fail": 0, "Needs Review": 0}
+    pending  = 0
+    excluded = 0
     for t in tickets:
         result = t.get("overall_result")
         if result in counts:
             counts[result] += 1
+        elif (t.get("state") or "") in excluded_states:
+            excluded += 1
         else:
             pending += 1
 
+    # Excluded tickets are out of scope, so they are out of the denominator too.
+    total = len(tickets) - excluded
+
     rule_fails = {}
     for t in tickets:
+        if (t.get("state") or "") in excluded_states:
+            continue
         for key in RULE_LABELS:
             if t.get(key) == "Fail":
                 rule_fails[key] = rule_fails.get(key, 0) + 1
@@ -147,6 +165,7 @@ def build_summary(date_str: str) -> dict:
         "fail":       counts["Fail"],
         "review":     counts["Needs Review"],
         "pending":    pending,
+        "excluded":   excluded,
         "pass_rate":  round(counts["Pass"] / scored * 100) if scored else None,
         "rule_fails": sorted(rule_fails.items(), key=lambda kv: -kv[1]),
         "groups":     groups,
@@ -164,7 +183,7 @@ def _summary_blocks(s: dict, base_url: str) -> list:
          "text": {"type": "plain_text", "text": f"Support QC run \u2014 {s['date']}",
                   "emoji": True}},
         {"type": "section", "fields": [
-            {"type": "mrkdwn", "text": f"*Tickets*\n{s['total']}"},
+            {"type": "mrkdwn", "text": f"*In scope*\n{s['total']}"},
             {"type": "mrkdwn", "text": f"*Pass rate*\n{rate}"},
             {"type": "mrkdwn", "text": f"*\u2705 Pass*\n{s['pass']}"},
             {"type": "mrkdwn", "text": f"*\u274c Fail*\n{s['fail']}"},
@@ -173,7 +192,24 @@ def _summary_blocks(s: dict, base_url: str) -> list:
         ]},
     ]
 
+    # Excluded tickets are not a problem to fix, so they sit outside the counts
+    # above \u2014 but staying silent about them makes the total look wrong.
+    if s.get("excluded"):
+        blocks.append({"type": "context", "elements": [
+            {"type": "mrkdwn",
+             "text": f"{s['excluded']} archived or out-of-scope "
+                     f"ticket{'s' if s['excluded'] != 1 else ''} excluded from scoring"}
+        ]})
+
     lines = []
+    # A ticket that is in scope but ungraded means scoring dropped it. That is a
+    # run failure, not a statistic, so say so before anything else.
+    if s["pending"]:
+        lines.append(
+            f"\u2022 :rotating_light: {s['pending']} in-scope "
+            f"ticket{'s' if s['pending'] != 1 else ''} could not be graded \u2014 "
+            "re-run scoring for this day"
+        )
     if s["rule_fails"]:
         top = ", ".join(f"{RULE_LABELS[k]} ({n})" for k, n in s["rule_fails"][:3])
         lines.append(f"\u2022 Most common rule failures: {top}")

@@ -427,8 +427,26 @@ def get_setting_sources() -> dict:
     return {s["key"]: setting_source(s["key"]) for s in SETTING_SPECS}
 
 
-def set_settings(values: dict, updated_by: str) -> list[str]:
-    """Persist settings the environment does not own. Returns keys it refused."""
+# Settings that must never be silently blanked. A UI control that has not
+# finished loading reads as "" and used to overwrite a working value: that is
+# exactly how a saved vertex_project disappeared and every QC run then failed
+# with "No Google Cloud project configured". Clearing these requires
+# allow_clear, so an accidental empty POST cannot erase them.
+PROTECTED_SETTINGS = frozenset({
+    "vertex_project", "vertex_location", "vertex_models",
+    "schedule_time", "schedule_tz", "schedule_target",
+})
+
+
+def set_settings(values: dict, updated_by: str,
+                 allow_clear: bool = False) -> list[str]:
+    """Persist settings the environment does not own.
+
+    Returns the keys it refused: those the environment owns, and those in
+    PROTECTED_SETTINGS whose incoming value was empty while a value is already
+    stored (unless `allow_clear`). Callers should surface refusals rather than
+    reporting a clean save.
+    """
     now = _now()
     refused = []
     with db.get_conn() as conn:
@@ -439,10 +457,21 @@ def set_settings(values: dict, updated_by: str) -> list[str]:
             if spec.get("env") and _env(spec["env"]):
                 refused.append(key)
                 continue
+
+            text = "" if value is None else str(value)
+            if not text.strip() and key in PROTECTED_SETTINGS and not allow_clear:
+                if get_setting(key):
+                    logger.warning(
+                        "Refusing to clear %r — it already has a value and no "
+                        "explicit clear was requested", key,
+                    )
+                    refused.append(key)
+                    continue
+
             conn.execute(
                 "INSERT OR REPLACE INTO app_settings (key, value, updated_by, updated_at)"
                 " VALUES (?, ?, ?, ?)",
-                (key, "" if value is None else str(value), updated_by, now),
+                (key, text, updated_by, now),
             )
     return refused
 

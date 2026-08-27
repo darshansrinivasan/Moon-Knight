@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Admin · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
   .cred { border-top: 1px solid var(--border); padding: 14px 0; }
@@ -573,23 +574,56 @@ function readSetting(key) {
   return el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value.trim();
 }
 
+// A <select> assigned a value with no matching <option> stays at "". So when
+// the GCP project list fails to load, the project dropdown silently reads
+// empty and a save would blank the stored project — which is what broke every
+// scheduled run. Never submit an empty value for one of these unless the user
+// deliberately chose the blank option.
+const NEVER_BLANK = new Set([
+  "vertex_project", "vertex_location", "vertex_models",
+  "schedule_time", "schedule_tz", "schedule_target",
+]);
+
+function droppedBlankKeys(keys, body) {
+  return keys.filter(k => !(k in body) && NEVER_BLANK.has(k));
+}
+
 function wireSaveButtons() {
   document.querySelectorAll("[data-save]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const keys = btn.dataset.save.split(",");
       const body = {};
-      keys.forEach(k => { const v = readSetting(k); if (v !== null) body[k] = v; });
+      keys.forEach(k => {
+        const v = readSetting(k);
+        if (v === null) return;
+        // Hold back an empty protected value rather than sending a wipe.
+        if (v === "" && NEVER_BLANK.has(k)) return;
+        body[k] = v;
+      });
       const msgId = keys[0].startsWith("vertex") ? "msg-vertex" : "msg-slack";
       const msg = $(msgId);
+      const held = droppedBlankKeys(keys, body);
+
+      if (!Object.keys(body).length) {
+        show(msg, "Nothing to save — these fields have not loaded yet.", "err");
+        return;
+      }
+
       btn.disabled = true;
       try {
         const d = await api("/api/admin/settings", {
           method: "PUT", body: JSON.stringify(body),
         });
         fillSettings(d.settings, d.setting_sources);
-        show(msg, d.refused && d.refused.length
-          ? `Saved. ${d.refused.join(", ")} unchanged — set by the environment.`
-          : "Saved.", d.refused && d.refused.length ? "info" : "ok");
+        const notes = [];
+        if (d.refused && d.refused.length) {
+          notes.push(`${d.refused.join(", ")} unchanged — set by the environment`);
+        }
+        if (held.length) {
+          notes.push(`${held.join(", ")} left as-is — the field was empty`);
+        }
+        show(msg, notes.length ? `Saved. ${notes.join("; ")}.` : "Saved.",
+             notes.length ? "info" : "ok");
       } catch (e) {
         show(msg, e.message, "err");
       } finally { btn.disabled = false; }

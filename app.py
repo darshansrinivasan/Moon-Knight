@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import html
 import io
 import json
 import logging
@@ -11,7 +12,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import (
-    HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
+    FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +31,40 @@ import slack
 import vault
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+DATE_HINT = "Use YYYY-MM-DD"
+
+# The latest human sign-off per ticket, and the grade that actually applies:
+# a review decision when there is one, else the AI verdict. Every surface that
+# reports a grade must use these, or the same ticket reads Pass in one place and
+# Fail in another. Constant SQL — no caller input is interpolated.
+_LATEST_REVIEW = """
+    SELECT r.ticket_id, r.decision
+    FROM ticket_reviews r
+    JOIN (SELECT ticket_id, MAX(id) AS max_id
+          FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
+"""
+_EFFECTIVE_GRADE = (
+    "COALESCE(CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,"
+    " ac.overall_result)"
+)
+
+
+def _require_date(value: str) -> date:
+    """Parse a YYYY-MM-DD path/query value or reject the request."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(400, DATE_HINT) from None
+
+
+def _require_month(value: str) -> str:
+    """Validate a YYYY-MM filter. Unvalidated, a typo returned an empty page."""
+    try:
+        datetime.strptime(value, "%Y-%m")
+    except ValueError:
+        raise HTTPException(400, "Use YYYY-MM") from None
+    return value
 
 
 logging.basicConfig(
@@ -99,17 +134,22 @@ async def login_page(request: Request):
 
 @app.get("/auth/start")
 async def auth_start(request: Request, next: str = "/"):
-    if not next.startswith("/"):
-        next = "/"          # never redirect off-site
-    return RedirectResponse(auth.login_url(request, next), status_code=302)
+    return RedirectResponse(
+        auth.login_url(request, auth.safe_next(next)), status_code=302
+    )
 
 
 @app.get("/auth/callback")
 async def auth_callback(request: Request, code: str | None = None,
                         state: str | None = None, error: str | None = None):
     if error or not code or not state:
+        # `error` is attacker-controllable and this route is reachable without a
+        # session, so it must never reach the response unescaped: the payload
+        # would execute on our own origin, where SameSite=Lax still sends the
+        # admin's session cookie to any fetch() it makes.
+        reason = html.escape(error) if error else "Missing authorization code"
         return HTMLResponse(
-            f"<h1>Sign-in cancelled</h1><p>{error or 'Missing authorization code'}.</p>"
+            f"<h1>Sign-in cancelled</h1><p>{reason}.</p>"
             '<p><a href="/login">Try again</a></p>', status_code=400,
         )
 
@@ -123,13 +163,15 @@ async def auth_callback(request: Request, code: str | None = None,
     # The same redirect URI serves sign-in and the Google Cloud connection;
     # the signed state says which flow this is.
     if payload.get("flow") == "gcp":
-        return await _finish_cloud_connect(request, code, payload.get("next", "/admin"))
+        return await _finish_cloud_connect(
+            request, code, auth.safe_next(payload.get("next")) or "/admin"
+        )
 
     try:
         identity = await auth.exchange_code(request, code)
     except HTTPException as e:
         return HTMLResponse(
-            f"<h1>Access denied</h1><p>{e.detail}</p>"
+            f"<h1>Access denied</h1><p>{html.escape(str(e.detail))}</p>"
             '<p><a href="/login">Back to sign-in</a></p>', status_code=e.status_code,
         )
 
@@ -141,7 +183,7 @@ async def auth_callback(request: Request, code: str | None = None,
         )
 
     vault.audit(user["email"], "auth.login")
-    resp = RedirectResponse(payload.get("next", "/"), status_code=302)
+    resp = RedirectResponse(auth.safe_next(payload.get("next")), status_code=302)
     auth.set_session_cookie(resp, auth.issue_session(user))
     return resp
 
@@ -157,7 +199,7 @@ async def _finish_cloud_connect(request: Request, code: str, next_path: str):
         identity = await auth.verify_identity(tokens.get("id_token"))
     except HTTPException as e:
         return HTMLResponse(
-            f"<h1>Could not connect Google Cloud</h1><p>{e.detail}</p>"
+            f"<h1>Could not connect Google Cloud</h1><p>{html.escape(str(e.detail))}</p>"
             '<p><a href="/admin">Back to Admin</a></p>', status_code=e.status_code,
         )
 
@@ -192,6 +234,20 @@ async def auth_logout(request: Request):
     resp = RedirectResponse("/login", status_code=302)
     auth.clear_session_cookie(resp)
     return resp
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Browsers request /favicon.ico regardless of the <link> tags.
+
+    `/favicon.ico` is already a public path, but nothing served it, so every
+    page load logged a 404. One SVG covers both this and the explicit links.
+    """
+    return FileResponse(
+        STATIC_DIR / "favicon.svg",
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 @app.get("/healthz")
@@ -241,8 +297,20 @@ async def fetch_and_store(target: date) -> int:
     Shared by the manual endpoint and the scheduler. Returns the active ticket count.
     """
     date_str = target.isoformat()
-    issues, messages_by_id, accounts_by_id = await pylon.fetch_day(target)
+    day = await pylon.fetch_day(target)
+    issues          = day.issues
+    messages_by_id  = day.messages_by_id
+    accounts_by_id  = day.accounts_by_id
     now = datetime.now(timezone.utc).isoformat()
+
+    if day.failed_messages or day.failed_accounts:
+        logger.warning(
+            "Incomplete fetch for %s: %d ticket(s) missing messages, "
+            "%d account(s) unavailable — those tickets will not be rule-scored",
+            date_str, len(day.failed_messages), len(day.failed_accounts),
+        )
+
+    scoring_failures: list = []
 
     def store() -> int:
         # build user cache from message authors
@@ -345,8 +413,28 @@ async def fetch_and_store(target: date) -> int:
                         1 if m.get("is_private") else 0,
                     ))
 
-                # R1–R8 scoring
-                scores = scorer.score_all(issue, msgs, acc_data, ext_issues)
+                # R-checks read absence as evidence: no messages looks like an
+                # unanswered thread, a missing account like an invalid one. If
+                # the fetch was incomplete for this ticket, leave the previous
+                # scores alone rather than recording a guess as fact.
+                if not day.is_complete(issue):
+                    logger.warning(
+                        "Skipping rule scoring for #%s — incomplete fetch",
+                        issue.get("number"),
+                    )
+                    continue
+
+                # R1–R8 scoring. One malformed ticket must not cost the day:
+                # this used to propagate out and roll back the whole transaction.
+                try:
+                    scores = scorer.score_all(issue, msgs, acc_data, ext_issues)
+                except Exception:
+                    logger.exception(
+                        "Rule scoring failed for #%s", issue.get("number")
+                    )
+                    scoring_failures.append(issue.get("number"))
+                    continue
+
                 conn.execute("""
                     INSERT OR REPLACE INTO rule_checks
                         (ticket_id, fetch_date, r1, r2, r3, r4, r5, r7, r8, r9, checked_at)
@@ -367,17 +455,21 @@ async def fetch_and_store(target: date) -> int:
             return active_count
 
     count = await asyncio.to_thread(store)
-    # recompute overall_result for any already-QC'd tickets whose R-scores changed
-    await asyncio.to_thread(resync_overall.run)
+    if scoring_failures:
+        logger.error(
+            "Rule scoring failed for %d ticket(s) on %s: %s",
+            len(scoring_failures), date_str, scoring_failures,
+        )
+    # Recompute overall_result for this day's already-QC'd tickets whose
+    # R-scores just changed. Scoped to the fetched date: resyncing the whole
+    # table on every fetch grew without bound and rewrote unrelated days.
+    await asyncio.to_thread(resync_overall.run, date_str)
     return count
 
 
 @app.post("/api/fetch/{date_str}")
 async def fetch_day(date_str: str, user: dict = Depends(auth.require_user)):
-    try:
-        target = date.fromisoformat(date_str)
-    except ValueError:
-        raise HTTPException(400, "Use YYYY-MM-DD")
+    target = _require_date(date_str)
 
     try:
         with db.advisory_lock(f"fetch:{date_str}", user["email"], ttl_seconds=1800):
@@ -398,10 +490,7 @@ async def fetch_day(date_str: str, user: dict = Depends(auth.require_user)):
 
 @app.post("/api/qc/{date_str}")
 async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
-    try:
-        date.fromisoformat(date_str)
-    except ValueError:
-        raise HTTPException(400, "Use YYYY-MM-DD")
+    _require_date(date_str)
 
     log = await asyncio.to_thread(db.get_fetch_log, date_str)
     if not log:
@@ -747,10 +836,7 @@ async def run_detail(run_id: int, user: dict = Depends(auth.require_user)):
 
 @app.get("/api/export/{date_str}")
 async def export_csv(date_str: str, user: dict = Depends(auth.require_user)):
-    try:
-        date.fromisoformat(date_str)
-    except ValueError:
-        raise HTTPException(400, "Use YYYY-MM-DD")
+    _require_date(date_str)
 
     def build_csv():
         tickets = review.annotate_tickets(db.get_day_tickets(date_str), user)
@@ -819,6 +905,12 @@ async def get_analytics(
     end: str | None = None,
     user: dict = Depends(auth.require_user),
 ):
+    if start and end:
+        _require_date(start)
+        _require_date(end)
+    if month:
+        _require_month(month)
+
     def query():
         if start and end:
             where  = "WHERE t.fetch_date BETWEEN ? AND ?"
@@ -832,15 +924,20 @@ async def get_analytics(
         with db.get_conn() as conn:
             rows = conn.execute(f"""
                 SELECT
-                    COALESCE(t.assignee_name, 'Unassigned')                  AS assignee,
-                    COUNT(*)                                                  AS total,
-                    SUM(CASE WHEN ac.overall_result = 'Pass'         THEN 1 ELSE 0 END) AS pass_count,
-                    SUM(CASE WHEN ac.overall_result = 'Fail'         THEN 1 ELSE 0 END) AS fail_count,
-                    SUM(CASE WHEN ac.overall_result = 'Needs Review' THEN 1 ELSE 0 END) AS review_count,
-                    SUM(CASE WHEN ac.ticket_id IS NULL               THEN 1 ELSE 0 END) AS pending_count,
-                    COUNT(ac.ticket_id)                                       AS ai_done
+                    COALESCE(t.assignee_name, 'Unassigned')            AS assignee,
+                    COUNT(*)                                           AS total,
+                    SUM(CASE WHEN {_EFFECTIVE_GRADE} = 'Pass'
+                             THEN 1 ELSE 0 END)                        AS pass_count,
+                    SUM(CASE WHEN {_EFFECTIVE_GRADE} = 'Fail'
+                             THEN 1 ELSE 0 END)                        AS fail_count,
+                    SUM(CASE WHEN {_EFFECTIVE_GRADE} = 'Needs Review'
+                             THEN 1 ELSE 0 END)                        AS review_count,
+                    SUM(CASE WHEN ac.ticket_id IS NULL
+                             THEN 1 ELSE 0 END)                        AS pending_count,
+                    COUNT(ac.ticket_id)                                AS ai_done
                 FROM tickets t
-                LEFT JOIN ai_checks ac ON t.id = ac.ticket_id
+                LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
+                LEFT JOIN ({_LATEST_REVIEW}) rev ON rev.ticket_id = t.id
                 {where}
                 GROUP BY t.assignee_name
                 ORDER BY pass_count DESC, total DESC
@@ -854,6 +951,8 @@ async def get_analytics(
 
 @app.get("/api/stats")
 async def get_stats(date: str | None = None, user: dict = Depends(auth.require_user)):
+    if date:
+        _require_date(date)
     return await asyncio.to_thread(db.ticket_stats, date)
 
 
@@ -948,18 +1047,24 @@ async def test_credential(key: str, user: dict = Depends(auth.require_admin)):
 @app.put("/api/admin/settings")
 async def update_settings(request: Request, user: dict = Depends(auth.require_admin)):
     body = await request.json()
-    refused = vault.set_settings(body, user["email"])
+    # An explicit clear is a deliberate act, so it needs saying. Without this
+    # flag, blanking a protected setting is refused rather than obeyed.
+    allow_clear = bool(body.pop("_allow_clear", False))
+    refused = vault.set_settings(body, user["email"], allow_clear=allow_clear)
     qc_runner.invalidate_vertex_client()
 
     saved = sorted(set(body) - set(refused))
     if saved:
         vault.audit(user["email"], "settings.update", ", ".join(saved))
+    if refused:
+        vault.audit(user["email"], "settings.refused", ", ".join(sorted(refused)))
     return {
         "ok": True,
         "settings":        vault.get_settings(),
         "setting_sources": vault.get_setting_sources(),
         "schedule":        scheduler.next_run_description(),
-        # Anything the environment owns is reported back rather than silently dropped.
+        # Reported back rather than silently dropped: values the environment
+        # owns, and protected values an empty form would have erased.
         "refused":         refused,
     }
 
@@ -1018,10 +1123,7 @@ async def run_now(request: Request, user: dict = Depends(auth.require_admin)):
     body = await request.json() if await request.body() else {}
     date_str = (body or {}).get("date")
     if date_str:
-        try:
-            target = date.fromisoformat(date_str)
-        except ValueError:
-            raise HTTPException(400, "Use YYYY-MM-DD")
+        target = _require_date(date_str)
     else:
         offset = 0 if vault.get_setting("schedule_target") == "today" else 1
         target = date.today() - timedelta(days=offset)
@@ -1050,10 +1152,36 @@ async def update_user(email: str, request: Request,
     if not target:
         raise HTTPException(404, "User not found")
 
-    role      = body.get("role", target["role"])
-    is_active = body.get("is_active", target["is_active"])
+    role = body.get("role", target["role"])
     if role not in ("admin", "member"):
         raise HTTPException(400, "Role must be 'admin' or 'member'")
+
+    # `1 if is_active else 0` silently reactivated a revoked user whenever the
+    # value arrived as a JSON string, because "0" and "false" are both truthy in
+    # Python. Accept only what the API actually documents.
+    raw_active = body.get("is_active", target["is_active"])
+    if isinstance(raw_active, str):
+        if raw_active.strip().lower() not in ("0", "1", "true", "false", "yes", "no"):
+            raise HTTPException(400, "is_active must be true or false")
+        is_active = raw_active.strip().lower() in ("1", "true", "yes")
+    else:
+        is_active = bool(raw_active)
+
+    # Never let the last remaining admin be demoted or deactivated: the Admin UI
+    # is itself behind sign-in, so there would be no way back in.
+    losing_admin = target["role"] == "admin" and (role != "admin" or not is_active)
+    if losing_admin:
+        with db.get_conn() as conn:
+            others = conn.execute(
+                "SELECT COUNT(*) AS n FROM app_users"
+                " WHERE role = 'admin' AND is_active = 1 AND email != ?",
+                (email,),
+            ).fetchone()["n"]
+        if others == 0:
+            raise HTTPException(
+                400,
+                "This is the only active administrator. Promote someone else first.",
+            )
 
     with db.get_conn() as conn:
         conn.execute(
@@ -1076,15 +1204,29 @@ async def invite_user(request: Request, user: dict = Depends(auth.require_admin)
         raise HTTPException(400, f"Email must be an @{auth.ALLOWED_DOMAIN} address")
     if role not in ("admin", "member"):
         raise HTTPException(400, "Role must be 'admin' or 'member'")
+    # Inviting yourself was a self-demotion path: the UPDATE below used to apply
+    # to existing rows, and with QC_ADMIN_EMAILS unset the last admin could
+    # remove their own access with no way back short of database surgery.
+    if email == user["email"]:
+        raise HTTPException(400, "You cannot change your own role or access")
 
     with db.get_conn() as conn:
-        conn.execute(
+        cur = conn.execute(
             "INSERT OR IGNORE INTO app_users (email, name, role, is_active, created_at)"
             " VALUES (?, ?, ?, 1, ?)",
             (email, email.split("@")[0], role,
              datetime.now(timezone.utc).isoformat()),
         )
-        conn.execute("UPDATE app_users SET role = ? WHERE email = ?", (role, email))
+        created = cur.rowcount > 0
+
+    # An invite pre-authorises someone who has never signed in. Changing an
+    # existing person's role is a different decision and belongs to
+    # PUT /api/admin/users/{email}, which has its own guards.
+    if not created:
+        raise HTTPException(
+            409,
+            f"{email} already has access. Change their role from the users list.",
+        )
 
     vault.audit(user["email"], "user.invite", f"{email} role={role}")
     return {"ok": True, "users": auth.list_users()}

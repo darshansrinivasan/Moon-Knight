@@ -10,6 +10,7 @@ keys. The GCP project and region are admin settings.
 import json
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -25,6 +26,22 @@ logger = logging.getLogger(__name__)
 
 MAX_WORKERS = 5
 BATCH_SIZE  = 6
+
+# Transient API errors get the same model again, with exponential backoff,
+# before falling through to the next configured model. Without this a single
+# 429 lost an entire batch of BATCH_SIZE tickets.
+MAX_ATTEMPTS_PER_MODEL = 3
+RETRY_BASE_DELAY       = 2.0     # seconds; doubles per attempt
+
+# An unbounded output cap lets a batch of long threads truncate mid-JSON, which
+# reads as a parse failure and costs the whole batch. Sized for BATCH_SIZE
+# results plus notes, with headroom.
+MAX_OUTPUT_TOKENS = 8192
+
+# Per-message and per-ticket caps on what goes into a prompt. One pathological
+# thread could otherwise blow the context window for its five batch-mates.
+MAX_MESSAGE_CHARS = 4000
+MAX_TICKET_CHARS  = 24000
 
 VERTEX_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
@@ -68,6 +85,10 @@ MODEL_PRICES = {
     "gemini-1.5-pro":        (1.25, 5.00),
     "gemini-1.5-flash":      (0.075, 0.30),
 }
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _price_for(model: str) -> tuple:
@@ -202,6 +223,14 @@ def quota_project() -> str:
             or vault.get_setting("vertex_project").strip())
 
 
+# Passed as `quota_override` by callers that must NOT bill a project. Distinct
+# from None/"" , which both mean "fall back to the configured quota project".
+# Attaching a quota project sends X-Goog-User-Project, and that turns an
+# otherwise unscoped call (listing projects) into one requiring Cloud Resource
+# Manager plus serviceusage.services.use on whatever is being billed.
+NO_QUOTA_PROJECT = "__none__"
+
+
 def _with_quota_project(creds, override: str | None = None):
     """Attach a billing project to *user* credentials.
 
@@ -209,9 +238,14 @@ def _with_quota_project(creds, override: str | None = None):
     bill and rejects the call. Setting a quota project makes the client send
     X-Goog-User-Project. Service accounts belong to a project already, and
     attaching one there just adds a serviceusage permission they may not have.
+
+    Pass `NO_QUOTA_PROJECT` to deliberately send no billing project at all.
     """
     from google.oauth2 import service_account
     if isinstance(creds, service_account.Credentials):
+        return creds
+
+    if override == NO_QUOTA_PROJECT:
         return creds
 
     project = (override or "").strip() or quota_project()
@@ -339,10 +373,9 @@ A4 — Status vs conversation  →  Pass / Fail / Needs Review
 A5 — Not closed prematurely  →  Pass / Fail / Needs Review / N/A
   N/A for open tickets. Pass if closed with resolution evidence or documented no-response follow-up. Fail if customer ask still open at closure.
 
-OVERALL RESULT (you must compute this):
-  Fail         — any R-check is Fail, OR A3 = Poor, OR A5 = Fail
-  Needs Review — no Fails, but ≥1 check is Needs Review
-  Pass         — everything Pass or N/A
+Do NOT return an overall verdict. The overall result is computed
+deterministically from your grades plus the R-checks, so that identical grades
+always produce the same verdict.
 
 AI NOTES: one concise string. For every Fail or Needs Review check, write a specific sentence that names:
   (1) what exactly went wrong (quote the customer's missed ask, the incorrect category, the unanswered message, etc.)
@@ -370,8 +403,7 @@ Return format (idx matches the input idx value, NOT the ticket number):
     "a3": "Good|Needs Improvement|Poor",
     "a4": "Pass|Fail|Needs Review",
     "a5": "Pass|Fail|Needs Review|N/A",
-    "ai_notes": "...",
-    "overall_result": "Pass|Fail|Needs Review"
+    "ai_notes": "..."
   }
 ]"""
 
@@ -463,18 +495,20 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
         )
 
     if r_checks.get("r8") == "Fail":
+        import rules as qc_rules
         missing = []
         if (cf.get("does_rootly_exist") or {}).get("value") != "Yes":
             missing.append("set 'does_rootly_exist' to Yes")
         if not (cf.get("rootly.incident_reference") or {}).get("value"):
             missing.append("fill in the Rootly incident reference (e.g. ROOT-1234)")
-        import rules as qc_rules
         req_cat = ((cf.get("request_category") or {}).get("value") or "").lower()
         if req_cat not in qc_rules.oncall_categories():
-            missing.append(f"change request_category from '{req_cat}' to an oncall category")
-        if not any("jira" in (e.get("source") or "").lower() or "atlassian" in (e.get("link") or "").lower()
-                   for e in []):  # Jira check simplified here; actual check is in scorer
-            pass  # avoid false positives — R8 already confirmed Jira missing
+            missing.append(
+                f"change request_category from '{req_cat}' to an oncall category"
+            )
+        # The Jira half of R8 is checked in scorer._has_jira, which has the
+        # external_issues this function is not given. So when every field we can
+        # see is already correct, the missing piece is the Jira link.
         action = "; ".join(missing) if missing else "add a Jira link to the ticket"
         parts.append(f"R8 Fail: oncall completeness incomplete — {action}")
 
@@ -530,10 +564,20 @@ def _build_ticket_block(t: dict, idx: int) -> str:
             role += " (private)"
         text = _html_text(m.get("message_html"))
         if text:
+            if len(text) > MAX_MESSAGE_CHARS:
+                text = text[:MAX_MESSAGE_CHARS] + " …[truncated]"
             lines.append(f"  [{role}] {text}")
     if not any(m.get("message_html") for m in t.get("messages", [])):
         lines.append("  (no messages)")
-    return "\n".join(lines)
+
+    block = "\n".join(lines)
+    if len(block) > MAX_TICKET_CHARS:
+        # Keep the head (metadata and R-checks) and the tail (most recent
+        # messages, which drive A4/A5) rather than losing either end.
+        keep = MAX_TICKET_CHARS // 2
+        block = (block[:keep] + "\n  …[middle of thread truncated]…\n"
+                 + block[-keep:])
+    return block
 
 
 def _system_prompt() -> str:
@@ -547,8 +591,47 @@ def _system_prompt() -> str:
             + guidance)
 
 
+def _generate_once(client, model_name: str, prompt: str,
+                   stats: "RunStats | None") -> str:
+    """One pinned generation call. Raises on an empty or blocked response."""
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=_system_prompt(),
+            temperature=GEN_TEMPERATURE,
+            seed=GEN_SEED,
+            candidate_count=1,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
+            response_schema=RESPONSE_SCHEMA,
+        ),
+    )
+    usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
+    if stats is not None and usage is not None:
+        stats.record(model_name, usage)
+
+    text = response.text
+    if not text or not text.strip():
+        # A safety block or an output-token cutoff both arrive as empty text.
+        # Saying so beats letting `None.strip()` surface as an AttributeError
+        # three frames away in the JSON parser.
+        reason = getattr(response, "prompt_feedback", None)
+        raise RuntimeError(
+            f"{model_name} returned no text"
+            + (f" (prompt_feedback={reason})" if reason else "")
+        )
+    return text
+
+
 def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
-    """Call Gemini on Vertex, cascading through models on quota errors.
+    """Call Gemini on Vertex, retrying transient errors and then cascading.
+
+    Two distinct failure modes need different handling, and conflating them is
+    what silently dropped whole batches: a transient error (429/503) deserves
+    the *same* model again after a pause, while a permanent one (bad request,
+    model not found) should move on immediately. Retrying only by moving to the
+    next model meant a single configured model got no retry at all.
 
     Generation is pinned (temperature 0, fixed seed, enum-constrained JSON
     schema) so the same input grades the same way on every run.
@@ -557,40 +640,49 @@ def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
     last_err: Exception | None = None
 
     for model_name in vertex_models():
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=_system_prompt(),
-                    temperature=GEN_TEMPERATURE,
-                    seed=GEN_SEED,
-                    candidate_count=1,
-                    response_mime_type="application/json",
-                    response_schema=RESPONSE_SCHEMA,
-                ),
-            )
-            usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
-            if stats is not None and usage is not None:
-                stats.record(model_name, usage)
-            return response.text
-        except Exception as e:
-            last_err = e
-            logger.warning("Error on %s (%s), trying next model", model_name, e)
-            continue
+        for attempt in range(1, MAX_ATTEMPTS_PER_MODEL + 1):
+            try:
+                return _generate_once(client, model_name, prompt, stats)
+            except Exception as e:
+                last_err = e
+                retryable = _is_retryable_error(e)
+                if retryable and attempt < MAX_ATTEMPTS_PER_MODEL:
+                    delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Transient error on %s (attempt %d/%d): %s — retrying in %.1fs",
+                        model_name, attempt, MAX_ATTEMPTS_PER_MODEL, e, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                logger.warning(
+                    "%s failed on %s (%s), trying next model",
+                    "Exhausted retries" if retryable else "Permanent error",
+                    model_name, e,
+                )
+                break
 
     raise RuntimeError(f"All Vertex models failed. Last error: {last_err}")
 
 
-def _parse_response(text: str) -> list[dict]:
-    """Strip markdown fences and parse JSON."""
-    text = text.strip()
+def _parse_response(text: str | None) -> list[dict]:
+    """Strip markdown fences and parse JSON into a list of result objects."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("empty response from the model")
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
         text = text.rsplit("```", 1)[0].strip()
-    return json.loads(text)
+
+    parsed = json.loads(text)
+    # The schema asks for an array, but a single-item response sometimes comes
+    # back as a bare object. Normalise rather than crash on `results[0]`.
+    if isinstance(parsed, dict):
+        return [parsed]
+    if not isinstance(parsed, list):
+        raise ValueError(f"expected a JSON array, got {type(parsed).__name__}")
+    return parsed
 
 
 def _score_single(ticket: dict, idx: int = 0,
@@ -598,6 +690,8 @@ def _score_single(ticket: dict, idx: int = 0,
     """Score one ticket solo — used as a fallback when a batch fails."""
     prompt = _build_ticket_block(ticket, idx)
     results = _parse_response(_call_gemini(prompt, stats))
+    if not results:
+        raise ValueError(f"no result returned for ticket #{ticket.get('number')}")
     return results[0]
 
 
@@ -769,7 +863,19 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
 
     tickets = [dict(r) for r in rows]
     if not tickets:
-        return {"scored": 0, "skipped": 0, "already_done": True}
+        # Nothing to grade is a legitimate outcome, but it used to return
+        # without recording anything — so a day that was already complete left
+        # no trace on the Runs page and looked like the run never happened.
+        with db.get_conn() as conn:
+            cur = conn.execute("""
+                INSERT INTO qc_runs (date, triggered_by, started_at, finished_at,
+                                     status, total, scored, skipped, config_json)
+                VALUES (?, ?, ?, ?, 'success', 0, 0, 0, ?)
+            """, (date_str, triggered_by, _utc_now(), _utc_now(),
+                  json.dumps(_effective_config(date_str, triggered_by))))
+            run_id = cur.lastrowid
+        return {"scored": 0, "skipped": 0, "already_done": True,
+                "run_id": run_id, "status": "success"}
 
     # Fail fast on misconfiguration rather than burning a call per ticket.
     get_vertex_client()
@@ -780,7 +886,7 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
         cur = conn.execute("""
             INSERT INTO qc_runs (date, triggered_by, started_at, status, total, config_json)
             VALUES (?, ?, ?, 'running', ?, ?)
-        """, (date_str, triggered_by, datetime.now(timezone.utc).isoformat(),
+        """, (date_str, triggered_by, _utc_now(),
               len(tickets), json.dumps(config)))
         run_id = cur.lastrowid
 
@@ -796,21 +902,24 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
             t["messages"] = [dict(m) for m in msgs]
 
     batches = [tickets[i : i + BATCH_SIZE] for i in range(0, len(tickets), BATCH_SIZE)]
-    now     = datetime.now(timezone.utc).isoformat()
+    now     = _utc_now()
     scored  = 0
     skipped = 0
     errors: list[str] = []
 
     with ThreadPoolExecutor(max_workers=min(len(batches), MAX_WORKERS)) as pool:
-        future_to_batch = {pool.submit(_score_batch, batch, stats): batch
-                           for batch in batches}
+        # Keyed by batch index: `batches.index(batch)` matched by value, so two
+        # identical batches reported the wrong number in the error message.
+        future_to_index = {pool.submit(_score_batch, batch, stats): i
+                           for i, batch in enumerate(batches)}
 
-        for future in as_completed(future_to_batch):
-            batch = future_to_batch[future]
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            batch = batches[index]
             try:
                 results = future.result()
             except Exception as e:
-                msg = f"Batch #{batches.index(batch)} (tickets {[t['number'] for t in batch]}): {e}"
+                msg = f"Batch #{index} (tickets {[t['number'] for t in batch]}): {e}"
                 logger.error(msg)
                 errors.append(msg)
                 skipped += len(batch)
@@ -820,8 +929,16 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
             scored  += s
             skipped += sk
 
-    status = "error" if scored == 0 and errors else \
-             "partial" if errors or skipped else "success"
+    # A skipped ticket is an ungraded ticket, so it must never read as success:
+    # that is what let a run drop a third of the day and still report clean.
+    if scored == 0 and (errors or skipped):
+        status = "error"
+    elif errors or skipped:
+        status = "partial"
+    else:
+        status = "success"
+    if skipped and not errors:
+        errors.append(f"{skipped} ticket(s) could not be graded")
 
     # Snapshot end-of-run grades and finalise the record in one transaction.
     with db.get_conn() as conn:
@@ -833,7 +950,7 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
                    model_used = ?, prompt_tokens = ?, output_tokens = ?, cost_usd = ?,
                    compared_to = ?, stability = ?, changed = ?, error = ?
             WHERE id = ?
-        """, (datetime.now(timezone.utc).isoformat(), status, scored, skipped,
+        """, (_utc_now(), status, scored, skipped,
               stats.model_summary(), stats.prompt_tokens, stats.output_tokens,
               stats.cost_usd(), compared_to, stability, changed,
               "; ".join(errors)[:1000] or None, run_id))

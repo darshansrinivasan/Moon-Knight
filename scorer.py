@@ -30,9 +30,25 @@ INVALID_NAME_FRAGMENTS = [
 ROOTLY_RE = re.compile(r"ROOT-\d+|rootly\.com|rootly\.io", re.I)
 JIRA_RE   = re.compile(r"atlassian\.net/browse/[A-Z]+-\d+|SPD-\d+", re.I)
 
+# "ticket 123", "ticket id 123", "ticket id is 123", "ticket #123", "ticket no: 123".
+# The id keyword and the connector are each optional but never repeated, so the
+# pattern stays linear.
 TICKET_ID_ACK_RE = re.compile(
-    r"ticket\s*(id|number|#)\s*[:#]?\s*\d+", re.I
+    r"ticket ?(?:id|number|no|#)? ?(?:is|:|#)? ?\d+", re.I
 )
+
+# Filler words an automated acknowledgement wraps around the id. Anything beyond
+# these is prose, which means a person wrote the message.
+_BOT_ACK_FILLER = {
+    "your", "the", "this", "a", "an", "is", "was", "has", "been", "for",
+    "created", "logged", "raised", "registered", "received", "recorded",
+    "thanks", "thank", "you", "we", "will", "get", "back", "to", "soon",
+    "our", "team", "support", "reference", "ref", "no", "number", "id",
+    "please", "quote", "it", "in", "with", "regards", "hi", "hello",
+}
+
+# How many NON-filler words may remain around the id before we call it human.
+BOT_ACK_MAX_CONTENT_WORDS = 1
 
 ENGG_STATES = {"waiting_on_engg", "waiting_on_engineering"}
 TERMINAL_STATES = {"closed", "archived"}
@@ -276,9 +292,27 @@ def _cf_filled(field: dict | None) -> bool:
 
 
 def _is_bot_ack(msg: dict) -> bool:
-    """True for automated ticket-ID acknowledgement messages."""
-    text = _html_text(msg.get("message_html"))
-    return bool(TICKET_ID_ACK_RE.search(text) and len(text) < 200)
+    """True only for the automated "your ticket id is N" acknowledgement.
+
+    The old test was any short message mentioning a ticket id, which discarded
+    genuine customer text such as "regarding ticket id 12345 the export still
+    fails" — and a dropped customer message makes R4 conclude support had
+    nothing to answer.
+    """
+    text = _html_text(msg.get("message_html")).strip()
+    if not text or len(text) > 200:
+        return False
+    match = TICKET_ID_ACK_RE.search(text)
+    if not match:
+        return False
+    # A real acknowledgement is the id reference plus stock filler. Any
+    # remaining content word means a person wrote this, so keep the message.
+    remainder = text[:match.start()] + text[match.end():]
+    content = [
+        w for w in re.findall(r"[a-z']+", remainder.lower())
+        if w not in _BOT_ACK_FILLER
+    ]
+    return len(content) <= BOT_ACK_MAX_CONTENT_WORDS
 
 
 def _public_substantive(messages: list[dict]) -> list[dict]:
@@ -382,8 +416,22 @@ def _is_customer_msg(msg: dict) -> bool:
     return "contact" in msg.get("author", {})
 
 
-def _parse_ts(ts: str) -> datetime:
-    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+def _parse_ts(ts: str | None) -> datetime | None:
+    """Parse a Pylon timestamp to an aware UTC datetime, or None if unusable.
+
+    Returning None rather than raising matters: this runs inside the day's fetch
+    transaction, and a single malformed timestamp used to propagate out and roll
+    back every ticket, message and score for the whole day.
+    """
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    # A timestamp with no offset is documented as UTC; assuming otherwise would
+    # make comparisons against an aware `now` raise TypeError.
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 
 
 # ── individual checks ─────────────────────────────────────────────────────────
@@ -415,15 +463,23 @@ def r4(issue: dict, messages: list[dict]) -> str:
     if state in TERMINAL_STATES | WAITING_CUSTOMER:
         return "Pass"
 
-    substantive = [m for m in _public_substantive(messages) if m.get("timestamp")]
-    if not substantive:
+    # Compare parsed instants, not raw strings. Pylon mixes offsets, and a
+    # lexicographic max picks "10:00+05:30" over "09:00Z" even though it is four
+    # and a half hours earlier — silently scoring the wrong message.
+    dated = [
+        (ts, m)
+        for m in _public_substantive(messages)
+        if (ts := _parse_ts(m.get("timestamp"))) is not None
+    ]
+    if not dated:
         return "N/A"
 
-    latest = max(substantive, key=lambda m: m["timestamp"])
+    _, latest = max(dated, key=lambda pair: pair[0])
     if not _is_customer_msg(latest):
         return "Pass"  # last public msg is from support
 
-    age = datetime.now(timezone.utc) - _parse_ts(latest["timestamp"])
+    latest_at = _parse_ts(latest["timestamp"])
+    age = datetime.now(timezone.utc) - latest_at
     return "Fail" if age > timedelta(hours=qc_rules.sla_hours()) else "Pass"
 
 

@@ -1,10 +1,65 @@
 import asyncio
+import logging
 import os
+import random
+from dataclasses import dataclass, field
 from datetime import date, timedelta, timezone
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 BASE_URL = os.getenv("PYLON_BASE_URL", "https://api.usepylon.com")
+
+# Per-resource retries. Pylon rate-limits under the concurrency we drive, and a
+# single dropped response used to be recorded as fact by the scorer.
+MAX_TRIES   = 3
+BASE_BACKOFF = 0.5
+
+
+@dataclass
+class FetchedDay:
+    """One day pulled from Pylon, plus what could NOT be pulled.
+
+    The failure sets are the point: a ticket whose messages or account did not
+    load must be excluded from rule scoring rather than graded against the gap.
+    """
+
+    issues: list
+    messages_by_id: dict
+    accounts_by_id: dict
+    failed_messages: set = field(default_factory=set)
+    failed_accounts: set = field(default_factory=set)
+
+    def is_complete(self, issue: dict) -> bool:
+        """True when everything the R-checks need for this ticket was fetched."""
+        if issue["id"] in self.failed_messages:
+            return False
+        account_id = (issue.get("account") or {}).get("id")
+        return not (account_id and account_id in self.failed_accounts)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 500, 502, 503, 504)
+    return False
+
+
+async def _with_retry(call):
+    """Await `call()`, retrying transient Pylon failures with jittered backoff."""
+    last: Exception | None = None
+    for attempt in range(1, MAX_TRIES + 1):
+        try:
+            return await call()
+        except Exception as e:                      # noqa: BLE001 - re-raised below
+            last = e
+            if attempt == MAX_TRIES or not _is_retryable(e):
+                raise
+            delay = BASE_BACKOFF * (2 ** (attempt - 1))
+            await asyncio.sleep(delay + random.uniform(0, delay / 2))
+    raise last            # unreachable; keeps the contract explicit
 
 # Pylon stores times in UTC; we fetch a calendar date in IST (UTC+5:30).
 # IST midnight = 18:30 UTC previous day, IST end-of-day = 18:29:59 UTC same day.
@@ -98,10 +153,12 @@ async def fetch_account(
 
 # ── fetch everything for one day ────────────────────────────────────────────
 
-async def fetch_day(target: date) -> tuple[list, dict, dict]:
-    """
-    Returns (issues, messages_by_issue_id, accounts_by_id).
-    All network calls are made concurrently (semaphore-limited to 10).
+async def fetch_day(target: date) -> FetchedDay:
+    """Fetch one day's issues with their messages and accounts.
+
+    All network calls run concurrently (semaphore-limited to 10). Anything that
+    could not be fetched after retries is reported on the result rather than
+    silently returned as empty — see `FetchedDay`.
     """
     sem = asyncio.Semaphore(10)
 
@@ -110,21 +167,34 @@ async def fetch_day(target: date) -> tuple[list, dict, dict]:
     async with httpx.AsyncClient(timeout=30, headers=_headers()) as client:
         issues = await fetch_issues_for_date(target, client)
 
+        # A swallowed failure is indistinguishable from real emptiness, and the
+        # scorer reads both as evidence: no messages looks like an unanswered
+        # thread, and a missing account looks like an invalid one. So retry,
+        # then report what could not be fetched instead of guessing.
+        failed_messages: set[str] = set()
+        failed_accounts: set[str] = set()
+
         async def safe_messages(issue_id: str) -> tuple[str, list]:
             async with sem:
                 try:
-                    msgs = await fetch_messages(issue_id, client)
-                except Exception:
-                    msgs = []
-            return issue_id, msgs
+                    return issue_id, await _with_retry(
+                        lambda: fetch_messages(issue_id, client)
+                    )
+                except Exception as e:
+                    logger.warning("Messages unavailable for %s: %s", issue_id, e)
+                    failed_messages.add(issue_id)
+                    return issue_id, []
 
         async def safe_account(account_id: str) -> tuple[str, dict | None]:
             async with sem:
                 try:
-                    acc = await fetch_account(account_id, client)
-                except Exception:
-                    acc = None
-            return account_id, acc
+                    return account_id, await _with_retry(
+                        lambda: fetch_account(account_id, client)
+                    )
+                except Exception as e:
+                    logger.warning("Account unavailable for %s: %s", account_id, e)
+                    failed_accounts.add(account_id)
+                    return account_id, None
 
         # concurrent messages
         msg_results = await asyncio.gather(
@@ -143,4 +213,10 @@ async def fetch_day(target: date) -> tuple[list, dict, dict]:
         )
         accounts_by_id = {aid: acc for aid, acc in acc_results if acc}
 
-    return issues, messages_by_id, accounts_by_id
+    return FetchedDay(
+        issues=issues,
+        messages_by_id=messages_by_id,
+        accounts_by_id=accounts_by_id,
+        failed_messages=failed_messages,
+        failed_accounts=failed_accounts,
+    )

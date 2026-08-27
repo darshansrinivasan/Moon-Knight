@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sign in · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -62,10 +63,13 @@
   </main>
 
 <script>
-  // Preserve the page the user was trying to reach.
-  const next = new URLSearchParams(location.search).get("next") || "/";
+  // Preserve the page the user was trying to reach. A leading "//" or "/\" is
+  // read by browsers as protocol-relative and would leave the site, so a bare
+  // startsWith("/") test is not enough. The server re-validates regardless.
+  const raw = new URLSearchParams(location.search).get("next") || "/";
+  const sameSite = /^\/(?![/\\])/.test(raw) && !/[\r\n\t]/.test(raw);
   const link = document.getElementById("signin");
-  link.href = "/auth/start?next=" + encodeURIComponent(next.startsWith("/") ? next : "/");
+  link.href = "/auth/start?next=" + encodeURIComponent(sameSite ? raw : "/");
 </script>
 </body>
 </html>

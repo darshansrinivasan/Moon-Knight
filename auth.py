@@ -183,6 +183,26 @@ def _redirect_uri(request: Request) -> str:
     return f"{base_url(request)}/auth/callback"
 
 
+def safe_next(path: str | None) -> str:
+    """Reduce a caller-supplied `next` to a same-site path, or '/'.
+
+    A bare `startswith("/")` test is not enough: browsers read a leading "//"
+    (and "/\\") as protocol-relative and leave the site entirely, which turns
+    the real sign-in flow into a phishing redirect. Validated both when the
+    state is minted and again when it is redeemed, since the signature only
+    proves we issued the value — not that it is still acceptable.
+    """
+    if not path or not path.startswith("/"):
+        return "/"
+    # Reject protocol-relative and backslash-smuggled authorities.
+    if path.startswith(("//", "/\\", "/%2f", "/%2F", "/%5c", "/%5C")):
+        return "/"
+    # A control character can split the Location header.
+    if any(ch in path for ch in "\r\n\t\x00"):
+        return "/"
+    return path
+
+
 CLOUD_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 

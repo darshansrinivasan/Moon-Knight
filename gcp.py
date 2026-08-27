@@ -22,6 +22,10 @@ CLOUD_SCOPE   = "https://www.googleapis.com/auth/cloud-platform"
 CRM_URL       = "https://cloudresourcemanager.googleapis.com/v1/projects"
 TOKEN_URI     = "https://oauth2.googleapis.com/token"
 
+# Re-exported so callers here can ask for an unbilled credential without
+# importing qc_runner internals.
+NO_QUOTA_PROJECT = "__none__"
+
 # Regions where Vertex serves Gemini. Kept short and ordered by usefulness
 # here rather than listing every Google Cloud region.
 LOCATIONS = [
@@ -184,11 +188,53 @@ def _auth_headers(creds) -> dict:
 
 # ── discovery ─────────────────────────────────────────────────────────────────
 
+def _explain_project_list_failure(status: int, body: str) -> str:
+    """Say what actually blocks project listing, in its own terms.
+
+    This used to be routed through `explain_vertex_error`, which reads the
+    response as a Vertex problem and tells the admin to enable
+    `aiplatform.googleapis.com`. That advice is wrong here and unfollowable:
+    listing projects never touches Vertex, so the API it names is usually
+    already enabled and the message sends people to re-authenticate instead.
+    """
+    low = (body or "").lower()
+
+    # Google writes the service either as the host name or as prose
+    # ("Cloud Resource Manager API"), so match both spellings.
+    names_crm = "cloudresourcemanager" in low or "cloud resource manager" in low
+    if names_crm and ("has not been used" in low or "disabled" in low):
+        return (
+            "The Cloud Resource Manager API is not enabled on the project being "
+            "billed for this request, so the account cannot list projects:\n"
+            "    gcloud services enable cloudresourcemanager.googleapis.com\n"
+            "This is unrelated to Vertex AI — scoring can work while this fails."
+        )
+    if "serviceusage.services.use" in low or "quota project" in low:
+        return (
+            "The connected Google account cannot bill the configured quota "
+            "project, which is what project listing needs. Grant it "
+            "roles/serviceusage.serviceUsageConsumer on that project, or clear "
+            "the Quota project field."
+        )
+    if status == 403:
+        return (
+            "The connected Google account is not allowed to list projects "
+            "(403). This does not affect scoring."
+        )
+    return f"Google returned HTTP {status} when listing projects."
+
+
 def list_projects() -> list[dict]:
-    """Active Google Cloud projects the current credential can see."""
-    # Bill whatever the admin has configured; project listing itself is not
-    # project-scoped, so there is nothing better to fall back to.
-    creds = browse_credentials()
+    """Active Google Cloud projects the current credential can see.
+
+    Deliberately billed to *no* project. Project listing is not project-scoped,
+    but attaching a quota project makes the request carry
+    `x-goog-user-project`, which then demands Cloud Resource Manager be enabled
+    there plus `serviceusage.services.use` on it. That is why this call used to
+    403 while Vertex generation worked fine — the picker was asking for a
+    permission it never needed.
+    """
+    creds = browse_credentials(quota_override=NO_QUOTA_PROJECT)
     headers = _auth_headers(creds)
 
     projects: list[dict] = []
@@ -200,12 +246,11 @@ def list_projects() -> list[dict]:
                 params["pageToken"] = page_token
             r = client.get(CRM_URL, headers=headers, params=params)
             if r.status_code == 403:
-                # Two different causes read alike here, so say which is which
-                # instead of advising an enablement that may be irrelevant.
-                import qc_runner
-                raise NotConnected(qc_runner.explain_vertex_error(
-                    RuntimeError(r.text)) + "\n\nYou can also skip the dropdown and "
-                    "type the project ID directly.")
+                raise NotConnected(
+                    _explain_project_list_failure(r.status_code, r.text)
+                    + "\n\nYou can also skip the dropdown and type the project "
+                      "ID directly."
+                )
             r.raise_for_status()
             body = r.json()
             for p in body.get("projects", []):

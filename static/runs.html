@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Runs · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
   .defs {
@@ -287,7 +288,7 @@ function renderDetail(d) {
   } else {
     const items = d.diff.map(t => `
       <div class="diff-item">
-        <div class="diff-title"><a href="${esc(t.link || '#')}" target="_blank" rel="noopener">#${esc(t.number)}</a> ${esc(t.title || "")}</div>
+        <div class="diff-title"><a href="${esc(/^https?:\/\//i.test(t.link || "") ? t.link : "#")}" target="_blank" rel="noopener">#${esc(t.number)}</a> ${esc(t.title || "")}</div>
         <div class="diff-meta">${esc(t.assignee || "Unassigned")}</div>
         ${t.changes.map(c => `
           <span class="grade-move">${esc(c.check)}:
@@ -348,18 +349,30 @@ $("run-now").addEventListener("click", async () => {
 
 document.querySelector("[data-save]").addEventListener("click", async () => {
   const btn = document.querySelector("[data-save]");
-  const body = {
-    schedule_enabled: $("schedule_enabled").checked ? "1" : "0",
-    schedule_time: $("schedule_time").value.trim(),
-    schedule_tz: $("schedule_tz").value.trim(),
-    schedule_target: $("schedule_target").value,
-  };
+  // These inputs are empty until /api/runs resolves, and this handler binds at
+  // parse time. Saving during that window used to wipe the stored schedule
+  // time and timezone, so send only fields that actually hold a value.
+  const body = { schedule_enabled: $("schedule_enabled").checked ? "1" : "0" };
+  const held = [];
+  for (const key of ["schedule_time", "schedule_tz", "schedule_target"]) {
+    const value = ($(key).value || "").trim();
+    if (value) body[key] = value; else held.push(key);
+  }
+
+  if (held.length === 3) {
+    show($("msg-schedule"), "The schedule has not loaded yet — reload the page.", "err");
+    return;
+  }
+
   btn.disabled = true;
   try {
     const d = await api("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
     fillSchedule(d.settings);
     renderNextRun(d.schedule);
-    show($("msg-schedule"), "Saved.", "ok");
+    const refused = (d.refused || []).concat(held);
+    show($("msg-schedule"),
+         refused.length ? `Saved. ${refused.join(", ")} left unchanged.` : "Saved.",
+         refused.length ? "info" : "ok");
   } catch (e) {
     show($("msg-schedule"), e.message, "err");
   } finally { btn.disabled = false; }

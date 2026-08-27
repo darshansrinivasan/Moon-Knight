@@ -31,6 +31,12 @@ LOCK_NAME    = "daily_run"
 MAX_ATTEMPTS   = 3
 RETRY_BACKOFF  = timedelta(minutes=15)
 
+# A 'running' row older than this belongs to a process that died mid-run. Must
+# exceed the advisory lock TTL below, or a run still holding the lock would be
+# judged abandoned and its retry would immediately hit LockBusy.
+STALE_RUN_AFTER = timedelta(hours=3)
+LOCK_TTL_SECONDS = 7200          # 2h; the lock the pipeline holds while running
+
 _task: asyncio.Task | None = None
 
 
@@ -55,11 +61,41 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_utc(value: str | None) -> datetime | None:
+    """Parse a stored timestamp as UTC-aware, or None if unusable.
+
+    Rows written before timestamps were tz-aware parse as naive, and subtracting
+    those from an aware `now` raises TypeError — which used to abort the tick.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+
+
+def _is_abandoned(row) -> bool:
+    """True for a 'running' row whose process died without finishing.
+
+    Treating every `running` row as still-live meant one killed container (a
+    deploy, an OOM) blocked that trigger date forever: the guard saw 'running',
+    returned True, and the day was silently never scored again.
+    """
+    if row["status"] != "running" or row["finished_at"]:
+        return False
+    started = _parse_utc(row["started_at"])
+    if started is None:
+        return True
+    return datetime.now(timezone.utc) - started > STALE_RUN_AFTER
+
+
 def _already_ran(trigger_date: str) -> bool:
     """True when today's scheduled run is done — or has failed too often to retry."""
     with db.get_conn() as conn:
         rows = conn.execute(
-            "SELECT status, started_at FROM scheduled_runs"
+            "SELECT status, started_at, finished_at FROM scheduled_runs"
             " WHERE trigger_date = ? AND triggered_by = 'scheduler'"
             " ORDER BY id DESC",
             (trigger_date,),
@@ -67,18 +103,43 @@ def _already_ran(trigger_date: str) -> bool:
 
     if not rows:
         return False
-    # Succeeded (or currently running) — nothing more to do today.
-    if any(r["status"] in ("success", "partial", "running") for r in rows):
+
+    live = [r for r in rows if not _is_abandoned(r)]
+
+    # Succeeded, or genuinely still running — nothing more to do today.
+    if any(r["status"] in ("success", "partial", "running") for r in live):
         return True
+
     # Only failures so far: retry a bounded number of times, spaced out, so a
     # misconfigured integration doesn't re-fire on every 30-second tick.
-    if len(rows) >= MAX_ATTEMPTS:
+    attempts = [r for r in live if r["status"] == "error"]
+    if len(attempts) >= MAX_ATTEMPTS:
         return True
-    try:
-        last = datetime.fromisoformat(rows[0]["started_at"])
-    except (TypeError, ValueError):
+    if not attempts:
+        return False
+    last = _parse_utc(attempts[0]["started_at"])
+    if last is None:
         return False
     return datetime.now(timezone.utc) - last < RETRY_BACKOFF
+
+
+def _claim_alarm(trigger_date: str) -> bool:
+    """Claim the right to post one failure alarm for this trigger date.
+
+    Stored in app_settings rather than memory so a container restart — which
+    Railway performs on failure and on every deploy — cannot re-alarm a failure
+    the channel has already been told about. Returns True at most once per date.
+    """
+    key = "scheduler_alarmed_date"
+    try:
+        if vault.get_raw_setting(key) == trigger_date:
+            return False
+        vault.set_raw_setting(key, trigger_date, "scheduler")
+        return True
+    except Exception:
+        # Never let alarm bookkeeping mask the failure being reported.
+        logger.warning("Could not record alarm state for %s", trigger_date)
+        return True
 
 
 def recent_runs(limit: int = 20) -> list[dict]:
@@ -89,6 +150,20 @@ def recent_runs(limit: int = 20) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _parse_schedule_time(raw: str) -> tuple[int, int] | None:
+    """Parse 'HH:MM' into validated (hour, minute), or None if unusable."""
+    parts = (raw or "").strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hh, mm = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    return hh, mm
+
+
 def next_run_description() -> dict:
     """What the Admin UI shows: whether enabled, and when it next fires."""
     settings = vault.get_settings()
@@ -97,17 +172,27 @@ def next_run_description() -> dict:
 
     tz = _tz()
     now = datetime.now(tz)
-    try:
-        hh, mm = (int(x) for x in settings["schedule_time"].split(":"))
-    except ValueError:
+    parsed = _parse_schedule_time(settings["schedule_time"])
+    if parsed is None:
         return {"enabled": True, "next_run": None, "error": "Invalid schedule time"}
+    hh, mm = parsed
 
     today_at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    nxt = today_at if today_at > now and not _already_ran(now.date().isoformat()) \
-        else today_at + timedelta(days=1)
+    pending_today = not _already_ran(now.date().isoformat())
+    if today_at > now and pending_today:
+        nxt, due = today_at, False
+    elif pending_today:
+        # The window has passed but the run has not happened — the next tick
+        # will fire within TICK_SECONDS. Reporting tomorrow here made the Admin
+        # UI contradict what the scheduler was about to do.
+        nxt, due = now, True
+    else:
+        nxt, due = today_at + timedelta(days=1), False
+
     return {
         "enabled": True,
         "next_run": nxt.isoformat(),
+        "due_now": due,
         "timezone": settings["schedule_tz"],
         "target": settings["schedule_target"],
     }
@@ -126,29 +211,36 @@ async def run_pipeline(target: date, triggered_by: str,
     if notify_slack is None:
         notify_slack = vault.get_setting("slack_enabled") == "1"
 
-    with db.get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO scheduled_runs"
-            " (run_date, trigger_date, triggered_by, started_at, status)"
-            " VALUES (?, ?, ?, ?, 'running')",
-            (date_str, trigger_date, triggered_by, _now_iso()),
-        )
-        run_id = cur.lastrowid
-
-    def _finish(status, *, fetched=None, scored=None, skipped=None,
-                error=None, slack_ok=None):
+    # The lock is taken BEFORE the run row exists. Inserting first meant a
+    # collision with a manual run recorded a spurious 'error' row, and three of
+    # those consumed MAX_ATTEMPTS and disabled the day's scheduled run. LockBusy
+    # now propagates without leaving any trace, which is what it should be.
+    with db.advisory_lock(LOCK_NAME, triggered_by, ttl_seconds=LOCK_TTL_SECONDS):
         with db.get_conn() as conn:
-            conn.execute(
-                "UPDATE scheduled_runs SET finished_at = ?, status = ?, fetched = ?,"
-                " scored = ?, skipped = ?, error = ?, slack_ok = ? WHERE id = ?",
-                (_now_iso(), status, fetched, scored, skipped,
-                 error, slack_ok, run_id),
+            cur = conn.execute(
+                "INSERT INTO scheduled_runs"
+                " (run_date, trigger_date, triggered_by, started_at, status)"
+                " VALUES (?, ?, ?, ?, 'running')",
+                (date_str, trigger_date, triggered_by, _now_iso()),
             )
+            run_id = cur.lastrowid
 
-    try:
-        with db.advisory_lock(LOCK_NAME, triggered_by, ttl_seconds=7200):
+        def _finish(status, *, fetched=None, scored=None, skipped=None,
+                    error=None, slack_ok=None):
+            with db.get_conn() as conn:
+                conn.execute(
+                    "UPDATE scheduled_runs SET finished_at = ?, status = ?,"
+                    " fetched = ?, scored = ?, skipped = ?, error = ?,"
+                    " slack_ok = ? WHERE id = ?",
+                    (_now_iso(), status, fetched, scored, skipped,
+                     error, slack_ok, run_id),
+                )
+
+        try:
             fetched = await app.fetch_and_store(target)
-            qc = await asyncio.to_thread(qc_runner.run_qc_date, date_str, triggered_by)
+            qc = await asyncio.to_thread(
+                qc_runner.run_qc_date, date_str, triggered_by
+            )
 
             slack_ok = None
             if notify_slack:
@@ -169,18 +261,19 @@ async def run_pipeline(target: date, triggered_by: str,
             return {"run_id": run_id, "status": status, "date": date_str,
                     "fetched": fetched, **qc, "slack_ok": slack_ok}
 
-    except db.LockBusy as e:
-        _finish("error", error=str(e))
-        raise
-    except Exception as e:
-        logger.exception("Scheduled run failed for %s", date_str)
-        _finish("error", error=str(e)[:1000])
-        if notify_slack:
-            try:
-                await slack.post_failure(date_str, str(e))
-            except Exception:
-                pass
-        raise
+        except Exception as e:
+            logger.exception("Scheduled run failed for %s", date_str)
+            _finish("error", error=str(e)[:1000])
+            # Alarm once per trigger date, not once per attempt: three retries
+            # plus a container restart posted the same failure four times.
+            if notify_slack and _claim_alarm(trigger_date):
+                try:
+                    await slack.post_failure(date_str, str(e))
+                except Exception:
+                    logger.warning(
+                        "Could not post failure notice for %s", date_str
+                    )
+            raise
 
 
 # ── loop ──────────────────────────────────────────────────────────────────────
@@ -190,11 +283,11 @@ async def _tick() -> None:
     if settings["schedule_enabled"] != "1":
         return
 
-    try:
-        hh, mm = (int(x) for x in settings["schedule_time"].split(":"))
-    except ValueError:
+    parsed = _parse_schedule_time(settings["schedule_time"])
+    if parsed is None:
         logger.warning("Invalid schedule_time %r", settings["schedule_time"])
         return
+    hh, mm = parsed
 
     now = datetime.now(_tz())
     trigger_date = now.date().isoformat()
