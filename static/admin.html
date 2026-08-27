@@ -228,12 +228,10 @@
             </p>
             <div class="row" style="margin-bottom:16px">
               <input type="email" id="invite-email" placeholder="colleague@spotdraft.com">
-              <select id="invite-role" style="max-width:130px">
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </select>
+              <select id="invite-role" style="max-width:150px"></select>
               <button id="invite-btn">Add</button>
             </div>
+            <div id="role-key" class="hint"></div>
             <div class="msg" id="msg-users"></div>
             <table>
               <thead><tr><th>Person</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
@@ -688,21 +686,39 @@ function wireSaveButtons() {
   });
 }
 
+function roleList() {
+  return (DATA && DATA.roles) || [{value: "member", label: "Member"}];
+}
+
+function roleOptions(selected) {
+  return roleList().map(r =>
+    `<option value="${esc(r.value)}" ${r.value === selected ? "selected" : ""}>
+       ${esc(r.label)}</option>`).join("");
+}
+
+// What each role can do, listed once beside the table. A role selector with no
+// explanation makes the person assigning it guess.
+function renderRoleKey() {
+  $("role-key").innerHTML = roleList().map(r =>
+    `<div><b>${esc(r.label)}</b> — ${esc(r.description || "")}</div>`).join("");
+  $("invite-role").innerHTML = roleOptions("member");
+}
+
 function renderUsers(users) {
   const envAdmins = new Set((DATA && DATA.env_admins) || []);
   const canEdit   = !DATA || DATA.can_edit;
   $("users").innerHTML = users.map(u => {
     const self = ME && u.email === ME.email;
     const byEnv = envAdmins.has(u.email);
+    const label = (roleList().find(r => r.value === u.role) || {}).label || u.role;
     const roleSel = self
-      ? `<span class="muted">${esc(u.role)} (you)</span>`
+      ? `<span class="muted">${esc(label)} (you)</span>`
       : byEnv
-      ? `<span class="muted">admin</span><br><span class="var">QC_ADMIN_EMAILS</span>`
+      ? `<span class="muted">Administrator</span><br><span class="var">QC_ADMIN_EMAILS</span>`
       : !canEdit
-      ? `<span class="muted">${esc(u.role)}</span>`
-      : `<select data-role="${esc(u.email)}" style="max-width:120px">
-           <option value="member" ${u.role === "member" ? "selected" : ""}>Member</option>
-           <option value="admin"  ${u.role === "admin"  ? "selected" : ""}>Admin</option>
+      ? `<span class="muted">${esc(label)}</span>`
+      : `<select data-role="${esc(u.email)}" style="max-width:150px">
+           ${roleOptions(u.role)}
          </select>`;
     const status = u.is_active
       ? `<span class="pill set">active</span>` : `<span class="pill unset">disabled</span>`;
@@ -968,6 +984,7 @@ async function load() {
   renderModelChips();
   if (gcpStatus.can_browse && DATA.can_edit) loadProjects({ quiet: true });
 
+  renderRoleKey();
   renderUsers(DATA.users);
   renderAudit(DATA.audit);
   try {

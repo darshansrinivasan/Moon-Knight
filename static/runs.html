@@ -90,7 +90,8 @@
   .next-run b { color: var(--accent2); }
   .sched-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
   @media (max-width: 800px) { .sched-grid { grid-template-columns: 1fr; } }
-  body.readonly #run-now, body.readonly [data-save] { display: none !important; }
+  body.readonly [data-save] { display: none !important; }
+  body.cannot-run #run-now { display: none !important; }
 </style>
 </head>
 <body class="shell" data-page="runs">
@@ -433,6 +434,9 @@ document.querySelector("[data-save]").addEventListener("click", async () => {
     await QC.ready;
     const d = await api("/api/runs");
     CAN_EDIT = !!d.can_edit;
+    // Two different permissions: changing the schedule is an admin act, while
+    // pressing "Run now" is running QC, which operators may also do.
+    if (!d.can_run) document.body.classList.add("cannot-run");
     if (!CAN_EDIT) {
       document.body.classList.add("readonly");
       $("schedule_enabled").disabled = true;

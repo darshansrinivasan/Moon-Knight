@@ -293,7 +293,11 @@ async def me(user: dict = Depends(auth.require_user)):
     return {
         "email": user["email"], "name": user["name"],
         "picture": user["picture"], "role": user["role"],
+        "role_label": auth.ROLE_LABELS.get(user["role"], user["role"]),
         "can_review_any": review.is_admin(user) or bool(covered),
+        # Sent so the dashboard can disable Refetch and Run QC rather than
+        # offering buttons that come back 403.
+        "can_run_qc": auth.can_run_qc(user),
     }
 
 
@@ -558,7 +562,7 @@ async def fetch_and_store(target: date) -> FetchResult:
 
 
 @app.post("/api/fetch/{date_str}")
-async def fetch_day(date_str: str, user: dict = Depends(auth.require_user)):
+async def fetch_day(date_str: str, user: dict = Depends(auth.require_operator)):
     target = _require_date(date_str)
 
     try:
@@ -625,7 +629,7 @@ async def preview_qc(date_str: str, user: dict = Depends(auth.require_user)):
 
 @app.post("/api/qc/{date_str}")
 async def run_qc(date_str: str, refetch: bool = False,
-                 user: dict = Depends(auth.require_user)):
+                 user: dict = Depends(auth.require_operator)):
     """Score a day. With `refetch=1`, pull from Pylon first.
 
     Refetch-then-score is only cheap because staleness is a content
@@ -1082,6 +1086,9 @@ async def list_runs(date: str | None = None, user: dict = Depends(auth.require_u
             "schedule_target":  vault.get_setting("schedule_target"),
         },
         "can_edit":  user["role"] == "admin",
+        # Separate from can_edit: an operator may trigger a run but not change
+        # when runs happen.
+        "can_run":   auth.can_run_qc(user),
     }
 
 
@@ -1364,6 +1371,13 @@ async def admin_overview(user: dict = Depends(auth.require_user)):
         "readiness":       vault.readiness(),
         "env_admins":      sorted(auth.bootstrap_admins()),
         "can_edit":        is_admin,
+        # Served rather than hardcoded in the page, so adding a role is a change
+        # in one place and the selector cannot fall out of step with validation.
+        "roles":           [
+            {"value": r, "label": auth.ROLE_LABELS[r],
+             "description": auth.ROLE_DESCRIPTIONS[r]}
+            for r in auth.ROLES
+        ],
     }
 
 
@@ -1545,7 +1559,8 @@ async def slack_test(user: dict = Depends(auth.require_admin)):
 
 
 @app.post("/api/admin/run-now")
-async def run_now(request: Request, user: dict = Depends(auth.require_admin)):
+async def run_now(request: Request,
+                  user: dict = Depends(auth.require_operator)):
     body = await request.json() if await request.body() else {}
     date_str = (body or {}).get("date")
     if date_str:
@@ -1579,8 +1594,9 @@ async def update_user(email: str, request: Request,
         raise HTTPException(404, "User not found")
 
     role = body.get("role", target["role"])
-    if role not in ("admin", "member"):
-        raise HTTPException(400, "Role must be 'admin' or 'member'")
+    if role not in auth.ROLES:
+        raise HTTPException(
+            400, "Role must be one of: " + ", ".join(f"'{r}'" for r in auth.ROLES))
 
     # `1 if is_active else 0` silently reactivated a revoked user whenever the
     # value arrived as a JSON string, because "0" and "false" are both truthy in
@@ -1628,7 +1644,7 @@ async def invite_user(request: Request, user: dict = Depends(auth.require_admin)
 
     if not email.endswith(f"@{auth.ALLOWED_DOMAIN}"):
         raise HTTPException(400, f"Email must be an @{auth.ALLOWED_DOMAIN} address")
-    if role not in ("admin", "member"):
+    if role not in auth.ROLES:
         raise HTTPException(400, "Role must be 'admin' or 'member'")
     # Inviting yourself was a self-demotion path: the UPDATE below used to apply
     # to existing rows, and with QC_ADMIN_EMAILS unset the last admin could

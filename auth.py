@@ -46,6 +46,36 @@ GOOGLE_AUTH_URL  = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # Paths reachable without a session.
+# ── roles ────────────────────────────────────────────────────────────────────
+# Three levels, and the middle one exists because running QC is not a read and
+# not an act of configuration. It spends real money on the workspace's Vertex
+# quota and it overwrites grades people are reviewing, so it cannot sit behind
+# `require_user` with the dashboard. But it is also routine daily work that
+# should not require handing someone the credential vault, the rules and the
+# user list. So: admins configure, operators run, members read.
+ROLE_ADMIN    = "admin"
+ROLE_OPERATOR = "operator"
+ROLE_MEMBER   = "member"
+
+ROLES = (ROLE_ADMIN, ROLE_OPERATOR, ROLE_MEMBER)
+
+# Who may spend money and overwrite grades. Admins are included because an admin
+# who can rewrite the grading rubric can already change every grade; withholding
+# the button that applies it would be theatre.
+CAN_RUN_QC = (ROLE_ADMIN, ROLE_OPERATOR)
+
+ROLE_LABELS = {
+    ROLE_ADMIN:    "Administrator",
+    ROLE_OPERATOR: "Operator",
+    ROLE_MEMBER:   "Member",
+}
+
+ROLE_DESCRIPTIONS = {
+    ROLE_ADMIN:    "Full access: credentials, rules, statuses, people — and can run QC.",
+    ROLE_OPERATOR: "Can fetch tickets and run or re-run QC. Cannot change any settings.",
+    ROLE_MEMBER:   "Read-only. Can see every page and sign off tickets in their coverage.",
+}
+
 PUBLIC_PATHS = {"/login", "/healthz", "/favicon.ico"}
 PUBLIC_PREFIXES = ("/auth/", "/static/")
 
@@ -363,9 +393,32 @@ def require_user(request: Request) -> dict:
 
 def require_admin(request: Request) -> dict:
     user = require_user(request)
-    if user["role"] != "admin":
+    if user["role"] != ROLE_ADMIN:
         raise HTTPException(403, "Administrator access required")
     return user
+
+
+def require_operator(request: Request) -> dict:
+    """For actions that spend money or overwrite grades, not settings.
+
+    Fetching and scoring bill the workspace's Vertex quota and replace grades
+    reviewers may be looking at, so they are not reads. Naming the reason in the
+    403 matters: "Administrator access required" would be wrong and would send
+    the person asking for the wrong thing.
+    """
+    user = require_user(request)
+    if user["role"] not in CAN_RUN_QC:
+        raise HTTPException(
+            403,
+            "Running QC is limited to operators and administrators, because it "
+            "spends the workspace's AI budget and overwrites existing grades. "
+            "Ask an administrator to make you an Operator.",
+        )
+    return user
+
+
+def can_run_qc(user: dict | None) -> bool:
+    return bool(user) and user.get("role") in CAN_RUN_QC
 
 
 def is_public_path(path: str) -> bool:

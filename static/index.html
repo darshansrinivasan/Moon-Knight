@@ -1443,6 +1443,7 @@ async function selectDay(dateStr) {
   refetchBtn.style.display = "none"; refetchBtn.disabled = false; refetchBtn.textContent = "↻ Refetch";
   qcBtn.style.display      = "none"; qcBtn.disabled      = false; qcBtn.textContent      = "▶ Run QC";
   dlBtn.style.display      = "none"; dlBtn.disabled      = false;
+  applyRunPermission();   // the resets above cleared `disabled`
   document.getElementById("assignee-ms").style.display = "none";
   document.getElementById("group-ms").style.display = "none";
   document.getElementById("state-ms").style.display = "none";
@@ -1464,6 +1465,7 @@ async function selectDay(dateStr) {
     if (selDate !== dateStr) return;
     document.getElementById("panel-meta").textContent = "Could not load";
     refetchBtn.style.display = "flex";
+    applyRunPermission();
     showError(`Could not load this day: ${e.message}. Use ↻ Refetch to retry.`);
     return;
   }
@@ -1481,6 +1483,7 @@ async function selectDay(dateStr) {
       if (selDate !== dateStr) return;
       document.getElementById("panel-meta").textContent = "Fetch failed";
       refetchBtn.style.display = "flex"; // let the user retry
+      applyRunPermission();
       showError("Could not fetch tickets for this day. Use ↻ Refetch to retry.");
       return;
     }
@@ -1500,8 +1503,10 @@ async function selectDay(dateStr) {
   lastRun  = day2.last_run || null;
   daySpend = day2.spend || null;
   document.getElementById("refetch-btn").style.display = "flex";
+  applyRunPermission();
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
+  applyRunPermission();
   allTickets = day2.tickets || [];
   populateAssigneeFilter(allTickets);
   populateStatusPills(allTickets);
@@ -1512,6 +1517,7 @@ async function selectDay(dateStr) {
 
 async function refetchDay() {
   if (!selDate) return;
+  if (!canRunQC()) { showError(NO_RUN_REASON); return; }
   const btn = document.getElementById("refetch-btn");
   btn.disabled = true;
   btn.textContent = "↻ Fetching…";
@@ -1526,6 +1532,8 @@ async function refetchDay() {
     daySpend = day2.spend || daySpend;
     document.getElementById("download-btn").style.display = "flex";
     document.getElementById("qc-btn").style.display = "flex";
+    applyRunPermission();
+  applyRunPermission();
     allTickets = day2.tickets || [];
     populateAssigneeFilter(allTickets);
     populateStatusPills(allTickets);
@@ -1546,12 +1554,43 @@ async function refreshDayPanel(dateStr) {
   daySpend = day.spend || daySpend;
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
+  applyRunPermission();
   allTickets = day.tickets || [];
   populateAssigneeFilter(allTickets);
   populateStatusPills(allTickets);
   applyFilters();
   setQcButtonLabel();
   loadStats(dateStr);
+}
+
+/* ── who may spend money ─────────────────────────────────────────────────────
+ * Fetching and scoring bill the workspace's AI budget and overwrite grades
+ * reviewers are looking at, so both are limited to operators and admins.
+ * /api/me answers it; the page does not compare role strings, because the server
+ * owns the rule and a second copy of it here could disagree.
+ *
+ * The buttons are disabled rather than hidden: a member seeing a greyed
+ * "Run QC" with a reason learns the feature exists and who to ask. A member
+ * seeing nothing concludes the tool is broken.
+ */
+function canRunQC() {
+  return !!(window.QC && QC.me && QC.me.can_run_qc);
+}
+
+const NO_RUN_REASON =
+  "Running QC spends the workspace's AI budget, so it is limited to operators "
+  + "and administrators. Ask an administrator to make you an Operator.";
+
+// Called wherever the action buttons are reset or revealed, so a day change
+// cannot restore a button this viewer may not press.
+function applyRunPermission() {
+  if (canRunQC()) return;
+  for (const id of ["refetch-btn", "qc-btn"]) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.disabled = true;
+    btn.title = NO_RUN_REASON;
+  }
 }
 
 // "Run QC" on a date that has already been scored is misleading — it reads as
@@ -1565,6 +1604,7 @@ function setQcButtonLabel() {
 
 async function runQC() {
   if (!selDate) return;
+  if (!canRunQC()) { showError(NO_RUN_REASON); return; }
   const qcDate = selDate;
   const btn        = document.getElementById("qc-btn");
   const refetchBtn = document.getElementById("refetch-btn");
