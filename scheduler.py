@@ -34,8 +34,11 @@ RETRY_BACKOFF  = timedelta(minutes=15)
 # A 'running' row older than this belongs to a process that died mid-run. Must
 # exceed the advisory lock TTL below, or a run still holding the lock would be
 # judged abandoned and its retry would immediately hit LockBusy.
-STALE_RUN_AFTER = timedelta(hours=3)
-LOCK_TTL_SECONDS = 7200          # 2h; the lock the pipeline holds while running
+STALE_RUN_AFTER = timedelta(minutes=db.STALE_RUN_MINUTES)
+# 30 min. A real run takes about a minute, so this is generous; the old 2 hours
+# meant a lock whose holder died blocked every run for the rest of the morning.
+# Startup also deletes stale locks outright, since their holder cannot be alive.
+LOCK_TTL_SECONDS = 1800
 
 _task: asyncio.Task | None = None
 
@@ -280,6 +283,21 @@ async def run_pipeline(target: date, triggered_by: str,
 # ── loop ──────────────────────────────────────────────────────────────────────
 
 async def _tick() -> None:
+    # Second line of defence against a hung run: startup clears runs orphaned by
+    # a restart, this clears one that stalls inside the current process. Cheap
+    # (one UPDATE touching only 'running' rows) and it runs regardless of
+    # whether the schedule is enabled, since a manual run can hang too.
+    try:
+        reaped = await asyncio.to_thread(db.reap_interrupted_runs)
+        if reaped["scheduled"] or reaped["qc"]:
+            logger.warning(
+                "Timed out %d scheduled and %d scoring run(s) with no progress "
+                "for over %d minutes",
+                reaped["scheduled"], reaped["qc"], db.STALE_RUN_MINUTES,
+            )
+    except Exception:
+        logger.exception("Could not reap interrupted runs")
+
     settings = vault.get_settings()
     if settings["schedule_enabled"] != "1":
         return

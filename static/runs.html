@@ -37,6 +37,11 @@
   .status-pill.partial { background: color-mix(in srgb, var(--review) 15%, transparent); color: var(--review); }
   .status-pill.error   { background: color-mix(in srgb, var(--fail) 15%, transparent);  color: var(--fail); }
   .status-pill.running { background: color-mix(in srgb, var(--color-accent) 15%, transparent); color: var(--accent2); }
+  .interrupted {
+    margin-top: 4px; font-size: 10.5px; color: var(--review);
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .interrupted a { color: var(--color-accent-300); }
   .stability { font-weight: 700; }
   .stab-good { color: var(--pass); }
   .stab-mid  { color: var(--review); }
@@ -178,6 +183,17 @@ function dur(a, b) {
   const s = Math.round((new Date(b) - new Date(a)) / 1000);
   return isNaN(s) ? "—" : s < 60 ? `${s}s` : `${Math.floor(s/60)}m ${s%60}s`;
 }
+// A run that was cut off by a restart is an admin action, not just a failure —
+// the date needs re-running and nothing else will do it. Call that out on the
+// row rather than leaving the reason buried in the error column.
+function interruptedNote(r) {
+  if (r.status !== "error" || !r.error) return "";
+  if (!String(r.error).startsWith("Interrupted")) return "";
+  return `<div class="interrupted">Needs a re-run
+            <a href="/?date=${encodeURIComponent(r.date)}">open ${esc(r.date)}</a>
+          </div>`;
+}
+
 function stabClass(v) {
   if (v == null) return "muted";
   return "stability " + (v >= 95 ? "stab-good" : v >= 85 ? "stab-mid" : "stab-bad");
@@ -258,7 +274,10 @@ function renderRuns(runs) {
       <td class="muted">${fmtTime(r.started_at)}</td>
       <td class="muted">${dur(r.started_at, r.finished_at)}</td>
       <td class="muted">${esc(r.triggered_by || "")}</td>
-      <td><span class="status-pill ${esc(r.status)}">${esc(r.status)}</span></td>
+      <td>
+        <span class="status-pill ${esc(r.status)}">${esc(r.status)}</span>
+        ${interruptedNote(r)}
+      </td>
       <td class="num">${r.scored ?? "—"}/${r.total ?? "—"}</td>
       <td class="muted">${esc(r.model_used || "—")}</td>
       <td class="num muted" title="${esc(tokenBreakdownText)}">${toks}</td>

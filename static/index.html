@@ -121,18 +121,25 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 9px; font-weight: 600; line-height: 1; cursor: default;
   }
+  /* Pass reads green and N/A reads grey. A grey pass was indistinguishable
+     from "nothing happened", which is the opposite of what it means — the
+     neutral tone belongs to the states that genuinely carry no verdict. */
   .c-pass {
-    background: color-mix(in srgb, var(--color-text) 11%, transparent);
-    color: color-mix(in srgb, var(--color-text) 40%, transparent);
+    background: color-mix(in srgb, var(--pass) 22%, transparent);
+    color: var(--pass);
   }
   .c-fail { background: var(--fail); color: #20111a; }
   .c-warn { background: var(--review); color: #241a0d; }
+  /* N/A: the rule does not apply. Grey, with a visible box. */
   .c-na {
-    border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
-    color: transparent;
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-text) 14%, transparent);
+    color: color-mix(in srgb, var(--color-text) 30%, transparent);
   }
+  /* Not evaluated: dashed, so "no result yet" is distinct from "not applicable"
+     by shape and not only by shade. */
   .c-none {
-    border: 1px dashed color-mix(in srgb, var(--color-text) 16%, transparent);
+    border: 1px dashed color-mix(in srgb, var(--color-text) 18%, transparent);
     color: transparent;
   }
 
@@ -150,7 +157,10 @@
   }
   .sheet {
     position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
-    width: 460px; max-width: 92vw;
+    /* 720px: the per-rule rows are label + value + reason on one line, and at
+       460px the reasons wrapped to three lines each, which made the panel a
+       scroll marathon. Capped at 46vw so the list stays visible behind it. */
+    width: 720px; max-width: 46vw; min-width: 420px;
     background: var(--color-surface);
     box-shadow: var(--shadow-lg);
     display: flex; flex-direction: column;
@@ -209,6 +219,13 @@
     font-size: 12px;
   }
   .sheet-check-val { font-size: 11px; font-variant-numeric: tabular-nums; }
+  /* The evidence: full-strength text, because it is the answer to the
+     question the reviewer actually has. The rule statement below it is
+     reference, so it stays muted. */
+  .sheet-check-why {
+    font-size: 12px; margin-top: 3px; text-wrap: pretty;
+    color: color-mix(in srgb, var(--color-text) 88%, transparent);
+  }
   .sheet-check-note {
     font-size: 11px; margin-top: 2px; text-wrap: pretty;
     color: color-mix(in srgb, var(--color-text) 48%, transparent);
@@ -223,7 +240,28 @@
     padding: var(--space-4) var(--space-6);
     border-top: 1px solid var(--color-divider);
   }
-  @media (max-width: 560px) { .sheet { width: 100vw; } }
+  /* Below ~1560px, 46vw is narrower than the 720px ideal, so the cap governs.
+     Below 900px the panel takes the screen — there is no list left to keep
+     visible behind it. */
+  @media (max-width: 900px) {
+    .sheet { width: 100vw; max-width: 100vw; }
+  }
+
+  /* Ticket facts, as a grid rather than a run-on meta line. */
+  .sheet-facts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--space-3) var(--space-6);
+  }
+  .sheet-fact { min-width: 0; }
+  .sheet-fact dt {
+    font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: color-mix(in srgb, var(--color-text) 40%, transparent);
+  }
+  .sheet-fact dd {
+    margin: 2px 0 0; font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .sheet-fact a { color: var(--color-accent-300); }
 
   /* ── calendar, now inside the right rail ──────────────────────────────
      It used to be its own 280px left column, which cost the ticket list that
@@ -1081,6 +1119,11 @@
 
     <div class="sheet-body">
       <section class="sheet-section">
+        <div class="sheet-section-title">Ticket</div>
+        <dl class="sheet-facts" id="sheet-facts"></dl>
+      </section>
+
+      <section class="sheet-section">
         <div class="sheet-section-title">Per-rule analysis</div>
         <div class="sheet-checks" id="sheet-checks"></div>
       </section>
@@ -1927,18 +1970,32 @@ function closeSheet() {
   sheetLastFocus = null;
 }
 
-// The per-check rows: mark, label, value, and the reason. The mark reuses the
-// matrix's cell states so the panel and the row cannot disagree.
-function sheetChecksHtml(t) {
+// The per-check rows: mark, label, value, and — the point of this panel — WHY.
+// The mark reuses the matrix's cell states so the panel and the row cannot
+// disagree about a check.
+//
+// `why` maps check → the actual evidence, computed server-side from the stored
+// ticket (evidence.py). A reviewer previously saw only the rule's generic
+// description, which explains what the rule is, not why this ticket passed it.
+function sheetChecksHtml(t, why) {
   return MATRIX.map(([key]) => {
     const raw = t[key];
     const st = cellState(key, raw);
     const meta = CHECKS[key] || {};
-    const shown = raw === null || raw === undefined || raw === ""
-      ? "—" : raw;
+    const shown = raw === null || raw === undefined || raw === "" ? "—" : raw;
     const valColour = st === "fail" ? "var(--fail)"
       : st === "warn" ? "var(--review)"
+      : st === "pass" ? "var(--pass)"
       : "color-mix(in srgb, var(--color-text) 45%, transparent)";
+
+    // Evidence when we have it; the rule statement as the fallback, marked as
+    // such so a generic line is never mistaken for this ticket's reason.
+    const reason = (why || {})[key];
+    const body = reason
+      ? `<div class="sheet-check-why">${esc(reason)}</div>
+         <div class="sheet-check-note">${esc(meta.desc || "")}</div>`
+      : `<div class="sheet-check-note">${esc(meta.desc || "")}</div>`;
+
     return `
       <div class="sheet-check">
         <span class="mx-cell c-${st}"
@@ -1949,7 +2006,7 @@ function sheetChecksHtml(t) {
             <span>${esc(meta.label || key.toUpperCase())}</span>
             <span class="sheet-check-val" style="color:${valColour}">${esc(shown)}</span>
           </div>
-          <div class="sheet-check-note">${esc(meta.desc || "")}</div>
+          ${body}
         </div>
       </div>`;
   }).join("");
@@ -1990,7 +2047,32 @@ async function openSheet(ticketId, trigger) {
     <span class="meta-tag state">${esc((t.state || "").replace(/_/g, " "))}</span>
     ${t.review ? `<span class="review-mark">signed off</span>` : ""}`;
 
-  document.getElementById("sheet-checks").innerHTML = sheetChecksHtml(t);
+  // The facts a reviewer asks for before judging a grade.
+  const fact = (label, value) => value
+    ? `<div class="sheet-fact"><dt>${esc(label)}</dt><dd>${value}</dd></div>` : "";
+  const when = iso => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return isNaN(d) ? esc(iso) : esc(d.toLocaleString());
+  };
+  document.getElementById("sheet-facts").innerHTML = [
+    fact("State", esc((t.state || "—").replace(/_/g, " "))),
+    fact("Assignee", esc(t.assignee_name || "Unassigned")),
+    fact("Account", esc(t.account_name || "—")),
+    fact("Account type", esc(t.account_type || "—")),
+    fact("Source", esc(t.source || "—")),
+    fact("Created", when(t.created_at)),
+    fact("Last message", when(t.latest_message_time)),
+    fact("Graded", when(t.ai_checked_at)),
+    fact("Fetched", when(t.fetched_at)),
+    safeLink ? fact("Pylon",
+      `<a href="${esc(safeLink)}" target="_blank" rel="noopener noreferrer">#${esc(t.number)}</a>`) : "",
+    t.review ? fact("Signed off",
+      esc(`${t.review.decision} by ${t.review.reviewer_name || t.review.reviewer_email}`)) : "",
+    t.review && t.review.note ? fact("Reviewer note", esc(t.review.note)) : "",
+  ].join("");
+
+  document.getElementById("sheet-checks").innerHTML = sheetChecksHtml(t, null);
 
   const notesSection = document.getElementById("sheet-notes-section");
   notesSection.hidden = !t.ai_notes;
@@ -2021,6 +2103,9 @@ async function openSheet(ticketId, trigger) {
   try {
     const data = await getJSON(`/api/ticket/${ticketId}`);
     if (sheetTicketId !== ticketId) return;   // a newer ticket was opened
+    // Repaint the checks now that their evidence has arrived.
+    document.getElementById("sheet-checks").innerHTML =
+      sheetChecksHtml(t, data.evidence || null);
     renderMessages(msgs, data.messages || []);
   } catch (e) {
     if (sheetTicketId !== ticketId) return;

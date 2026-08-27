@@ -81,6 +81,19 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+
+    # Any run still marked 'running' belongs to a process that no longer exists,
+    # because a run can only be alive inside the process that started it. Every
+    # deploy restarts the container mid-run, so without this they sit at
+    # "running" forever and the day looks like it is still being scored.
+    reaped = db.reap_interrupted_runs(on_startup=True)
+    if reaped["scheduled"] or reaped["qc"]:
+        logger.warning(
+            "Closed %d scheduled and %d scoring run(s) interrupted by a restart "
+            "— those dates need re-running",
+            reaped["scheduled"], reaped["qc"],
+        )
+
     # Migrate any values still supplied as env vars into the vault, once.
     vault.import_legacy_env()
     vault.log_startup_config()
@@ -707,26 +720,39 @@ async def get_ticket(ticket_id: str, user: dict = Depends(auth.require_user)):
                 SELECT t.*, a.name AS account_name, a.domain AS account_domain,
                        a.type AS account_type,
                        rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r6, rc.r7,
-                       ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.ai_notes, ac.overall_result
+                       rc.r8, rc.r9,
+                       ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.ai_notes,
+                       ac.overall_result, ac.checked_at AS ai_checked_at
                 FROM tickets t
                 LEFT JOIN accounts    a  ON t.account_id = a.id
                 LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
                 LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
-                WHERE t.id = ?
+                WHERE t.id = ? AND t.deleted_at IS NULL
             """, (ticket_id,)).fetchone()
             if not t:
-                return None, []
+                return None, [], {}
             msgs = conn.execute(
                 "SELECT * FROM messages WHERE ticket_id = ? ORDER BY timestamp",
                 (ticket_id,)
             ).fetchall()
-            return dict(t), [dict(m) for m in msgs]
+            ticket = dict(t)
+            messages = [dict(m) for m in msgs]
 
-    ticket, messages = await asyncio.to_thread(query)
+            # Why each R-check landed where it did. The stored verdict is only
+            # Pass/Fail/N/A, so a reviewer looking at a pass previously saw the
+            # rule's generic description and no evidence at all.
+            try:
+                why = evidence.for_ticket(ticket, messages)
+            except Exception:
+                logger.exception("Could not build evidence for %s", ticket_id)
+                why = {}
+            return ticket, messages, why
+
+    ticket, messages, why = await asyncio.to_thread(query)
     if not ticket:
         raise HTTPException(404, "Ticket not found")
     review.annotate_tickets([ticket], user)
-    return {"ticket": ticket, "messages": messages}
+    return {"ticket": ticket, "messages": messages, "evidence": why}
 
 
 @app.post("/api/ticket/{ticket_id}/review")

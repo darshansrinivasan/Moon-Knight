@@ -326,6 +326,66 @@ def advisory_lock(name: str, holder: str, ttl_seconds: int = 3600):
             conn.execute("DELETE FROM run_locks WHERE name = ?", (name,))
 
 
+# A run can only be alive inside the process that started it: one replica,
+# --workers 1, and the scheduler is an in-process asyncio task. So every
+# 'running' row present at startup belongs to a process that no longer exists —
+# that is exact, not a heuristic, and it is the common case because every deploy
+# restarts the container mid-run.
+#
+# The timeout is the second line of defence, for a run that hangs inside the
+# CURRENT process. Real runs finish in about a minute, so 15 minutes is ~15x
+# headroom while still clearing within the hour.
+STALE_RUN_MINUTES = 15
+
+RESTART_CAUSE = (
+    "Interrupted: the app restarted (usually a deploy) while this run was in "
+    "progress, so it never finished. Nothing was corrupted — re-run this date."
+)
+TIMEOUT_CAUSE = (
+    f"Interrupted: no progress for over {STALE_RUN_MINUTES} minutes, so the run "
+    "was marked failed rather than left hanging. Re-run this date."
+)
+
+
+def reap_interrupted_runs(on_startup: bool = False) -> dict:
+    """Close out 'running' rows that cannot still be running.
+
+    Returns {"scheduled": n, "qc": n}. Safe to call repeatedly — it only ever
+    touches rows still marked 'running'.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(minutes=STALE_RUN_MINUTES)).isoformat()
+    cause = RESTART_CAUSE if on_startup else TIMEOUT_CAUSE
+
+    # At startup every running row is dead, so no age test applies. Afterwards,
+    # only reap rows that have gone quiet past the timeout.
+    age_clause = "" if on_startup else " AND started_at < ?"
+    params: tuple = () if on_startup else (cutoff,)
+
+    counts = {}
+    with get_conn() as conn:
+        for table, key in (("scheduled_runs", "scheduled"), ("qc_runs", "qc")):
+            cur = conn.execute(
+                f"UPDATE {table}"
+                f"   SET status = 'error',"
+                f"       finished_at = ?,"
+                # Keep any partial error text rather than discarding evidence.
+                f"       error = CASE WHEN error IS NULL OR error = ''"
+                f"                    THEN ? ELSE error || ' · ' || ? END"
+                f" WHERE status = 'running'{age_clause}",
+                (now.isoformat(), cause, cause, *params),
+            )
+            counts[key] = cur.rowcount or 0
+
+        # A lock whose holder died would otherwise block every future run until
+        # its TTL expired. Clearing it here is safe for the same reason: the
+        # holder cannot be alive.
+        if on_startup:
+            conn.execute("DELETE FROM run_locks")
+
+    return counts
+
+
 def mark_deleted_tickets(date_str: str, live_ids: list[str]) -> dict:
     """Soft-delete tickets for this date that Pylon no longer returns.
 

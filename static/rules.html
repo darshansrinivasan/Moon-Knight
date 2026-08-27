@@ -35,7 +35,105 @@
   }
   .savebar .meta { font-size: 11.5px; color: var(--muted); flex: 1; }
   input[type=number] { max-width: 120px; }
+
+  /* ── Learned suggestions & prompt dry-run ──
+     Nocturne only: every value below is a token. The accent appears as the
+     left rule on an observation and as the active pill's border — never a
+     fill. Inset panels use the neutral 900 ramp step rather than an ad-hoc
+     mix, per shell.css's note on preferring a ramp step. */
+  .days-bar { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-4); }
+  .days-bar button {
+    background: transparent; border: 1px solid var(--color-divider);
+    color: var(--color-neutral-500); border-radius: 999px;
+    padding: var(--space-1) var(--space-4); font-size: 12px; font-weight: 600;
+  }
+  .days-bar button:hover:not(:disabled) { color: var(--color-text); background: transparent; }
+  .days-bar button.active {
+    border-color: var(--color-accent); color: var(--color-accent-300);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .stat-row { display: flex; flex-wrap: wrap; gap: var(--space-8); margin: var(--space-4) 0; }
+  .stat b {
+    display: block; font-family: var(--font-heading); font-size: 19px;
+    font-weight: var(--font-heading-weight); font-variant-numeric: tabular-nums;
+  }
+  .stat span {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); font-weight: 600;
+  }
+  .obs {
+    background: var(--color-surface);
+    border: 1px solid var(--color-divider);
+    border-left: 2px solid var(--color-accent-700);
+    border-radius: var(--radius-md);
+    padding: var(--space-4) var(--space-6);
+    margin-bottom: var(--space-3);
+  }
+  .obs-head {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: var(--space-3); margin-bottom: var(--space-2);
+  }
+  .obs-head h4 {
+    font-family: var(--font-heading); font-size: 13.5px;
+    font-weight: 600; letter-spacing: -0.015em;
+  }
+  .flow {
+    font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+    color: var(--color-neutral-300); background: var(--color-neutral-900);
+    border: 1px solid var(--color-neutral-800);
+    border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2);
+  }
+  .tag {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    font-weight: 700; color: var(--muted);
+    border: 1px solid var(--color-neutral-800);
+    border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2);
+  }
+  .obs-implies {
+    font-size: 12.5px; line-height: 1.6; color: var(--muted);
+    margin-bottom: var(--space-3);
+  }
+  .obs-foot { display: flex; flex-wrap: wrap; gap: var(--space-6); align-items: flex-start; }
+  .ev { flex: 1; min-width: 220px; }
+  .ev-label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); font-weight: 600; margin-bottom: var(--space-1);
+  }
+  .ev ul { list-style: none; }
+  .ev li { display: flex; gap: var(--space-2); font-size: 12px; line-height: 1.7; min-width: 0; }
+  .ev a { color: var(--color-accent-300); text-decoration: none; }
+  .ev a:hover { text-decoration: underline; }
+  .ev a, .ev .num { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; flex-shrink: 0; }
+  .ev .num { color: var(--muted); }
+  .ttl {
+    flex: 1; min-width: 0; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .no-target { font-size: 11.5px; color: var(--muted); line-height: 1.5; max-width: 240px; }
+
+  .dry-tk {
+    background: var(--color-neutral-900); border: 1px solid var(--color-divider);
+    border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-2);
+  }
+  .dry-head {
+    display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: var(--space-3); margin-bottom: var(--space-2); font-size: 12.5px;
+  }
+  .dry-head a { color: var(--color-accent-300); text-decoration: none; font-family: ui-monospace, Menlo, monospace; }
+  .dry-head .num { color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  table.dry { font-size: 12px; }
+  table.dry th { padding: var(--space-1) var(--space-2); }
+  table.dry td {
+    padding: var(--space-2); vertical-align: top;
+    border-bottom: 1px solid var(--color-divider);
+  }
+  table.dry tr:last-child td { border-bottom: 0; }
+  table.dry .k { color: var(--muted); }
+  table.dry tr.chg td { background: color-mix(in srgb, var(--review) 10%, transparent); }
+  table.dry tr.chg td.to { color: var(--review); font-weight: 600; }
 </style>
+
 </head>
 <body class="shell" data-page="rules">
 <nav class="app-nav" id="app-nav"></nav>
@@ -143,7 +241,47 @@
             whether guidance was active. Max 4000 characters.
           </div>
           <textarea id="a_guidance" rows="5" placeholder="e.g. Tickets titled 'Zapier - Intake Created' are automated intakes; do not penalise missing replies on them." spellcheck="false"></textarea>
+
+          <h3>Prompt dry-run</h3>
+          <div class="hint">
+            Grades a handful of already-scored tickets with the <b>draft</b> guidance in the box
+            above and shows what would move. A dry-run <b>does not save the guidance</b> and
+            <b>does not write grades</b>: no ticket's stored verdict changes and no run is
+            recorded. To keep a change, press <b>Validate &amp; save</b>.
+          </div>
+          <div class="banner warn">
+            <b>This spends money.</b> A dry-run makes real AI calls — five tickets sent to the
+            model, billed like any other scoring. The figure reported afterwards is an estimate,
+            not a metered charge.
+          </div>
+          <div class="actions">
+            <button class="ghost" id="dry-run">Test on 5 tickets</button>
+          </div>
+          <div class="msg" id="dry-msg"></div>
+          <div id="dry-out"></div>
         </div>
+      </div>
+
+      <div class="section" id="sec-suggest">
+        <div class="card">
+          <h2>Learned suggestions</h2>
+          <p class="what">
+            Every reviewer sign-off that disagrees with the AI is a labelled example of the
+            grading being wrong. Grouped by the check that produced the verdict, a pattern
+            becomes a proposal to edit one specific rule. <b>Nothing here is applied.</b> The
+            system proposes and shows its evidence; a person reads it, decides, and makes the
+            change through <b>Validate &amp; save</b> like any other rule edit — so there is
+            always someone who can say when the meaning of “Pass” changed, and why.
+          </p>
+          <h3>Window</h3>
+          <div class="days-bar" id="sug-days">
+            <button type="button" data-days="7">Last 7 days</button>
+            <button type="button" data-days="30" class="active">Last 30 days</button>
+            <button type="button" data-days="90">Last 90 days</button>
+          </div>
+          <div id="sug-stats"></div>
+        </div>
+        <div id="sug-list"></div>
       </div>
 
       <div class="savebar" id="savebar">
@@ -179,6 +317,7 @@ const NAV = [
   ["r7", "R7 Rootly/Jira"],
   ["r8", "R8 Oncall"],
   ["a",  "A1–A5 AI grading"],
+  ["suggest", "Learned suggestions"],
 ];
 
 function show(kind, html) {
@@ -360,13 +499,24 @@ function renderNav() {
     `<button data-section="${id}" class="${i === 0 ? "active" : ""}">${esc(label)}</button>`
   ).join("");
   $("rule-nav").querySelectorAll("[data-section]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      $("rule-nav").querySelectorAll("[data-section]").forEach(b => b.classList.remove("active"));
-      btn.classList.add("active");
-      document.querySelectorAll(".section").forEach(s => s.classList.remove("on"));
-      $("sec-" + btn.dataset.section).classList.add("on");
-    });
+    btn.addEventListener("click", () => selectSection(btn.dataset.section));
   });
+}
+
+// The single way this page changes section. A "go to this rule" button in
+// Learned suggestions calls this too, so a jump and a nav click cannot drift
+// apart. Returns false for an unknown id rather than throwing.
+function selectSection(id) {
+  const btn = $("rule-nav").querySelector(`[data-section="${id}"]`);
+  const sec = $("sec-" + id);
+  if (!btn || !sec) return false;
+  $("rule-nav").querySelectorAll("[data-section]").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  document.querySelectorAll(".section").forEach(s => s.classList.remove("on"));
+  sec.classList.add("on");
+  document.querySelector(".content-pane").scrollTop = 0;
+  if (id === "suggest") ensureSuggestions();
+  return true;
 }
 
 async function load() {
@@ -386,6 +536,11 @@ async function load() {
   if (!DATA.can_edit) {
     document.body.classList.add("readonly");
     document.querySelectorAll("textarea, input").forEach(el => el.disabled = true);
+    // Buttons are not inputs, and both of these are actions rather than views:
+    // a dry-run spends money and the window selector re-runs a query. Members
+    // read the suggestions at the default window; they do not spend.
+    $("dry-run").disabled = true;
+    $("sug-days").querySelectorAll("button").forEach(b => b.disabled = true);
     $("save").style.display = "none";
     $("load-defaults").style.display = "none";
     $("mode-note").innerHTML = `<div class="banner info"><b>Read-only view.</b>
@@ -424,6 +579,256 @@ $("save").addEventListener("click", async () => {
     show("err", esc(e.message));
   } finally {
     $("save").disabled = false;
+  }
+});
+
+/* ── Learned suggestions ────────────────────────────────────────────────────
+ * Read-only evidence from /api/rules/suggestions: where reviewers overrode the
+ * AI. Nothing on this panel writes anything; the only action it offers is to
+ * jump to the rule section a person might want to edit.
+ */
+
+// A stored Pylon link is arbitrary text from outside. Escaping protects the
+// text and leaves the scheme intact, so `javascript:…` survives esc() and is
+// still clickable — the scheme has to be checked separately. The backend
+// already omits unsafe links; this guard does not trust that it always will.
+const SAFE_LINK = /^https?:\/\//i;
+
+// Which section of this page edits a given rules key, so an observation can
+// send you to the control it implies. A fact about this page's sections, not a
+// guess: the backend points at four of these today, the rest are here because
+// they are the other keys these sections own.
+const RULE_KEY_SECTION = {
+  excluded_states: "scope",
+  r3_internal_account_ids: "r3", r3_invalid_name_fragments: "r3",
+  r4_sla_hours: "r4",
+  cs_user_ids: "r5", impl_user_ids: "r5", impl_group_ids: "r5",
+  eng_user_ids: "r5", eng_group_ids: "r5",
+  pt_user_ids: "r5", pt_group_ids: "r5", r5_group_states: "r5",
+  r8_oncall_categories: "r8",
+  a_guidance: "a",
+};
+const NAV_LABELS = Object.fromEntries(NAV);
+
+let sugDays = 30;
+let sugLoaded = false;
+let sugToken = 0;
+
+function safeHref(u) {
+  const s = typeof u === "string" ? u.trim() : "";
+  return SAFE_LINK.test(s) ? s : null;
+}
+
+// #1042 as a link when the stored URL is http(s), as plain text otherwise —
+// never a dead or unsafe anchor.
+function ticketRef(t) {
+  const num = `#${esc(t.number ?? "?")}`;
+  const href = safeHref(t.link);
+  return href
+    ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${num}</a>`
+    : `<span class="num" title="No usable link is stored for this ticket">${num}</span>`;
+}
+
+function obsCard(o) {
+  const section = RULE_KEY_SECTION[o.target_rule_key];
+  const label = NAV_LABELS[section];
+  const action = section && label
+    ? `<button type="button" class="ghost" data-jump="${esc(section)}">Open ${esc(label)}</button>`
+    : `<p class="no-target">No single setting to point at — this one is a judgement call from
+       the evidence.</p>`;
+  const samples = (o.sample || []).map(t =>
+    `<li>${ticketRef(t)}<span class="ttl">${esc(t.title || "")}</span></li>`).join("");
+  const n = Number(o.count) || 0;
+  return `<div class="obs">
+    <div class="obs-head">
+      <h4>${esc(o.check_label || o.check || "")}</h4>
+      <span class="flow">${esc(o.ai_said)} &rarr; ${esc(o.human_said)}</span>
+      <span class="tag">${esc(n)} ticket${n === 1 ? "" : "s"}</span>
+      <span class="tag" title="${o.kind === "rule_suspect"
+        ? "A deterministic R-check drove the verdict — a rules problem."
+        : "The rubric or the model drove the verdict — a prompt problem."}">${
+        o.kind === "rule_suspect" ? "Rules" : "Prompt"}</span>
+    </div>
+    <p class="obs-implies">${esc(o.implies || "")}</p>
+    <div class="obs-foot">
+      <div class="ev">
+        <div class="ev-label">Evidence</div>
+        <ul>${samples || `<li class="muted">No sample tickets returned.</li>`}</ul>
+      </div>
+      ${action}
+    </div>
+  </div>`;
+}
+
+// An empty list has three different meanings and they must not read alike:
+// held-back evidence, nothing to learn from, and genuine agreement.
+function emptyBanner(d) {
+  const days = esc(d.window_days ?? sugDays);
+  if ((d.gated_out || 0) > 0) {
+    return `<div class="banner info"><b>Nothing proposed — but something was found.</b>
+      ${esc(d.gated_out)} pattern${d.gated_out === 1 ? "" : "s"} turned up in the last ${days}
+      days and every one sits below the five-override bar, so ${d.gated_out === 1 ? "it is" : "they are"}
+      held back rather than shown as advice. Widen the window, or wait for more sign-offs.</div>`;
+  }
+  if (!(d.total_reviews || 0)) {
+    return `<div class="banner info"><b>No sign-offs in the last ${days} days.</b>
+      Suggestions are built from reviewers signing tickets off on the Dashboard — there is
+      nothing yet in this window to learn from.</div>`;
+  }
+  return `<div class="banner ok"><b>No disagreements to report.</b>
+    ${esc(d.total_reviews)} sign-offs landed in the last ${days} days and none of them
+    contradicted the AI.</div>`;
+}
+
+function renderSuggestions(d) {
+  const obs = d.observations || [];
+  const range = d.range || {};
+  const gated = d.gated_out || 0;
+  $("sug-stats").innerHTML = `
+    <div class="stat-row">
+      <div class="stat"><b>${esc(d.total_reviews ?? 0)}</b><span>Sign-offs</span></div>
+      <div class="stat"><b>${esc(d.total_overrides ?? 0)}</b><span>Overrode the AI</span></div>
+      <div class="stat"><b>${esc(obs.length)}</b><span>Observations</span></div>
+      <div class="stat"><b>${esc(gated)}</b><span>Withheld as noise</span></div>
+    </div>
+    <div class="hint">
+      ${esc(range.start || "?")} to ${esc(range.end || "?")}, reviewer sign-offs only —
+      a “Revert” clears a verdict rather than casting one, so it counts on neither side.
+    </div>
+    <div class="hint">
+      <b>Withheld as noise:</b> a pattern needs five overrides of the same check before it is
+      shown. ${gated ? `${esc(gated)} pattern${gated === 1 ? " has" : "s have"} fewer than
+      that and ${gated === 1 ? "is" : "are"} hidden.` : "Nothing is currently being held back."}
+      Two reviewers disagreeing is a reviewer having a day, and editing a rule for everyone on
+      that costs more trust than it can repay.
+    </div>`;
+  $("sug-list").innerHTML = obs.length ? obs.map(obsCard).join("") : emptyBanner(d);
+}
+
+async function loadSuggestions() {
+  const token = ++sugToken;
+  $("sug-list").innerHTML = `<div class="banner info">Reading review history…</div>`;
+  try {
+    const d = await QC.api(`/api/rules/suggestions?days=${encodeURIComponent(sugDays)}`);
+    if (token !== sugToken) return;      // a newer window already landed
+    renderSuggestions(d);
+  } catch (e) {
+    if (token !== sugToken) return;
+    $("sug-stats").innerHTML = "";
+    $("sug-list").innerHTML = `<div class="banner bad">${esc(e.message)}</div>`;
+  }
+}
+
+// Deferred until the section is first opened: this is an aggregate over every
+// review ever recorded, and most visits to Rules never look at it.
+function ensureSuggestions() {
+  if (sugLoaded) return;
+  sugLoaded = true;
+  loadSuggestions();
+}
+
+$("sug-days").addEventListener("click", ev => {
+  const btn = ev.target.closest("button[data-days]");
+  if (!btn || btn.disabled) return;
+  $("sug-days").querySelectorAll("button").forEach(b => b.classList.toggle("active", b === btn));
+  sugDays = Number(btn.dataset.days);
+  loadSuggestions();
+});
+
+$("sug-list").addEventListener("click", ev => {
+  const btn = ev.target.closest("button[data-jump]");
+  if (btn) selectSection(btn.dataset.jump);
+});
+
+/* ── Prompt dry-run ─────────────────────────────────────────────────────────
+ * Grades a few real tickets with the draft guidance and reports what would
+ * move. Raw fetch rather than QC.api: a route that is not deployed yet (404,
+ * 405 or 501) has to be told apart from a real failure, and QC.api collapses
+ * the status into a message.
+ */
+const DRY_LIMIT = 5;
+
+// Display names for the check keys the dry-run returns raw. Suggestions send
+// their own check_label; this is only for the comparison grid.
+const A_CHECK_LABELS = {
+  a1: "Category accuracy", a2: "Sentiment", a3: "Response quality",
+  a4: "Status vs conversation", a5: "Not closed prematurely",
+  overall: "Overall verdict",
+};
+
+function dryRow(key, before, after, changed) {
+  return `<tr class="${changed ? "chg" : ""}">
+    <td>${esc(A_CHECK_LABELS[key] || String(key).toUpperCase())}
+        <span class="k">${esc(key)}</span></td>
+    <td>${before == null ? "—" : esc(before)}</td>
+    <td class="to">${after == null ? "—" : esc(after)}</td>
+  </tr>`;
+}
+
+function dryTicket(r) {
+  const current = r.current || {};
+  const draft = r.draft || {};
+  const keys = [...new Set([...Object.keys(current), ...Object.keys(draft)])];
+  // The server's `changed` is authoritative, but a value that differs is a
+  // change whether or not it was listed.
+  const changed = new Set(r.changed || []);
+  for (const k of keys) if (current[k] !== draft[k]) changed.add(k);
+  const moved = keys.filter(k => changed.has(k)).length;
+  const rows = keys.map(k => dryRow(k, current[k], draft[k], changed.has(k))).join("");
+  return `<div class="dry-tk">
+    <div class="dry-head">
+      ${ticketRef(r)}<span class="ttl">${esc(r.title || "")}</span>
+      <span class="tag">${moved ? `${esc(moved)} changed` : "no change"}</span>
+    </div>
+    <table class="dry">
+      <thead><tr><th>Check</th><th>Current</th><th>With draft</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="3" class="muted">No grades returned.</td></tr>`}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderDryRun(d) {
+  const results = d.results || [];
+  const moved = results.filter(r => (r.changed || []).length).length;
+  // Always presented as an estimate: even a figure the API reports back is an
+  // estimate of what the same guidance would cost across a whole run.
+  const basis = d.cost_estimated === false
+    ? "reported by the API for this call"
+    : "estimated from token counts";
+  QC.show($("dry-msg"),
+    `${d.sampled ?? results.length} tickets sampled · ${moved} would change · `
+    + `estimated cost ~$${Number(d.cost_usd || 0).toFixed(4)} (${basis}). `
+    + `Nothing was saved and no grade was written.`, "info");
+  $("dry-out").innerHTML = results.length
+    ? results.map(dryTicket).join("")
+    : `<p class="hint">No tickets came back to compare.</p>`;
+}
+
+$("dry-run").addEventListener("click", async () => {
+  const btn = $("dry-run");
+  btn.disabled = true;
+  $("dry-out").innerHTML = "";
+  QC.show($("dry-msg"),
+    `Grading ${DRY_LIMIT} tickets with the draft guidance — this makes real AI calls.`, "info");
+  try {
+    const r = await fetch("/api/rules/dry-run", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({guidance: $("a_guidance").value.trim(), limit: DRY_LIMIT}),
+    });
+    if (r.status === 404 || r.status === 405 || r.status === 501) {
+      QC.show($("dry-msg"), "Dry-run is not available yet.", "info");
+      return;
+    }
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      QC.show($("dry-msg"), d.detail || `HTTP ${r.status}`, "err");
+      return;
+    }
+    renderDryRun(d);
+  } catch (e) {
+    QC.show($("dry-msg"), e.message, "err");
+  } finally {
+    btn.disabled = !(DATA && DATA.can_edit);
   }
 });
 
