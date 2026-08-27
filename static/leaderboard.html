@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leaderboard · Pylon QC</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
   h2.sec {
@@ -22,7 +23,8 @@
     font-size: 12px; font-weight: 600; cursor: pointer;
   }
   .range-bar button.active {
-    background: var(--accent); border-color: var(--accent); color: #fff;
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-color: var(--color-accent); color: var(--color-accent);
   }
   .table-wrap {
     background: var(--surface); border: 1px solid var(--border);

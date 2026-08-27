@@ -5,18 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sign in · Pylon QC</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  /* Nocturne tokens, inline: this page is reachable before sign-in and does not
+     load shell.css, so it carries its own copy rather than a second palette. */
   :root {
-    --bg: #0f172a; --surface: #1e293b; --border: #334155;
-    --text: #f1f5f9; --muted: #94a3b8; --accent: #6366f1; --accent2: #818cf8;
+    --bg: #161826; --surface: #232532; --border: color-mix(in srgb, #e9e9ed 16%, transparent);
+    --text: #e9e9ed; --muted: color-mix(in srgb, #e9e9ed 55%, transparent);
+    --accent: #9184d9; --accent2: #b5abfc;
   }
   body {
     background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
     min-height: 100vh; display: flex; align-items: center; justify-content: center;
     padding: 24px;
   }
+  :focus { outline: none; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 14px; padding: 40px; width: 100%; max-width: 400px;

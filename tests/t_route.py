@@ -41,3 +41,30 @@ assert r.status_code == 400
 
 print()
 print("ROUTING OK")
+
+print()
+print("=== Run QC accepts refetch=1 and reports the fetch half ===")
+# Not exercised end-to-end here (that would need Pylon); this asserts the
+# contract the frontend depends on, and the lock ordering that keeps a
+# scheduled run and a human from deadlocking on each other.
+import inspect
+
+import app as _a
+
+sig = inspect.signature(_a.run_qc)
+assert "refetch" in sig.parameters, "run_qc must accept refetch"
+assert sig.parameters["refetch"].default is False, "refetch must default off"
+print("   OK  run_qc takes refetch, defaulting off")
+
+src = inspect.getsource(_a.run_qc)
+assert '"fetch"' in src, "response must carry a fetch key"
+print("   OK  response carries the fetch half")
+
+assert src.index('f"fetch:{date_str}"') < src.index('f"qc:{date_str}"'), \
+    "the fetch lock must be taken before the qc lock"
+assert src.count("with db.advisory_lock") == 2, \
+    "the two locks must be separate statements, not nested"
+print("   OK  fetch lock precedes qc lock, and they are not nested")
+
+print()
+print("ROUTING OK")

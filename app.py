@@ -599,8 +599,30 @@ async def preview_qc(date_str: str, user: dict = Depends(auth.require_user)):
 
 
 @app.post("/api/qc/{date_str}")
-async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
-    _require_date(date_str)
+async def run_qc(date_str: str, refetch: bool = False,
+                 user: dict = Depends(auth.require_user)):
+    """Score a day. With `refetch=1`, pull from Pylon first.
+
+    Refetch-then-score is only cheap because staleness is a content
+    fingerprint: a refetch that changes nothing leaves nothing to score. Before
+    that, this would have regraded the whole day at full price every time.
+    """
+    target = _require_date(date_str)
+
+    fetch_res = None
+    if refetch:
+        # Two locks in series, never nested: a scheduled run colliding with a
+        # human fails cleanly on one of them rather than deadlocking on both.
+        try:
+            with db.advisory_lock(f"fetch:{date_str}", user["email"],
+                                  ttl_seconds=1800):
+                fetch_res = await fetch_and_store(target)
+        except db.LockBusy as e:
+            raise HTTPException(409, str(e))
+        except pylon.PylonNotConfigured as e:
+            raise HTTPException(503, str(e))
+        except Exception as e:
+            raise HTTPException(502, f"Pylon fetch failed: {e}")
 
     log = await asyncio.to_thread(db.get_fetch_log, date_str)
     if not log:
@@ -621,10 +643,23 @@ async def run_qc(date_str: str, user: dict = Depends(auth.require_user)):
         raise HTTPException(502, qc_runner.explain_vertex_error(e))
 
     spend_after = await asyncio.to_thread(db.qc_spend_for_date, date_str)
-    vault.audit(user["email"], "qc.run", f"{date_str} scored={result.get('scored')}")
+    vault.audit(
+        user["email"], "qc.run",
+        f"{date_str} scored={result.get('scored')}"
+        + (f" refetched={fetch_res.count}" if fetch_res else ""),
+    )
     return {
         "date": date_str,
         **result,
+        # Present only when this call also refetched, so the UI can report both
+        # halves rather than implying the fetch always happens.
+        "fetch": None if fetch_res is None else {
+            "ticket_count": fetch_res.count,
+            "deleted": fetch_res.deleted,
+            "kept_reviewed": fetch_res.kept_reviewed,
+            "restored": fetch_res.restored,
+            "complete": fetch_res.complete,
+        },
         "cost_split": {
             "before": spend_before["total_cost_usd"],
             "this_run": round(

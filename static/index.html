@@ -5,26 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pylon QC Dashboard</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  :root {
-    --bg:        #0f172a;
-    --surface:   #1e293b;
-    --surface2:  #263348;
-    --border:    #334155;
-    --text:      #f1f5f9;
-    --muted:     #94a3b8;
-    --accent:    #6366f1;
-    --accent2:   #818cf8;
-    --pass:      #22c55e;
-    --fail:      #ef4444;
-    --review:    #f59e0b;
-    --na:        #475569;
-    --pending:   #334155;
-    --radius:    8px;
-  }
+  /* Palette intentionally NOT redeclared here — it comes from shell.css, which
+     carries the Nocturne tokens for every page. Re-declaring it after the link
+     is what previously pinned this page to the old slate/indigo values. */
 
   .app-main {
     background: var(--bg);
@@ -95,7 +83,10 @@
     display: flex; align-items: center; justify-content: center;
     transition: background .15s;
   }
-  .nav-btn:hover { background: var(--accent); border-color: var(--accent); }
+  .nav-btn:hover {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    border-color: var(--color-accent);
+  }
 
   .cal-grid {
     flex: 1;
@@ -274,7 +265,9 @@
     color: var(--text);
     user-select: none;
   }
-  .assignee-ms-item:hover { background: var(--surface3, rgba(255,255,255,.06)); }
+  .assignee-ms-item:hover {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  }
   .assignee-ms-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
   .assignee-ms-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
   .assignee-ms-clear {
@@ -458,7 +451,7 @@
     bottom: calc(100% + 6px);
     left: 50%;
     transform: translateX(-50%);
-    background: #0f172a;
+    background: var(--color-neutral-900);
     border: 1px solid var(--border);
     color: var(--text);
     font-size: 11px;
@@ -559,7 +552,8 @@
     border: 1px solid var(--border); background: var(--surface2); color: var(--text);
   }
   .review-modal-actions #review-modal-confirm {
-    background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-color: var(--color-accent); color: var(--color-accent);
   }
   .review-modal-actions #review-modal-confirm.fail {
     background: var(--fail); border-color: var(--fail);
@@ -621,7 +615,10 @@
     white-space: nowrap;
   }
   .view-tab:hover { color: var(--text); }
-  .view-tab.active { background: var(--accent); color: #fff; }
+  .view-tab.active {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: var(--color-accent); box-shadow: inset 0 0 0 1px var(--color-accent);
+  }
 
   /* ── analytics view ── */
   #analytics-view {
@@ -682,7 +679,10 @@
     transition: border-color .15s, color .15s, background .15s;
   }
   .week-pill:hover { border-color: var(--accent2); color: var(--accent2); }
-  .week-pill.active { border-color: var(--accent2); color: #fff; background: var(--accent2); }
+  .week-pill.active {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
 
   .kpi-row {
     display: flex;
@@ -1245,16 +1245,16 @@ async function runQC() {
   // shares its eligibility query with the run, so this count is authoritative.
   try {
     const pre = await getJSON(`/api/qc/${qcDate}/preview`);
-    if (pre.eligible === 0) {
-      document.getElementById("panel-meta").textContent = pre.reason;
-      return;
-    }
+    // Run QC always refetches first, so the eligible count here is a floor:
+    // the refetch can turn up changes the preview could not see. That is why
+    // eligible === 0 no longer short-circuits — a refetch is still worth doing.
     if (pre.has_run) {
       const spent = Number(pre.spend.total_cost_usd || 0).toFixed(4);
       const ok = confirm(
-        `${pre.reason}\n\n`
-        + `Already spent on this date: ~$${spent} across ${pre.spend.runs} run(s).\n`
-        + `Re-run QC for the ${pre.eligible} ticket(s) that need it?`
+        `Refetch ${qcDate} from Pylon, then score whatever changed.\n\n`
+        + `${pre.reason}\n`
+        + `Already spent on this date: ~$${spent} across ${pre.spend.runs} run(s).\n\n`
+        + `Continue?`
       );
       if (!ok) return;
     }
@@ -1267,7 +1267,10 @@ async function runQC() {
   btn.disabled = true;
   refetchBtn.disabled = true;
   btn.textContent = "⏳ Running…";
-  document.getElementById("panel-meta").textContent = "Running AI checks…";
+  // Run QC refetches first, so say so rather than sitting on one label for the
+  // whole run. The polling loop below replaces this once tickets start landing.
+  document.getElementById("panel-meta").textContent =
+    "Fetching from Pylon, then scoring…";
 
   // Poll every 3 s so cards update as parallel batches land in the DB,
   // without waiting for the entire run to finish.
@@ -1287,8 +1290,12 @@ async function runQC() {
 
   let fetchErr = null;
   let costSplit = null;
+  let fetchInfo = null;
   try {
-    const r = await fetch(`/api/qc/${qcDate}`, { method: "POST" });
+    // refetch=1: pull the day from Pylon first, then score only what changed.
+    // Cheap by construction — staleness is a content fingerprint, so an
+    // unchanged ticket costs nothing to re-examine.
+    const r = await fetch(`/api/qc/${qcDate}?refetch=1`, { method: "POST" });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) {
       fetchErr = new Error(body.detail || r.statusText);
@@ -1297,6 +1304,7 @@ async function runQC() {
         lastRun = body;
       }
       costSplit = body.cost_split || null;
+      fetchInfo = body.fetch || null;
     }
   } catch(e) {
     fetchErr = e;
@@ -1317,11 +1325,22 @@ async function runQC() {
         // re-run visibly accumulates instead of appearing to reset.
         const money = v => "$" + Number(v || 0).toFixed(4);
         const tilde = costSplit.any_estimated ? "~" : "";
-        document.getElementById("panel-meta").textContent =
+        const parts = [];
+        if (fetchInfo) {
+          let f = `Refetched ${fetchInfo.ticket_count}`;
+          if (fetchInfo.deleted) f += `, ${fetchInfo.deleted} removed at source`;
+          // Say when nothing was removed because the fetch could not be
+          // trusted, rather than letting it read as "nothing had changed".
+          if (!fetchInfo.complete) f += " (incomplete — nothing removed)";
+          parts.push(f);
+        }
+        parts.push(
           `Previously ${tilde}${money(costSplit.before)} · `
           + `This run ${tilde}${money(costSplit.this_run)} · `
           + `Total ${tilde}${money(costSplit.total)} est. `
-          + `(${costSplit.runs} run${costSplit.runs === 1 ? "" : "s"})`;
+          + `(${costSplit.runs} run${costSplit.runs === 1 ? "" : "s"})`
+        );
+        document.getElementById("panel-meta").textContent = parts.join(" · ");
       }
 
       refetchBtn.disabled = false;
@@ -1947,18 +1966,38 @@ function _isoDate(y, m, d) { return `${y}-${_pad2(m)}-${_pad2(d)}`; }
 
 function _buildWeekPills(m) {
   // m = "2026-08"  → returns [{start, end, label}, …]
+  //
+  // Real Monday–Sunday calendar weeks, not seven-day blocks counted from the
+  // 1st. The old version walked `day = 1; day += 7`, so every month restarted
+  // the week and August read 1–7 / 8–14 / 15–21 — which lines up with no actual
+  // week and cannot be compared against the week before.
+  //
+  // A week overlapping the month appears here and carries the crossing in its
+  // label, so selecting it does not silently drop the days in the other month.
   const [y, mo] = m.split('-').map(Number);
-  const daysInMonth = new Date(y, mo, 0).getDate();
-  const monthShort = MONTHS[mo - 1].slice(0, 3);
+  const first = new Date(y, mo - 1, 1);
+  const last = new Date(y, mo, 0);
+
+  // Back up to the Monday of the week containing the 1st. getDay() is
+  // 0=Sunday, so Sunday needs a 6-day step back rather than 0.
+  const cursor = new Date(first);
+  cursor.setDate(cursor.getDate() - ((cursor.getDay() + 6) % 7));
+
+  const short = d => `${MONTHS[d.getMonth()].slice(0, 3)} ${d.getDate()}`;
   const pills = [];
-  let day = 1;
-  while (day <= daysInMonth) {
-    const wEnd = Math.min(day + 6, daysInMonth);
-    const label = day === wEnd
-      ? `${monthShort} ${day}`
-      : `${monthShort} ${day}–${wEnd}`;
-    pills.push({ start: _isoDate(y, mo, day), end: _isoDate(y, mo, wEnd), label });
-    day += 7;
+  while (cursor <= last) {
+    const wStart = new Date(cursor);
+    const wEnd = new Date(cursor);
+    wEnd.setDate(wEnd.getDate() + 6);
+    pills.push({
+      start: fmtDate(wStart),
+      end: fmtDate(wEnd),
+      // "Aug 3–9" within one month; "Jul 27 – Aug 2" when it crosses.
+      label: wStart.getMonth() === wEnd.getMonth()
+        ? `${short(wStart)}–${wEnd.getDate()}`
+        : `${short(wStart)} – ${short(wEnd)}`,
+    });
+    cursor.setDate(cursor.getDate() + 7);
   }
   return pills;
 }
