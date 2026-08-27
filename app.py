@@ -23,9 +23,11 @@ load_dotenv()
 import auth
 import db
 import drilldown
+import dryrun
 import evidence
 import gcp
 import leaderboard
+import prompts
 import pylon
 import qc_runner
 import resync_overall
@@ -77,6 +79,13 @@ logging.basicConfig(
     level=os.getenv("QC_LOG_LEVEL", "INFO").upper(),
     format="%(levelname)s: %(message)s",
 )
+
+# Every other module has one; this one used `logger` in ten places without ever
+# binding it. The worst of them sat in `lifespan`, on the branch that reports
+# runs closed by a restart — so the first deploy that interrupted a run would
+# have raised NameError during startup and taken the app down instead of
+# logging one line. t_logger.py now checks every module for this.
+logger = logging.getLogger("qc.app")
 
 
 @asynccontextmanager
@@ -896,7 +905,28 @@ async def get_rules(user: dict = Depends(auth.require_user)):
         "states_seen":  await asyncio.to_thread(states_seen),
         "meta":         vault.get_setting_meta(qc_rules.RULES_KEY),
         "can_edit":     user["role"] == "admin",
-        "rubric":       qc_runner.SYSTEM_PROMPT,
+        # The prompt as it will actually be sent on the next run, not a
+        # hardcoded literal — an admin reading this needs to see their own edits
+        # reflected, or the read-only view is a lie.
+        "rubric":         prompts.system_prompt(current),
+        "prompt_sections": [
+            {
+                "key":     key,
+                "title":   prompts.SECTION_LABELS[key][0],
+                "help":    prompts.SECTION_LABELS[key][1],
+                "value":   current.get(key) or "",
+                "default": prompts.DEFAULT_SECTIONS[key],
+                "grades":  list(prompts.GRADES.get(key[:2], ())),
+            }
+            for key in prompts.SECTION_KEYS
+        ],
+        # Shown read-only. These describe the wire contract, not grading policy:
+        # editing them would not change a grade, it would break scoring.
+        "prompt_fixed": [
+            {"title": title, "text": text} for title, text in prompts.FIXED_BLOCKS
+        ],
+        "prompt_hash":  prompts.fingerprint(current),
+        "prompt_limit": prompts.MAX_SECTION_CHARS,
     }
 
 
@@ -935,6 +965,54 @@ async def rules_suggestions(days: int = 30,
     if not 1 <= days <= 365:
         raise HTTPException(400, "days must be between 1 and 365")
     return {"ok": True, **await asyncio.to_thread(suggestions.build, days)}
+
+
+@app.post("/api/rules/dry-run")
+async def rules_dry_run(request: Request,
+                        user: dict = Depends(auth.require_admin)):
+    """Grade a few real tickets with unsaved rubric text. Writes nothing.
+
+    Admin-gated because it spends money on the workspace's Vertex quota, not
+    because it changes anything — it deliberately cannot. The draft never
+    reaches `app_settings`, no `ai_checks` row is touched, and no run is
+    recorded. What comes back is a side-by-side of the stored grade and the
+    grade the draft produced, so an admin can see the effect of a rubric edit
+    before making it everyone's grades.
+
+    The response labels its own cost. Token counts come from the API for this
+    specific call, but the figure is still an estimate of what the same edit
+    would cost across a full run, and the UI says so.
+    """
+    import rules as qc_rules
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+
+    # Only string fields are rubric text; `limit` and `date` are controls.
+    draft = {k: v for k, v in body.items()
+             if isinstance(v, str) and k not in ("date",)}
+    errors = qc_rules.validate(draft)
+    if errors:
+        # A draft that could not be saved must not be billable either.
+        raise HTTPException(400, "; ".join(errors[:4]))
+
+    # Validated then re-serialised: fetch_date is stored as text, and handing
+    # sqlite3 a date object relies on a deprecated adapter.
+    day = body.get("date")
+    day = _require_date(str(day)).isoformat() if day else None
+
+    try:
+        result = await asyncio.to_thread(
+            dryrun.run, draft, body.get("limit", dryrun.DEFAULT_LIMIT), day
+        )
+    except qc_runner.VertexNotConfigured as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("rules dry-run failed")
+        raise HTTPException(502, f"Dry-run could not complete: {str(e)[:300]}")
+
+    return {"ok": True, **result}
 
 
 @app.get("/api/directory/slack")

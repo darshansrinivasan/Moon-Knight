@@ -21,6 +21,7 @@ from google.genai import types
 from bs4 import BeautifulSoup
 
 import db
+import prompts
 import scorer
 import vault
 
@@ -63,23 +64,10 @@ GEN_TEMPERATURE = 0.0
 GEN_SEED        = 7
 
 _GRADE_PFR   = {"type": "STRING", "enum": ["Pass", "Fail", "Needs Review"]}
-RESPONSE_SCHEMA = {
-    "type": "ARRAY",
-    "items": {
-        "type": "OBJECT",
-        "properties": {
-            "idx": {"type": "INTEGER"},
-            "a1":  _GRADE_PFR,
-            "a2":  {"type": "STRING",
-                    "enum": ["Positive", "Neutral", "Concerned", "Frustrated", "Urgent"]},
-            "a3":  {"type": "STRING", "enum": ["Good", "Needs Improvement", "Poor"]},
-            "a4":  _GRADE_PFR,
-            "a5":  {"type": "STRING", "enum": ["Pass", "Fail", "Needs Review", "N/A"]},
-            "ai_notes": {"type": "STRING"},
-        },
-        "required": ["idx", "a1", "a2", "a3", "a4", "a5", "ai_notes"],
-    },
-}
+# The response schema and the grade vocabularies it enforces live in
+# `prompts`, alongside the rubric text that describes them — see the module
+# docstring for why they cannot be allowed to drift apart.
+RESPONSE_SCHEMA = prompts.RESPONSE_SCHEMA
 
 # USD per 1M tokens on Vertex, longest-prefix match. Estimates for the run
 # cost display — adjust here when Google reprices.
@@ -438,69 +426,9 @@ def vertex_models() -> list[str]:
     models = [m.strip() for m in raw.split(",") if m.strip()]
     return models or ["gemini-2.5-flash"]
 
-# Single-ticket prompt uses "idx:0" so the model never has to echo a UUID.
-SYSTEM_PROMPT = """You are a support quality-control analyst for SpotDraft, a contract-management SaaS. Evaluate support tickets and return ONLY a JSON array — no prose, no markdown fences.
-
-Each ticket in the input is prefixed with === TICKET #<number> idx:<index> ===
-Return one result object per ticket in the SAME ORDER, using the "idx" field to identify each.
-
-CHECKS:
-
-A1 — Category accuracy  →  Pass / Fail / Needs Review
-  Compare functionalities and request_category against what the customer actually asked. Fail if clearly mismatched. Needs Review if multiple categories reasonably apply.
-
-A2 — Customer sentiment  →  Positive / Neutral / Concerned / Frustrated / Urgent
-  Base on customer language, escalation cues, time-in-queue.
-
-A3 — Response quality  →  Good / Needs Improvement / Poor
-  Good: clear, accurate, empathetic, assigns ownership, includes next steps.
-  Needs Improvement: vague or incomplete but serviceable.
-  Poor: wrong guidance, missed ask, no next step, confusing handoff.
-  IMPORTANT — Internal tickets: if "Internal ticket: Yes" appears in the ticket block,
-  the Pylon thread IS the communication channel (it mirrors a Slack thread). The requester
-  is a colleague, not an external customer. A brief but clear confirmation of the action
-  taken in the thread is fully adequate — rate A3=Good. Do NOT penalize for absence of a
-  formal email reply or elaborate closure message.
-
-A4 — Status vs conversation  →  Pass / Fail / Needs Review
-  Does the current ticket state match who actually owns the next action?
-
-A5 — Not closed prematurely  →  Pass / Fail / Needs Review / N/A
-  N/A for open tickets. Pass if closed with resolution evidence or documented no-response follow-up. Fail if customer ask still open at closure.
-
-Do NOT return an overall verdict. The overall result is computed
-deterministically from your grades plus the R-checks, so that identical grades
-always produce the same verdict.
-
-AI NOTES: one concise string. For every Fail or Needs Review check, write a specific sentence that names:
-  (1) what exactly went wrong (quote the customer's missed ask, the incorrect category, the unanswered message, etc.)
-  (2) what the support agent should do to fix it.
-  Format: "A<n> <grade>: <specific finding> — <specific fix>."
-  Be concrete — never write generic phrases like "fix needed" or "review required" without explaining what to fix or review.
-  If all AI checks pass, write a one-sentence summary of what was handled well.
-
-CONSISTENCY RULES:
-  Grade strictly from the evidence in the ticket block. Identical input must
-  produce identical grades.
-  When evidence is genuinely ambiguous between Pass and Fail, grade Needs
-  Review — never guess. Reserve Fail for cases the rubric clearly covers.
-  Do not let one ticket's grade influence another's; each is independent.
-
-Message roles: is_customer=1 → message visible to requester; is_private=1 → internal note (exclude from customer-response logic).
-For internal tickets the "requester" is a colleague — treat is_customer=1 messages as internal thread replies, not external customer communication.
-
-Return format (idx matches the input idx value, NOT the ticket number):
-[
-  {
-    "idx": 0,
-    "a1": "Pass|Fail|Needs Review",
-    "a2": "Positive|Neutral|Concerned|Frustrated|Urgent",
-    "a3": "Good|Needs Improvement|Poor",
-    "a4": "Pass|Fail|Needs Review",
-    "a5": "Pass|Fail|Needs Review|N/A",
-    "ai_notes": "..."
-  }
-]"""
+# The prompt itself is assembled in `prompts` from the editable sections in
+# `rules` plus the fixed wire contract. It used to be a string literal here,
+# which made every grading-policy change a deploy.
 
 
 def _html_text(html: str | None) -> str:
@@ -668,6 +596,12 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
         # R-checks are printed into the prompt, so a changed rule verdict is a
         # changed prompt even when the ticket itself is untouched.
         "r":         {k: r_checks.get(k) for k in R_CHECK_KEYS},
+        # The rubric decides the grade as much as the ticket does. Without this,
+        # an admin could rewrite what "Poor" means, re-run the date, and get the
+        # old grades straight back from the skip path — the edit would look like
+        # it did nothing. Editing the rubric therefore marks every grade stale,
+        # but nothing is re-billed until someone re-runs a specific date.
+        "prompt":    prompts.fingerprint(),
         # Message order matters to the model, so preserve it rather than sorting.
         "msgs":      [
             [m.get("is_customer"), m.get("is_private"), m.get("message_html")]
@@ -720,25 +654,27 @@ def _build_ticket_block(t: dict, idx: int) -> str:
     return block
 
 
-def _system_prompt() -> str:
-    """The base rubric plus any workspace-specific guidance set by admins."""
+def _system_prompt(overrides: dict | None = None) -> str:
+    """The assembled rubric: editable sections, fixed envelope, admin guidance.
+
+    `overrides` exists for the Rules dry-run, which grades a sample with draft
+    text that has not been saved. Passing None reads the saved rules, which is
+    what every real run does.
+    """
     import rules as qc_rules
-    guidance = qc_rules.guidance()
-    if not guidance:
-        return SYSTEM_PROMPT
-    return (SYSTEM_PROMPT
-            + "\n\nWORKSPACE-SPECIFIC GUIDANCE (set by admins — apply alongside the rubric):\n"
-            + guidance)
+    return prompts.system_prompt(overrides if overrides is not None
+                                 else qc_rules.current())
 
 
 def _generate_once(client, model_name: str, prompt: str,
-                   stats: "RunStats | None") -> str:
+                   stats: "RunStats | None",
+                   overrides: dict | None = None) -> str:
     """One pinned generation call. Raises on an empty or blocked response."""
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=_system_prompt(),
+            system_instruction=_system_prompt(overrides),
             temperature=GEN_TEMPERATURE,
             seed=GEN_SEED,
             candidate_count=1,
@@ -764,7 +700,8 @@ def _generate_once(client, model_name: str, prompt: str,
     return text
 
 
-def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
+def _call_gemini(prompt: str, stats: "RunStats | None" = None,
+                 overrides: dict | None = None) -> str:
     """Call Gemini on Vertex, retrying transient errors and then cascading.
 
     Two distinct failure modes need different handling, and conflating them is
@@ -782,7 +719,8 @@ def _call_gemini(prompt: str, stats: "RunStats | None" = None) -> str:
     for model_name in vertex_models():
         for attempt in range(1, MAX_ATTEMPTS_PER_MODEL + 1):
             try:
-                return _generate_once(client, model_name, prompt, stats)
+                return _generate_once(client, model_name, prompt, stats,
+                                      overrides)
             except Exception as e:
                 last_err = e
                 retryable = _is_retryable_error(e)
@@ -826,17 +764,19 @@ def _parse_response(text: str | None) -> list[dict]:
 
 
 def _score_single(ticket: dict, idx: int = 0,
-                  stats: "RunStats | None" = None) -> dict:
+                  stats: "RunStats | None" = None,
+                  overrides: dict | None = None) -> dict:
     """Score one ticket solo — used as a fallback when a batch fails."""
     prompt = _build_ticket_block(ticket, idx)
-    results = _parse_response(_call_gemini(prompt, stats))
+    results = _parse_response(_call_gemini(prompt, stats, overrides))
     if not results:
         raise ValueError(f"no result returned for ticket #{ticket.get('number')}")
     return results[0]
 
 
 def _score_batch(batch: list[dict],
-                 stats: "RunStats | None" = None) -> list[dict]:
+                 stats: "RunStats | None" = None,
+                 overrides: dict | None = None) -> list[dict]:
     """
     Score a batch of tickets.
     Results are matched back to tickets by idx (0-based position in the batch),
@@ -845,7 +785,7 @@ def _score_batch(batch: list[dict],
     """
     prompt = "\n\n".join(_build_ticket_block(t, i) for i, t in enumerate(batch))
     try:
-        results = _parse_response(_call_gemini(prompt, stats))
+        results = _parse_response(_call_gemini(prompt, stats, overrides))
         # Validate we got the right number of results; fall back if not.
         if len(results) != len(batch):
             raise ValueError(
@@ -863,7 +803,8 @@ def _score_batch(batch: list[dict],
         individual = []
         for i, t in enumerate(batch):
             try:
-                individual.append(_score_single(t, idx=i, stats=stats))
+                individual.append(_score_single(t, idx=i, stats=stats,
+                                                overrides=overrides))
             except Exception as ie:
                 logger.error("Solo score failed for ticket #%s: %s", t.get("number"), ie)
                 individual.append(None)  # placeholder — skipped in write loop

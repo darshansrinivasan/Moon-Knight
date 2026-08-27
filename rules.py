@@ -41,7 +41,8 @@ def _roster_lines(ids) -> list:
 
 
 def defaults() -> dict:
-    import scorer  # deferred: scorer imports this module at top level
+    import scorer   # deferred: scorer imports this module at top level
+    import prompts  # deferred: prompts is the origin of the rubric text
     return {
         # AI scoring scope: tickets in these states are left un-scored.
         "excluded_states":       [],
@@ -71,6 +72,15 @@ def defaults() -> dict:
 
         # A-checks — appended to the grading rubric; recorded per run
         "a_guidance": "",
+
+        # The grading prompt itself, section by section. Defaults are the exact
+        # text that used to be a string literal in qc_runner, so an admin who
+        # never touches these gets byte-identical grading. Clearing a section
+        # restores its default rather than sending the model an empty rubric —
+        # see prompts._section. The fixed half of the prompt (the idx
+        # correlation, the JSON envelope, the grade vocabularies) is not here
+        # because editing it would not change grading, it would break scoring.
+        **dict(prompts.DEFAULT_SECTIONS),
     }
 
 
@@ -227,6 +237,11 @@ def validate(candidate: dict) -> list:
 
     if len(str(candidate.get("a_guidance", ""))) > 4000:
         errors.append("a_guidance must be 4000 characters or fewer")
+
+    import prompts
+    for key in prompts.SECTION_KEYS:
+        if key in candidate:
+            errors.extend(prompts.validate_section(key, candidate[key]))
 
     return errors
 

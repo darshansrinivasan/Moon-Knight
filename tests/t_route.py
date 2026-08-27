@@ -67,4 +67,41 @@ assert src.count("with db.advisory_lock") == 2, \
 print("   OK  fetch lock precedes qc lock, and they are not nested")
 
 print()
+print("=== POST /api/rules/dry-run is deployed, admin-gated, and cheap to refuse ===")
+# The Rules page treats 404/405/501 as "not deployed yet" and hides the button,
+# so a route that silently stops existing would degrade to a missing feature
+# rather than an error. That is worth pinning.
+r = client.post("/api/rules/dry-run", json={"limit": 1})
+assert r.status_code not in (404, 405, 501), \
+    f"the route must exist — the UI reads {r.status_code} as 'not deployed'"
+print("   OK  the route exists ->", r.status_code)
+
+# A draft that could not be saved must not be billable either: validation has to
+# reject it before any model call is made.
+r = client.post("/api/rules/dry-run", json={"a1_rubric": "x" * 5000})
+print("POST with an unsaveable draft ->", r.status_code, "(expect 400)")
+assert r.status_code == 400, r.text[:200]
+assert "limit is" in r.json()["detail"], r.json()
+print("   OK  rejected before spending anything, with the reason")
+
+r = client.post("/api/rules/dry-run", json={"date": "not-a-date"})
+print("POST with a bad date ->", r.status_code, "(expect 400)")
+assert r.status_code == 400
+print("   OK  the date is validated")
+
+# Members may read the Rules page but not spend the workspace's AI quota on it.
+with db.get_conn() as c:
+    c.execute(
+        "INSERT OR REPLACE INTO app_users (email,name,role,is_active,created_at)"
+        " VALUES ('m@spotdraft.com','M','member',1,'2026-01-01T00:00:00+00:00')"
+    )
+member = auth.issue_session({"email": "m@spotdraft.com", "name": "M"})
+mc = TestClient(appmod.app, follow_redirects=False)
+mc.cookies.set(auth.COOKIE_NAME, member)
+r = mc.post("/api/rules/dry-run", json={"limit": 1})
+print("POST as a member ->", r.status_code, "(expect 403)")
+assert r.status_code == 403, r.text[:200]
+print("   OK  a dry-run spends money, so it is admin-only")
+
+print()
 print("ROUTING OK")
