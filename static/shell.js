@@ -1,11 +1,12 @@
 /* Shared app chrome: left nav, session, fetch 401. Pages set body[data-page]. */
 (function () {
   const PAGES = [
-    { id: "dashboard", href: "/",            label: "Dashboard" },
-    { id: "analytics", href: "/?view=analytics", label: "Analytics" },
-    { id: "runs",      href: "/runs",        label: "Runs" },
-    { id: "rules",     href: "/rules",       label: "Rules" },
-    { id: "admin",     href: "/admin",       label: "Admin", memberLabel: "Settings" },
+    { id: "dashboard",   href: "/",                   label: "Dashboard" },
+    { id: "analytics",   href: "/?view=analytics",    label: "Analytics" },
+    { id: "leaderboard", href: "/leaderboard",        label: "Leaderboard" },
+    { id: "runs",        href: "/runs",               label: "Runs" },
+    { id: "rules",       href: "/rules",              label: "Rules" },
+    { id: "admin",       href: "/admin",              label: "Admin", memberLabel: "Settings" },
   ];
 
   window.QC = window.QC || {};
@@ -55,6 +56,7 @@
     if (location.pathname === "/runs") return "runs";
     if (location.pathname === "/rules") return "rules";
     if (location.pathname === "/admin") return "admin";
+    if (location.pathname === "/leaderboard") return "leaderboard";
     if (new URLSearchParams(location.search).get("view") === "analytics") return "analytics";
     return "dashboard";
   }

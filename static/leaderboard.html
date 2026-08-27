@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leaderboard · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  h2.sec {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
+    color: var(--muted); font-weight: 600; margin: 22px 0 10px;
+  }
+  h2.sec:first-child { margin-top: 0; }
+  .range-bar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin-bottom: 16px;
+  }
+  .range-bar button {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 999px; padding: 5px 13px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .range-bar button.active {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 700px; }
+  th {
+    text-align: left; padding: 9px 12px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+    white-space: nowrap;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .rank {
+    color: var(--muted); font-variant-numeric: tabular-nums; width: 34px;
+  }
+  .rate { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rate.good { color: var(--pass); }
+  .rate.mid  { color: var(--review); }
+  .rate.bad  { color: var(--fail); }
+  .rate.none { color: var(--muted); font-weight: 400; }
+  .bar {
+    height: 5px; border-radius: 3px; background: var(--pending);
+    margin-top: 5px; overflow: hidden; min-width: 60px;
+  }
+  .bar > i { display: block; height: 100%; background: var(--pass); }
+  .delta { font-size: 11px; font-variant-numeric: tabular-nums; }
+  .delta.up   { color: var(--pass); }
+  .delta.down { color: var(--fail); }
+  .delta.flat { color: var(--muted); }
+  .lead { color: var(--muted); font-size: 11px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 10.5px; color: var(--muted);
+    white-space: nowrap;
+  }
+  .warn {
+    background: rgba(245, 158, 11, .1); border: 1px solid var(--review);
+    border-radius: 8px; padding: 10px 13px; margin-bottom: 14px;
+    font-size: 12px; color: var(--text);
+  }
+  .note { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+  .weeks { display: grid; gap: 10px; }
+  .wk {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 14px;
+  }
+  .wk-head {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+    margin-bottom: 8px;
+  }
+  .wk-head b { font-size: 13px; }
+  .wk-head span { color: var(--muted); font-size: 11.5px; }
+  .wk-teams { display: grid; gap: 6px; }
+  .wk-row {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
+    align-items: center; font-size: 12.5px;
+  }
+  .empty { color: var(--muted); padding: 18px; text-align: center; font-size: 13px; }
+</style>
+</head>
+<body class="shell" data-page="leaderboard">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Leaderboard</h1>
+    <span class="muted">QC pass rates by team and by person.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+
+      <div class="range-bar" id="range-bar">
+        <button data-days="7">Last 7 days</button>
+        <button data-days="30" class="active">Last 30 days</button>
+        <button data-days="90">Last 90 days</button>
+        <button data-days="0">All time</button>
+      </div>
+
+      <div id="warnings"></div>
+
+      <h2 class="sec">Teams</h2>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th class="rank">#</th><th>Team</th>
+          <th class="num">Pass rate</th><th class="num">Graded</th>
+          <th class="num">Pass</th><th class="num">Fail</th>
+          <th class="num">Review</th><th class="num">Not scored</th>
+          <th>Top rule failures</th><th class="num">Cost</th>
+        </tr></thead>
+        <tbody id="teams"></tbody>
+      </table></div>
+      <p class="note" id="cost-note"></p>
+
+      <h2 class="sec">Week over week</h2>
+      <div class="weeks" id="weeks"></div>
+
+      <h2 class="sec">People</h2>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th class="rank">#</th><th>Person</th><th>Team</th>
+          <th class="num">Pass rate</th><th class="num">Graded</th>
+          <th class="num">Pass</th><th class="num">Fail</th>
+          <th class="num">Review</th><th class="num">Not scored</th>
+        </tr></thead>
+        <tbody id="people"></tbody>
+      </table></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+
+const RULE_LABELS = {
+  r1: "Functionality", r2: "Category", r3: "Account", r4: "Response time",
+  r5: "Status owner", r7: "Rootly/Jira", r8: "Oncall",
+};
+
+// A rate of null means nothing was graded — render a dash, never 0%, so an
+// idle team is not confused with one that failed everything.
+function rateCell(rate) {
+  if (rate == null) {
+    return `<span class="rate none" title="Nothing graded in this range">—</span>`;
+  }
+  let cls = "bad";
+  if (rate >= 80) cls = "good";
+  else if (rate >= 60) cls = "mid";
+  return `<span class="rate ${cls}">${rate}%</span>
+          <div class="bar"><i style="width:${Math.max(0, Math.min(100, rate))}%"></i></div>`;
+}
+
+function ruleChips(fails) {
+  const entries = Object.entries(fails || {}).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (!entries.length) return `<span class="muted">—</span>`;
+  return `<div class="chips">${entries.map(([k, n]) =>
+    `<span class="chip">${esc(RULE_LABELS[k] || k)} ${n}</span>`).join("")}</div>`;
+}
+
+function renderTeams(d) {
+  const rows = d.teams.slice();
+  // The catch-all group always sits at the bottom: it is not a team, but its
+  // tickets must be visible or the totals stop reconciling.
+  if (d.unteamed && d.unteamed.in_scope > 0) rows.push({ ...d.unteamed, _catchall: true });
+
+  if (!rows.length) {
+    $("teams").innerHTML = `<tr><td colspan="10" class="empty">
+      No coverage groups defined yet — create them in Dashboard → Groups.</td></tr>`;
+    return;
+  }
+
+  let rank = 0;
+  $("teams").innerHTML = rows.map(t => {
+    const label = t._catchall
+      ? `${esc(t.name)}<div class="lead">assignees not in any coverage group</div>`
+      : `${esc(t.name)}<div class="lead">${esc(t.lead_name || t.lead_email || "")}</div>`;
+    const shown = t._catchall ? "—" : ++rank;
+    return `<tr>
+      <td class="rank">${shown}</td>
+      <td>${label}</td>
+      <td class="num">${rateCell(t.pass_rate)}</td>
+      <td class="num">${t.graded}</td>
+      <td class="num">${t.pass}</td>
+      <td class="num">${t.fail}</td>
+      <td class="num">${t.review}</td>
+      <td class="num">${t.pending}</td>
+      <td>${ruleChips(t.rule_fails)}</td>
+      <td class="num">~$${Number(t.cost_usd || 0).toFixed(4)}</td>
+    </tr>`;
+  }).join("");
+
+  $("cost-note").textContent =
+    `Cost is apportioned by graded-ticket share, not measured: scoring spend is `
+    + `recorded per date, not per ticket. Range total ~$`
+    + `${Number(d.range_cost_usd || 0).toFixed(4)}.`;
+}
+
+function renderPeople(d) {
+  if (!d.people.length) {
+    $("people").innerHTML = `<tr><td colspan="9" class="empty">No tickets in this range.</td></tr>`;
+    return;
+  }
+  $("people").innerHTML = d.people.map((p, i) => `<tr>
+    <td class="rank">${p.pass_rate == null ? "—" : i + 1}</td>
+    <td>${esc(p.name)}</td>
+    <td class="muted">${esc(p.team)}</td>
+    <td class="num">${rateCell(p.pass_rate)}</td>
+    <td class="num">${p.graded}</td>
+    <td class="num">${p.pass}</td>
+    <td class="num">${p.fail}</td>
+    <td class="num">${p.review}</td>
+    <td class="num">${p.pending}</td>
+  </tr>`).join("");
+}
+
+function renderWarnings(d) {
+  const host = $("warnings");
+  if (!d.warnings || !d.warnings.length) { host.innerHTML = ""; return; }
+  host.innerHTML = d.warnings.map(w => `<div class="warn">${esc(w)}</div>`).join("");
+}
+
+function deltaCell(team) {
+  if (team.delta == null) return `<span class="delta flat">—</span>`;
+  const cls = team.delta > 0 ? "up" : (team.delta < 0 ? "down" : "flat");
+  const sign = team.delta > 0 ? "+" : "";
+  return `<span class="delta ${cls}">${sign}${team.delta} pts</span>`;
+}
+
+function renderWeeks(wk) {
+  if (!wk || !wk.buckets.length) {
+    $("weeks").innerHTML = `<div class="empty">No weekly data yet.</div>`;
+    return;
+  }
+  $("weeks").innerHTML = wk.buckets.map(b => {
+    const teams = b.teams.filter(t => t.graded > 0);
+    const body = teams.length
+      ? teams.map(t => `<div class="wk-row">
+            <span>${esc(t.name)}</span>
+            <span>${rateCell(t.pass_rate)}</span>
+            <span>${deltaCell(t)}</span>
+          </div>`).join("")
+      : `<div class="muted" style="font-size:12px">Nothing graded this week.</div>`;
+    return `<div class="wk">
+      <div class="wk-head">
+        <b>${esc(b.start)} → ${esc(b.end)}</b>
+        <span>${b.totals.graded} graded · ${b.totals.in_scope} in scope</span>
+      </div>
+      <div class="wk-teams">${body}</div>
+    </div>`;
+  }).join("");
+}
+
+function rangeFor(days) {
+  if (!days) return {};
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - (days - 1));
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+                 + `-${String(d.getDate()).padStart(2, "0")}`;
+  return { start: fmt(start), end: fmt(end) };
+}
+
+let loadToken = 0;
+
+async function load(days) {
+  const token = ++loadToken;
+  const { start, end } = rangeFor(days);
+  const qs = start ? `?start=${start}&end=${end}` : "";
+  try {
+    const d = await QC.api(`/api/leaderboard${qs}`);
+    if (token !== loadToken) return;   // a newer range already landed
+    renderWarnings(d);
+    renderTeams(d);
+    renderPeople(d);
+  } catch (e) {
+    $("teams").innerHTML = `<tr><td colspan="10" class="empty">${esc(e.message)}</td></tr>`;
+  }
+
+  try {
+    const wk = await QC.api("/api/leaderboard/weekly?weeks=6");
+    if (token !== loadToken) return;
+    renderWeeks(wk);
+  } catch (e) {
+    $("weeks").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+  }
+}
+
+$("range-bar").addEventListener("click", ev => {
+  const btn = ev.target.closest("button[data-days]");
+  if (!btn) return;
+  document.querySelectorAll("#range-bar button")
+    .forEach(b => b.classList.toggle("active", b === btn));
+  load(Number(btn.dataset.days));
+});
+
+(async () => {
+  await QC.ready;
+  await load(30);
+})();
+</script>
+</body>
+</html>

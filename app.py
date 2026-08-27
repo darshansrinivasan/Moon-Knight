@@ -21,6 +21,7 @@ load_dotenv()
 import auth
 import db
 import gcp
+import leaderboard
 import pylon
 import qc_runner
 import resync_overall
@@ -1012,6 +1013,34 @@ async def get_analytics(
             return [dict(r) for r in rows]
     return {"month": month, "start": start, "end": end,
             "assignees": await asyncio.to_thread(query)}
+
+
+# ── leaderboard ───────────────────────────────────────────────────────────────
+
+@app.get("/leaderboard", response_class=HTMLResponse)
+async def leaderboard_page(user: dict = Depends(auth.require_user)):
+    return _page("leaderboard.html")
+
+
+@app.get("/api/leaderboard")
+async def get_leaderboard(start: str | None = None, end: str | None = None,
+                          user: dict = Depends(auth.require_user)):
+    """Team and individual standings. Both dates or neither."""
+    if bool(start) != bool(end):
+        raise HTTPException(400, "Provide both start and end, or neither")
+    if start and end:
+        if _require_date(start) > _require_date(end):
+            raise HTTPException(400, "start must not be after end")
+    return await asyncio.to_thread(leaderboard.build, start, end)
+
+
+@app.get("/api/leaderboard/weekly")
+async def get_weekly_leaderboard(weeks: int = 8,
+                                 user: dict = Depends(auth.require_user)):
+    """Week-over-week standings, most recent week first."""
+    if not 1 <= weeks <= 26:
+        raise HTTPException(400, "weeks must be between 1 and 26")
+    return await asyncio.to_thread(leaderboard.build_weekly, weeks)
 
 
 # ── stats ─────────────────────────────────────────────────────────────────────
