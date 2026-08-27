@@ -22,6 +22,7 @@ load_dotenv()
 
 import auth
 import db
+import drilldown
 import gcp
 import leaderboard
 import pylon
@@ -1133,6 +1134,33 @@ async def get_leaderboard(start: str | None = None, end: str | None = None,
         if _require_date(start) > _require_date(end):
             raise HTTPException(400, "start must not be after end")
     return await asyncio.to_thread(leaderboard.build, start, end)
+
+
+@app.get("/api/analytics/tickets")
+async def get_failing_tickets(
+    check: str,
+    assignee: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 200,
+    user: dict = Depends(auth.require_user),
+):
+    """Tickets where one named check failed — the analytics drill-down.
+
+    `check` is validated against an allowlist inside `drilldown`; an unknown
+    value is rejected rather than quietly returning everything.
+    """
+    if start:
+        _require_date(start)
+    if end:
+        _require_date(end)
+    if start and end and _require_date(start) > _require_date(end):
+        raise HTTPException(400, "start must not be after end")
+    try:
+        return await asyncio.to_thread(
+            drilldown.tickets_failing, check, assignee, start, end, limit)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/leaderboard/weekly")

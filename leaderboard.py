@@ -29,17 +29,24 @@ logger = logging.getLogger(__name__)
 UNTEAMED = "No team"
 
 # Latest sign-off per ticket, and the grade that actually applies. Constant SQL;
-# no caller input is interpolated.
-_LATEST_REVIEW = """
+# no caller input is interpolated. Public because every surface that reports a
+# grade must use these — reading ai_checks directly is what previously made two
+# pages disagree. The underscored aliases below are kept for existing callers.
+LATEST_REVIEW_SQL = """
     SELECT r.ticket_id, r.decision
     FROM ticket_reviews r
     JOIN (SELECT ticket_id, MAX(id) AS max_id
           FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
 """
-_EFFECTIVE_GRADE = (
+EFFECTIVE_GRADE_SQL = (
     "COALESCE(CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,"
     " ac.overall_result)"
 )
+
+# Kept so existing in-module references keep working; new code should use the
+# public names above.
+_LATEST_REVIEW = LATEST_REVIEW_SQL
+_EFFECTIVE_GRADE = EFFECTIVE_GRADE_SQL
 
 RULE_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8")
 

@@ -54,6 +54,93 @@
     overflow: hidden;
   }
 
+  /* ── right rail: context, collapsible ──────────────────────────────────
+     The ticket list is the thing you came for; this is supporting detail, so
+     it gives way first when the window is narrow. */
+  .rail {
+    width: 258px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--border);
+    padding: var(--space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    overflow-y: auto;
+  }
+  .rail.collapsed { display: none; }
+  .rail-section { display: flex; flex-direction: column; gap: var(--space-3); }
+  .rail-title {
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: color-mix(in srgb, var(--color-text) 45%, transparent);
+  }
+  .rail-bars { display: flex; flex-direction: column; gap: var(--space-3); }
+  .rail-bar-head {
+    display: flex; justify-content: space-between; gap: var(--space-3);
+    font-size: 11px; margin-bottom: 4px;
+  }
+  .rail-bar-head b { font-variant-numeric: tabular-nums; font-weight: 500;
+    color: color-mix(in srgb, var(--color-text) 55%, transparent); }
+  .rail-bar-track {
+    height: 3px; border-radius: 2px;
+    background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  }
+  .rail-bar-fill { height: 3px; border-radius: 2px; }
+  .rail-empty {
+    font-size: 11.5px;
+    color: color-mix(in srgb, var(--color-text) 40%, transparent);
+  }
+  .rail-legend { display: flex; flex-direction: column; gap: 5px; }
+  .legend-row {
+    display: flex; align-items: center; gap: var(--space-3); font-size: 10.5px;
+    color: color-mix(in srgb, var(--color-text) 60%, transparent);
+  }
+  .legend-row .k {
+    width: 18px; flex: none; font-size: 10px;
+    color: color-mix(in srgb, var(--color-text) 40%, transparent);
+  }
+  .rail-toggle {
+    font-size: 11px; padding: 4px 9px;
+  }
+
+  /* ── the check matrix ─────────────────────────────────────────────────
+     Twelve 16×20 cells replace twelve full-width chips, which used to eat the
+     row and push the verdict off-screen. Every state carries a GLYPH as well as
+     a fill: this grid is the primary signal on the page, and roughly 8% of men
+     have red-green colour blindness, so colour alone would not be readable. */
+  .mx {
+    display: grid; grid-template-columns: repeat(12, 16px); gap: 3px;
+    flex: none;
+  }
+  .mx-head {
+    display: grid; grid-template-columns: repeat(12, 16px); gap: 3px;
+    font-size: 9px; text-align: center;
+    color: color-mix(in srgb, var(--color-text) 42%, transparent);
+  }
+  .mx-cell {
+    width: 16px; height: 20px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 600; line-height: 1; cursor: default;
+  }
+  .c-pass {
+    background: color-mix(in srgb, var(--color-text) 11%, transparent);
+    color: color-mix(in srgb, var(--color-text) 40%, transparent);
+  }
+  .c-fail { background: var(--fail); color: #20111a; }
+  .c-warn { background: var(--review); color: #241a0d; }
+  .c-na {
+    border: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
+    color: transparent;
+  }
+  .c-none {
+    border: 1px dashed color-mix(in srgb, var(--color-text) 16%, transparent);
+    color: transparent;
+  }
+
+  @media (max-width: 1400px) {
+    /* The rail is context; below this the ticket list needs the width more. */
+    .rail { display: none; }
+  }
+
   /* ── left: calendar ── */
   .cal-panel {
     width: 280px;
@@ -808,12 +895,18 @@
   <div class="stat-pill" id="stat-total">Loading…</div>
   <div class="stat-pill" id="stat-ai">AI checks: <b>—</b></div>
   <div class="spacer"></div>
+  <!-- Real buttons, not clickable divs: these need keyboard focus and an
+       announced expanded/collapsed state. -->
+  <button class="ghost rail-toggle" id="cal-toggle" type="button"
+          aria-expanded="true" aria-controls="cal-panel">‹ Calendar</button>
+  <button class="ghost rail-toggle" id="rail-toggle" type="button"
+          aria-expanded="true" aria-controls="rail">Insights ›</button>
 </header>
 
 <div class="layout">
 
   <!-- Calendar -->
-  <div class="cal-panel">
+  <div class="cal-panel" id="cal-panel">
     <div class="cal-nav">
       <button class="nav-btn" id="prev-month">&#8249;</button>
       <h2 id="cal-title"></h2>
@@ -843,6 +936,14 @@
           <div id="group-ms-list"></div>
         </div>
       </div>
+      <div class="assignee-ms" id="state-ms" style="display:none">
+        <button class="assignee-ms-btn" id="state-ms-btn" title="Filter by the ticket's own status in Pylon">All statuses</button>
+        <div class="assignee-ms-dropdown" id="state-ms-dropdown">
+          <button class="assignee-ms-clear" id="state-ms-clear">All statuses</button>
+          <hr class="assignee-ms-divider">
+          <div id="state-ms-list"></div>
+        </div>
+      </div>
       <div class="assignee-ms" id="assignee-ms">
         <button class="assignee-ms-btn" id="assignee-ms-btn" title="Filter by assignee">All assignees</button>
         <div class="assignee-ms-dropdown" id="assignee-ms-dropdown">
@@ -856,13 +957,14 @@
       <button class="refetch-btn download-btn" id="download-btn" title="Download QC results as CSV" style="display:none">↓ CSV</button>
     </div>
     <div class="filter-bar" id="filter-bar">
-      <span class="filter-label">Status</span>
+      <span class="filter-label">Verdict</span>
       <button class="status-pill" data-status="">All</button>
       <button class="status-pill" data-status="Pass">Pass</button>
       <button class="status-pill" data-status="Fail">Fail</button>
       <button class="status-pill" data-status="Needs Review">Needs Review</button>
       <button class="status-pill" data-status="pending">Pending</button>
       <button class="status-pill" data-status="unreviewed">Unreviewed</button>
+      <button class="status-pill" data-status="reviewed">Reviewed</button>
     </div>
     <div class="ticket-list" id="ticket-list">
       <div class="empty-state">
@@ -871,6 +973,34 @@
       </div>
     </div>
   </div>
+
+  <!-- ── right rail: where checks fail, and what the checks mean ──
+       Collapsible, because on a laptop the ticket list is the thing you came
+       for and this is context. State persists per viewer. -->
+  <aside class="rail" id="rail" aria-label="Check insights">
+    <section class="rail-section">
+      <div class="rail-title">Where checks fail · 7 days</div>
+      <div id="rail-fails" class="rail-bars">
+        <div class="rail-empty">Loading…</div>
+      </div>
+    </section>
+
+    <section class="rail-section">
+      <div class="rail-title">Check legend</div>
+      <div class="rail-legend" id="rail-legend"></div>
+    </section>
+
+    <section class="rail-section">
+      <div class="rail-title">Cell states</div>
+      <div class="rail-legend">
+        <div class="legend-row"><span class="mx-cell c-pass">✓</span> Pass</div>
+        <div class="legend-row"><span class="mx-cell c-fail">✕</span> Fail</div>
+        <div class="legend-row"><span class="mx-cell c-warn">!</span> Attention</div>
+        <div class="legend-row"><span class="mx-cell c-na"></span> Not applicable</div>
+        <div class="legend-row"><span class="mx-cell c-none"></span> Not evaluated</div>
+      </div>
+    </section>
+  </aside>
 
 </div>
 
@@ -948,6 +1078,7 @@ let daySpend     = null; // cumulative spend for the day: {runs, total_cost_usd,
 // them, rather than beside their UI code further down.
 const selectedAssignees = new Set();
 const selectedGroups    = new Set(); // coverage id strings, plus "ungrouped"
+const selectedStates    = new Set(); // Pylon ticket states: closed, archived, …
 
 // ── filter persistence ───────────────────────────────────────────────────────
 // Filters used to reset on every day change and vanish on reload. Kept per
@@ -962,6 +1093,7 @@ function saveFilters() {
       status:    statusFilter,
       assignees: [...selectedAssignees],
       groups:    [...selectedGroups],
+      states:    [...selectedStates],
     }));
   } catch { /* storage unavailable — filters simply do not persist */ }
 }
@@ -975,6 +1107,7 @@ function loadSavedFilters() {
       status:    typeof saved.status === "string" ? saved.status : "",
       assignees: Array.isArray(saved.assignees) ? saved.assignees : [],
       groups:    Array.isArray(saved.groups) ? saved.groups : [],
+      states:    Array.isArray(saved.states) ? saved.states : [],
     };
   } catch {
     return null;
@@ -985,6 +1118,7 @@ function clearSavedFilters() {
   statusFilter = "";
   selectedAssignees.clear();
   selectedGroups.clear();
+  selectedStates.clear();
   try { localStorage.removeItem(FILTER_KEY); } catch { /* nothing to clear */ }
 }
 let coverages    = [];   // review coverage groups from Admin
@@ -1118,6 +1252,7 @@ async function selectDay(dateStr) {
   dlBtn.style.display      = "none"; dlBtn.disabled      = false;
   document.getElementById("assignee-ms").style.display = "none";
   document.getElementById("group-ms").style.display = "none";
+  document.getElementById("state-ms").style.display = "none";
   // Filters deliberately survive a day change — they are the user's working
   // view, not a property of the date. populateAssigneeFilter reconciles them
   // against what this day actually contains.
@@ -1366,6 +1501,60 @@ const CHECKS = {
   a5: { label: "Closure",        desc: "A5 (AI): ticket wasn't closed while customer ask was still open" },
 };
 
+// The matrix's fixed column order and two-letter heads. Seven R-checks then
+// five A-checks, so a row reads deterministic-then-AI left to right. R6 and R9
+// are dead (never computed / always N/A) and stay out.
+const MATRIX = [
+  ["r1", "Fn"], ["r2", "Ct"], ["r3", "Ac"], ["r4", "RT"],
+  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"],
+  ["a1", "CA"], ["a2", "Sn"], ["a3", "Rs"], ["a4", "SC"], ["a5", "Cl"],
+];
+
+// Map a stored check value to a cell state. Deliberately mirrors the backend:
+// _compute_overall treats A3='Poor' and A5='Fail' as failures, and A2 as never
+// failing at all — so sentiment shows as "attention" but is not a fail. The UI
+// must not contradict the stored grade.
+function cellState(key, value) {
+  if (value === null || value === undefined || value === "") return "none";
+  const v = String(value);
+  if (v === "N/A") return "na";
+  if (key === "a2") {
+    return ["Concerned", "Frustrated", "Urgent"].includes(v) ? "warn" : "pass";
+  }
+  if (key === "a3") {
+    if (v === "Poor") return "fail";
+    return v === "Needs Improvement" ? "warn" : "pass";
+  }
+  if (v === "Fail") return "fail";
+  if (v === "Needs Review") return "warn";
+  return "pass";
+}
+
+const CELL_GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "", none: "" };
+const CELL_WORD  = {
+  pass: "passed", fail: "failed", warn: "needs attention",
+  na: "not applicable", none: "not evaluated",
+};
+
+// One row of twelve cells. Each carries a glyph AND a title AND an aria-label:
+// this grid is the primary signal on the page, so it can never rely on colour
+// alone.
+function matrixHtml(t) {
+  const cells = MATRIX.map(([key, short]) => {
+    const raw = t[key];
+    const st = cellState(key, raw);
+    const label = (CHECKS[key] || {}).label || key.toUpperCase();
+    const shown = raw === null || raw === undefined || raw === ""
+      ? "not evaluated" : raw;
+    const tip = `${label}: ${shown}`;
+    return `<span class="mx-cell c-${st}" title="${esc(tip)}"
+                  aria-label="${esc(`${label} ${CELL_WORD[st]}`)}"
+            >${CELL_GLYPH[st]}</span>`;
+  }).join("");
+  return `<div class="mx" role="group"
+               aria-label="Check results">${cells}</div>`;
+}
+
 // ── ticket rendering ─────────────────────────────────────────────────────────
 function checkBadge(key, value) {
   const meta    = CHECKS[key] || { label: key.toUpperCase(), desc: key };
@@ -1515,12 +1704,13 @@ function renderTickets(tickets) {
       ? `<span class="review-mark" title="Signed off by ${esc(t.review.reviewer_name || t.review.reviewer_email)}">signed off</span>`
       : "";
 
-    const checksHtml = ["r1","r2","r3","r4","r5","r7","r8"].map(k =>
-      checkBadge(k, t[k])
-    ).join("") +
-    ["a1","a2","a3","a4","a5"].map(k =>
-      checkBadge(k, t[k])
-    ).join("");
+    // The compact matrix replaces twelve full-width chips, which consumed the
+    // row and pushed the verdict off-screen. The named chips stay, inside the
+    // expanded detail, where there is room to read them.
+    const checksHtml = matrixHtml(t);
+    const detailChecksHtml =
+      ["r1","r2","r3","r4","r5","r7","r8"].map(k => checkBadge(k, t[k])).join("")
+      + ["a1","a2","a3","a4","a5"].map(k => checkBadge(k, t[k])).join("");
 
     const stateText = (t.state || "").replace(/_/g," ");
     const assignee  = t.assignee_name || "Unassigned";
@@ -1542,6 +1732,7 @@ function renderTickets(tickets) {
       </div>
       <div class="checks-row">${checksHtml}</div>
       <div class="card-detail" id="detail-${esc(t.id)}">
+        <div class="checks-row detail-checks">${detailChecksHtml}</div>
         ${t.ai_notes ? `<div class="ai-notes"><b>AI Notes:</b> ${esc(t.ai_notes)}</div>` : ""}
         ${reviewBarHtml(t)}
         <div class="messages-section" id="msgs-${esc(t.id)}">
@@ -1669,6 +1860,63 @@ function groupName(id) {
   return c ? c.name : id;
 }
 
+// Pylon's own ticket status, as its own filter axis. "closed" or "archived"
+// says nothing about whether the ticket passed QC, so this cannot be folded
+// into the verdict pills.
+function stateLabel(state) {
+  // waiting_on_csm → "Waiting on csm"; the raw values are snake_case.
+  const s = (state || "—").replace(/_/g, " ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function _updateStateBtn() {
+  const btn = document.getElementById("state-ms-btn");
+  if (!btn) return;
+  if (selectedStates.size === 0) btn.textContent = "All statuses";
+  else if (selectedStates.size === 1) btn.textContent = stateLabel([...selectedStates][0]);
+  else btn.textContent = `${selectedStates.size} statuses`;
+}
+
+function populateStateFilter(tickets) {
+  const ms = document.getElementById("state-ms");
+  const list = document.getElementById("state-ms-list");
+  if (!ms || !list) return;
+
+  const counts = new Map();
+  for (const t of tickets) {
+    const s = t.state || "—";
+    counts.set(s, (counts.get(s) || 0) + 1);
+  }
+  const states = [...counts.keys()].sort();
+
+  // Drop a selection this day has no tickets for, so a filter carried from
+  // another date cannot silently hide everything.
+  for (const s of [...selectedStates]) {
+    if (!counts.has(s)) selectedStates.delete(s);
+  }
+
+  list.innerHTML = states.map(s => `
+    <label class="assignee-ms-item">
+      <input type="checkbox" value="${esc(s)}" ${selectedStates.has(s) ? "checked" : ""}>
+      ${esc(stateLabel(s))} <span class="muted">(${counts.get(s)})</span>
+    </label>
+  `).join("");
+
+  list.querySelectorAll("input[type=checkbox]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedStates.add(cb.value);
+      else selectedStates.delete(cb.value);
+      _updateStateBtn();
+      populateStatusPills();
+      applyFilters();
+      saveFilters();
+    });
+  });
+
+  _updateStateBtn();
+  ms.style.display = tickets.length ? "block" : "none";
+}
+
 function _updateGroupBtn() {
   const btn = document.getElementById("group-ms-btn");
   if (selectedGroups.size === 0) {
@@ -1782,25 +2030,35 @@ function populateAssigneeFilter(tickets) {
   _updateAssigneeBtn();
   ms.style.display = tickets.length ? "block" : "none";
   populateGroupFilter(tickets);
+  populateStateFilter(tickets);
 }
+
+// "Unreviewed" and "Reviewed" are about human sign-off, not the verdict, so
+// they are counted from `t.review` rather than from overall_result. A ticket the
+// AI has not graded yet is neither — there is nothing to sign off.
+const PILL_LABELS = {
+  "": "All", pending: "Pending",
+  unreviewed: "Unreviewed", reviewed: "Reviewed",
+};
 
 function populateStatusPills() {
   const tickets = scopedTickets();
-  const counts = { "Pass": 0, "Fail": 0, "Needs Review": 0, "pending": 0, "unreviewed": 0 };
+  const counts = {
+    "Pass": 0, "Fail": 0, "Needs Review": 0,
+    pending: 0, unreviewed: 0, reviewed: 0,
+  };
   for (const t of tickets) {
     const s = t.overall_result || "pending";
     if (s in counts) counts[s]++;
     if (t.ai_result && !t.review) counts.unreviewed++;
+    if (t.review) counts.reviewed++;
   }
   document.querySelectorAll(".status-pill").forEach(pill => {
     const s = pill.dataset.status;
-    if (s === "") {
-      pill.textContent = `All (${tickets.length})`;
-    } else if (s === "unreviewed") {
-      pill.textContent = `Unreviewed (${counts.unreviewed || 0})`;
-    } else {
-      pill.textContent = `${s === "pending" ? "Pending" : s} (${counts[s] || 0})`;
-    }
+    const label = PILL_LABELS[s] ?? s;
+    pill.textContent = s === ""
+      ? `All (${tickets.length})`
+      : `${label} (${counts[s] || 0})`;
   });
   document.getElementById("filter-bar").style.display = allTickets.length ? "flex" : "none";
   setActivePill(statusFilter);
@@ -1847,10 +2105,18 @@ function applyFilters() {
     filtered = filtered.filter(t => !t.overall_result);
   } else if (statusFilter === "unreviewed") {
     filtered = filtered.filter(t => t.ai_result && !t.review);
+  } else if (statusFilter === "reviewed") {
+    filtered = filtered.filter(t => !!t.review);
   } else if (statusFilter) {
     filtered = filtered.filter(t => t.overall_result === statusFilter);
   }
-  const isFiltered = selectedAssignees.size > 0 || selectedGroups.size > 0 || statusFilter;
+  // Ticket state (Pylon's own status) is a separate axis from the QC verdict —
+  // "closed" says nothing about whether it passed.
+  if (selectedStates.size > 0) {
+    filtered = filtered.filter(t => selectedStates.has(t.state || "—"));
+  }
+  const isFiltered = selectedAssignees.size > 0 || selectedGroups.size > 0
+                     || selectedStates.size > 0 || statusFilter;
 
   // Filters now persist across days, so a filter carried onto a day it matches
   // nothing on would otherwise show an empty list with no explanation. Offer
@@ -1869,6 +2135,7 @@ function applyFilters() {
         clearSavedFilters();
         _updateAssigneeBtn();
         _updateGroupBtn();
+        _updateStateBtn();
         setActivePill("");
         populateAssigneeFilter(allTickets);
         populateStatusPills(allTickets);
@@ -1884,6 +2151,101 @@ function applyFilters() {
     : `${allTickets.length} tickets`;
   const cost = formatCost(lastRun, daySpend);
   document.getElementById("panel-meta").textContent = cost ? `${tickets} · ${cost}` : tickets;
+}
+
+// ── right rail ───────────────────────────────────────────────────────────────
+const CHROME_KEY = "qc.chrome.v1";
+
+function loadChrome() {
+  try {
+    return JSON.parse(localStorage.getItem(CHROME_KEY) || "{}") || {};
+  } catch { return {}; }
+}
+
+function saveChrome(patch) {
+  try {
+    localStorage.setItem(CHROME_KEY, JSON.stringify({ ...loadChrome(), ...patch }));
+  } catch { /* storage unavailable — the layout just does not persist */ }
+}
+
+function setRailCollapsed(collapsed) {
+  const rail = document.getElementById("rail");
+  const btn = document.getElementById("rail-toggle");
+  if (rail) rail.classList.toggle("collapsed", collapsed);
+  if (btn) {
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    btn.textContent = collapsed ? "‹ Insights" : "Insights ›";
+  }
+  saveChrome({ railCollapsed: collapsed });
+}
+
+function setCalCollapsed(collapsed) {
+  const cal = document.querySelector(".cal-panel");
+  const btn = document.getElementById("cal-toggle");
+  if (cal) cal.style.display = collapsed ? "none" : "flex";
+  if (btn) {
+    btn.setAttribute("aria-expanded", String(!collapsed));
+    btn.textContent = collapsed ? "Calendar ›" : "‹ Calendar";
+  }
+  saveChrome({ calCollapsed: collapsed });
+}
+
+// The check legend is derived from CHECKS, so a renamed check cannot drift out
+// of step with the matrix heads.
+function renderRailLegend() {
+  const host = document.getElementById("rail-legend");
+  if (!host) return;
+  host.innerHTML = MATRIX.map(([key, short]) => `
+    <div class="legend-row">
+      <span class="k">${esc(short)}</span>${esc((CHECKS[key] || {}).label || key)}
+    </div>`).join("");
+}
+
+// "Where checks fail" over the last 7 days. Reuses /api/leaderboard rather than
+// adding an endpoint: it already aggregates rule_fails over a date range.
+async function loadRailFails() {
+  const host = document.getElementById("rail-fails");
+  if (!host) return;
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - 6);
+
+  try {
+    const d = await getJSON(
+      `/api/leaderboard?start=${fmtDate(start)}&end=${fmtDate(end)}`);
+    const totals = {};
+    for (const row of [...(d.teams || []), d.unteamed || {}]) {
+      for (const [k, n] of Object.entries(row.rule_fails || {})) {
+        totals[k] = (totals[k] || 0) + n;
+      }
+    }
+    const rows = Object.entries(totals)
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6);
+
+    if (!rows.length) {
+      host.innerHTML = `<div class="rail-empty">No check failures in the last 7 days.</div>`;
+      return;
+    }
+    const max = rows[0][1];
+    host.innerHTML = rows.map(([k, n]) => {
+      const pct = Math.round((n / max) * 100);
+      // Above a third of the worst offender reads as a real pattern rather
+      // than noise, so it takes the fail colour.
+      const colour = n > max / 3 ? "var(--fail)" : "var(--color-accent-500)";
+      return `<div>
+        <div class="rail-bar-head">
+          <span>${esc((CHECKS[k] || {}).label || k)}</span><b>${n}</b>
+        </div>
+        <div class="rail-bar-track">
+          <div class="rail-bar-fill" style="width:${pct}%;background:${colour}"></div>
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    host.innerHTML = `<div class="rail-empty">${esc(e.message)}</div>`;
+  }
 }
 
 // ── stats ────────────────────────────────────────────────────────────────────
@@ -2226,10 +2588,79 @@ function renderAnalytics(assignees) {
     _updateGroupBtn();
     populateStatusPills();
     applyFilters();
+    saveFilters();          // clearing is a filter change like any other
   });
 
   document.addEventListener("click", (e) => {
     if (!document.getElementById("group-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
+
+// Collapsible chrome. Both panes remember their state per viewer.
+(function wireChrome() {
+  const railBtn = document.getElementById("rail-toggle");
+  const calBtn = document.getElementById("cal-toggle");
+  const saved = loadChrome();
+
+  // Below the rail's media-query breakpoint it is hidden by CSS anyway, so
+  // start collapsed there rather than showing a toggle that appears to do
+  // nothing.
+  const narrow = window.matchMedia("(max-width: 1400px)").matches;
+  setRailCollapsed(saved.railCollapsed ?? narrow);
+  setCalCollapsed(saved.calCollapsed ?? false);
+
+  if (railBtn) {
+    railBtn.addEventListener("click", () => {
+      const rail = document.getElementById("rail");
+      setRailCollapsed(!rail.classList.contains("collapsed"));
+    });
+  }
+  if (calBtn) {
+    calBtn.addEventListener("click", () => {
+      const cal = document.getElementById("cal-panel");
+      setCalCollapsed(cal.style.display !== "none");
+    });
+  }
+
+  renderRailLegend();
+})();
+
+// Ticket-status filter. Same shape as the group picker above rather than a new
+// interaction pattern for the same job.
+(function wireStateFilter() {
+  const btn  = document.getElementById("state-ms-btn");
+  const drop = document.getElementById("state-ms-dropdown");
+  const clr  = document.getElementById("state-ms-clear");
+  if (!btn || !drop || !clr) return;
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+
+  clr.addEventListener("click", () => {
+    selectedStates.clear();
+    drop.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = false);
+    _updateStateBtn();
+    populateStatusPills();
+    applyFilters();
+    saveFilters();
+  });
+
+  document.addEventListener("click", (e) => {
+    const host = document.getElementById("state-ms");
+    if (host && !host.contains(e.target)) {
       drop.classList.remove("open");
       btn.classList.remove("open");
     }
@@ -2321,12 +2752,16 @@ document.getElementById("next-month").addEventListener("click", () => {
       selectedGroups.clear();
       saved.groups.forEach(g => selectedGroups.add(g));
     }
+    selectedStates.clear();
+    saved.states.forEach(s => selectedStates.add(s));
     setActivePill(statusFilter);
     _updateAssigneeBtn();
     _updateGroupBtn();
+    _updateStateBtn();
   }
 
   await renderCalendar();
+  loadRailFails();          // not awaited: the rail is context, not blocking
   const params = new URLSearchParams(location.search);
   if (params.get("view") === "analytics") {
     showAnalytics();
