@@ -121,14 +121,14 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 9px; font-weight: 600; line-height: 1; cursor: default;
   }
-  /* Pass reads green and N/A reads grey. A grey pass was indistinguishable
-     from "nothing happened", which is the opposite of what it means — the
-     neutral tone belongs to the states that genuinely carry no verdict. */
-  .c-pass {
-    background: color-mix(in srgb, var(--pass) 22%, transparent);
-    color: var(--pass);
-  }
-  .c-fail { background: var(--fail); color: #20111a; }
+  /* The three verdict states share one holding: a saturated fill in their own
+     hue, with the glyph in a near-black drawn from that same hue. Pass was a
+     22% tint with a coloured glyph, which made it read as a weaker class of
+     statement than Fail and Attention — but a pass is a verdict, not a hint,
+     and a grid where one verdict is drawn faintly invites you to skim past it.
+     Grey stays reserved for the states that genuinely carry no verdict. */
+  .c-pass { background: var(--pass);   color: #10201a; }
+  .c-fail { background: var(--fail);   color: #20111a; }
   .c-warn { background: var(--review); color: #241a0d; }
   /* N/A: the rule does not apply. Grey, with a visible box. */
   .c-na {

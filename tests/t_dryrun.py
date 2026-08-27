@@ -60,8 +60,8 @@ def seed(n=3, date="2026-08-26", graded=True):
                  f"https://app.usepylon.com/issues?issueNumber={100+i}",
                  "closed", "Ann", "acc", "{}", "email", 1, date),
             )
-            c.execute("INSERT INTO rule_checks (ticket_id,r1,r2,r3,r4,r5,r7,r8)"
-                      " VALUES (?,'Pass','Pass','Pass','Pass','Pass','N/A','N/A')",
+            c.execute("INSERT INTO rule_checks (ticket_id,r1,r2,r3,r4,r5,r7,r8,r9)"
+                      " VALUES (?,'Pass','Pass','Pass','Pass','Pass','N/A','N/A','N/A')",
                       (tid,))
             c.execute("INSERT INTO messages (ticket_id,author_name,is_customer,"
                       "is_private,message_html,timestamp) VALUES (?,?,1,0,?,?)",
@@ -170,6 +170,35 @@ ok("the verdict is listed as changed", "overall" in r["changed"],
 ok("overall is compared", "overall" in dryrun.COMPARED)
 ok("the note comes back for review", r["ai_notes"].startswith("A3 Poor"))
 ok("the ticket is linkable", r["link"].startswith("https://app.usepylon.com/"))
+
+print()
+print("=== the draft verdict is computed from every R-check ===")
+# The sample query missed r9 at first. A missing column reads as "not Fail", so
+# the draft verdict came out kinder than the one the admin would actually get —
+# a comparison that quietly under-reports is worse than no comparison.
+seed(1)
+qc_runner._score_batch = stub([PASS])
+sampled = dryrun._sample(1)
+for key in qc_runner.R_CHECK_KEYS:
+    ok(f"_sample selects {key}", key in sampled[0],
+       "absent columns silently soften the verdict")
+
+# And if it ever stops selecting one, that must fail loudly rather than skew.
+thin = {k: v for k, v in sampled[0].items() if k != "r9"}
+try:
+    dryrun._draft_grades(thin, PASS)
+    ok("an incomplete rule set is refused", False)
+except KeyError as e:
+    ok("an incomplete rule set is refused", "r9" in str(e), str(e)[:70])
+
+# A failing R-check must drag the draft verdict down even when every A-grade is
+# clean, because that is what a real run would do.
+with db.get_conn() as c:
+    c.execute("UPDATE rule_checks SET r9 = 'Fail' WHERE ticket_id = 't0'")
+r = dryrun.run(None, limit=1)["results"][0]
+check("a failing R-check fails the draft verdict", r["draft"]["overall"], "Fail")
+with db.get_conn() as c:
+    c.execute("UPDATE rule_checks SET r9 = 'N/A' WHERE ticket_id = 't0'")
 
 print()
 print("=== an unchanged draft reports no change ===")

@@ -73,7 +73,7 @@ def _sample(limit: int, date: str | None = None) -> list[dict]:
                    t.custom_fields, t.source, t.customer_portal_visible,
                    t.fetch_date,
                    a.name AS account_name, a.type AS account_type,
-                   rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8,
+                   rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
                    ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.overall_result
             FROM tickets t
             LEFT JOIN accounts    a  ON t.account_id = a.id
@@ -110,6 +110,14 @@ def _draft_grades(t: dict, result: dict) -> dict:
     the admin would actually get — not the A-grades alone.
     """
     grades = {k: result.get(k) for k in prompts.A_CHECK_KEYS}
+    # Every R-check the real verdict depends on, or the comparison lies: a
+    # missing column reads as "not Fail" and the draft verdict comes out kinder
+    # than the one the admin would actually get. _sample must select all of
+    # R_CHECK_KEYS for this to hold.
+    missing = [k for k in qc_runner.R_CHECK_KEYS if k not in t]
+    if missing:
+        raise KeyError(f"_sample did not select {missing} — the draft verdict "
+                       f"would be computed from an incomplete rule set")
     r_checks = {k: t.get(k) for k in qc_runner.R_CHECK_KEYS}
     grades["overall"] = qc_runner._compute_overall(r_checks, grades)
     return grades

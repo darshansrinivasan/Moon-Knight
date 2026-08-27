@@ -81,6 +81,32 @@ for name in ["--pass", "--fail", "--review"]:
           "--color-accent" not in line and line.strip() != "", line.strip())
 
 print()
+print("=== the three verdict cells share one holding ===")
+# Pass was a 22% tint with a coloured glyph while Fail and Attention were solid
+# fills with a near-black glyph, so a pass read as a weaker class of statement
+# than the other two. All three are verdicts and are now drawn the same way;
+# only the states that carry no verdict (N/A, not evaluated) stay neutral.
+INDEX = (STATIC / "index.html").read_text()
+for cls, token in (("c-pass", "--pass"), ("c-fail", "--fail"),
+                   ("c-warn", "--review")):
+    rule = next((l for l in INDEX.splitlines()
+                 if l.strip().startswith(f".{cls} {{")), "")
+    check(f".{cls} is a solid fill of its own hue",
+          f"background: var({token})" in rule, rule.strip())
+    check(f".{cls} sets a glyph colour against that fill",
+          "color: #" in rule, rule.strip())
+    check(f".{cls} is not a tint",
+          "color-mix" not in rule, rule.strip())
+
+for cls in ("c-na", "c-none"):
+    rule = next((l for l in INDEX.splitlines()
+                 if l.strip().startswith(f".{cls} {{")), "")
+    check(f".{cls} stays neutral, not a verdict hue",
+          all(tok not in INDEX.split(f".{cls} {{")[1].split("}")[0]
+              for tok in ("var(--pass)", "var(--fail)", "var(--review)")),
+          "no verdict hue")
+
+print()
 print("=== no old-palette rgba() survivals ===")
 # The hex sweep above cannot see these: the same colours were also written as
 # rgba() triples, which is how the sidebar stayed indigo after the migration.
