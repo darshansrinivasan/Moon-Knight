@@ -4,6 +4,7 @@ import os
 import random
 from dataclasses import dataclass, field
 from datetime import date, timedelta, timezone
+from typing import NamedTuple
 
 import httpx
 
@@ -23,6 +24,10 @@ class FetchedDay:
 
     The failure sets are the point: a ticket whose messages or account did not
     load must be excluded from rule scoring rather than graded against the gap.
+
+    `issues_complete` is a stronger claim than "no exception was raised": it
+    means the issue list is the authoritative set for this date. Only that
+    justifies inferring a deletion from absence — see `_fetch_issues_page`.
     """
 
     issues: list
@@ -30,6 +35,7 @@ class FetchedDay:
     accounts_by_id: dict
     failed_messages: set = field(default_factory=set)
     failed_accounts: set = field(default_factory=set)
+    issues_complete: bool = True
 
     def is_complete(self, issue: dict) -> bool:
         """True when everything the R-checks need for this ticket was fetched."""
@@ -37,6 +43,17 @@ class FetchedDay:
             return False
         account_id = (issue.get("account") or {}).get("id")
         return not (account_id and account_id in self.failed_accounts)
+
+    def may_infer_deletions(self) -> bool:
+        """Whether absence from `issues` can be read as "deleted at source".
+
+        Deliberately conservative. Pylon has no tombstone for a deleted ticket,
+        so absence is the only signal — which means an incomplete fetch looks
+        exactly like a mass deletion. Getting this wrong destroys tickets,
+        messages, grades and human sign-offs, and sign-offs cannot be recovered
+        by refetching. When in doubt, infer nothing.
+        """
+        return self.issues_complete
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -95,12 +112,27 @@ def _headers() -> dict:
 
 # ── issue list (paginated) ──────────────────────────────────────────────────
 
+class IssuePage(NamedTuple):
+    """One page of issues, and whether it can be trusted as data.
+
+    `ok` is False when Pylon answered with something other than a data page —
+    an error envelope for an invalid range, say. That used to be flattened into
+    an empty list, which is indistinguishable from "this date has no tickets"
+    and would let a deletion sweep read an outage as a mass deletion.
+    """
+
+    issues: list
+    cursor: str | None
+    has_next: bool
+    ok: bool
+
+
 async def _fetch_issues_page(
     client: httpx.AsyncClient,
     start: str,
     end: str,
     cursor: str | None,
-) -> tuple[list, str | None, bool]:
+) -> IssuePage:
     params: dict = {"start_time": start, "end_time": end, "limit": 100}
     if cursor:
         params["cursor"] = cursor
@@ -108,21 +140,45 @@ async def _fetch_issues_page(
     r.raise_for_status()
     body = r.json()
     if "data" not in body:
-        # Pylon returns {"errors": [...]} for invalid ranges (e.g. future dates)
-        return [], None, False
+        # Pylon returns {"errors": [...]} for invalid ranges (e.g. future dates).
+        # Report it as not-ok rather than as an empty page.
+        logger.warning(
+            "Pylon returned no data page for %s..%s: %s",
+            start, end, str(body)[:200],
+        )
+        return IssuePage([], None, False, ok=False)
     pag = body.get("pagination", {})
-    return body["data"], pag.get("cursor"), pag.get("has_next_page", False)
+    return IssuePage(
+        body["data"], pag.get("cursor"), pag.get("has_next_page", False), ok=True
+    )
 
 
 async def fetch_issues_for_date(
     target: date, client: httpx.AsyncClient
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
+    """(issues, complete) for one date.
+
+    `complete` is False if any page came back as a non-data body, so callers
+    can tell "this date genuinely has no tickets" from "we could not read it".
+    """
     start, end = _ist_window(target)
-    issues, cursor, has_next = await _fetch_issues_page(client, start, end, None)
+    page = await _with_retry(lambda: _fetch_issues_page(client, start, end, None))
+    if not page.ok:
+        return [], False
+
+    issues = list(page.issues)
+    cursor, has_next = page.cursor, page.has_next
     while has_next:
-        page, cursor, has_next = await _fetch_issues_page(client, start, end, cursor)
-        issues.extend(page)
-    return issues
+        nxt = await _with_retry(
+            lambda c=cursor: _fetch_issues_page(client, start, end, c)
+        )
+        if not nxt.ok:
+            # Partial list: keep what we have for scoring, but never let a
+            # truncated page be read as the authoritative set for the date.
+            return issues, False
+        issues.extend(nxt.issues)
+        cursor, has_next = nxt.cursor, nxt.has_next
+    return issues, True
 
 
 # ── messages ────────────────────────────────────────────────────────────────
@@ -165,7 +221,7 @@ async def fetch_day(target: date) -> FetchedDay:
     # Resolve the token once per run so a mid-run credential change can't
     # produce a half-authenticated fetch.
     async with httpx.AsyncClient(timeout=30, headers=_headers()) as client:
-        issues = await fetch_issues_for_date(target, client)
+        issues, issues_complete = await fetch_issues_for_date(target, client)
 
         # A swallowed failure is indistinguishable from real emptiness, and the
         # scorer reads both as evidence: no messages looks like an unanswered
@@ -219,4 +275,5 @@ async def fetch_day(target: date) -> FetchedDay:
         accounts_by_id=accounts_by_id,
         failed_messages=failed_messages,
         failed_accounts=failed_accounts,
+        issues_complete=issues_complete,
     )

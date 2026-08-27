@@ -9,6 +9,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -305,7 +306,22 @@ async def get_calendar_day(date_str: str, user: dict = Depends(auth.require_user
 
 # ── fetch a day from Pylon ────────────────────────────────────────────────────
 
-async def fetch_and_store(target: date) -> int:
+class FetchResult(NamedTuple):
+    """What one day's fetch stored, and what it removed.
+
+    `complete` records whether the issue list could be trusted as the
+    authoritative set for the date. When it is False no deletion was inferred,
+    and callers should say so rather than reporting a clean sweep.
+    """
+
+    count: int
+    deleted: int = 0
+    kept_reviewed: int = 0
+    restored: int = 0
+    complete: bool = True
+
+
+async def fetch_and_store(target: date) -> FetchResult:
     """Fetch one day from Pylon, persist tickets/messages/accounts, score R1–R8.
 
     Shared by the manual endpoint and the scheduler. Returns the active ticket count.
@@ -469,6 +485,35 @@ async def fetch_and_store(target: date) -> int:
             return active_count
 
     count = await asyncio.to_thread(store)
+
+    # Tickets deleted at source. Only ever inferred from a fetch that proved
+    # itself complete: Pylon gives no tombstone, so an incomplete fetch looks
+    # exactly like a mass deletion, and being wrong here destroys grades and
+    # human sign-offs that a refetch cannot restore.
+    if day.may_infer_deletions():
+        cleanup = await asyncio.to_thread(
+            db.mark_deleted_tickets, date_str, [i["id"] for i in issues]
+        )
+        if cleanup["deleted"] or cleanup["restored"]:
+            logger.info(
+                "Cleanup for %s: %d no longer in Pylon, %d reappeared",
+                date_str, cleanup["deleted"], cleanup["restored"],
+            )
+        if cleanup["kept_reviewed"]:
+            logger.info(
+                "Kept %d ticket(s) for %s that Pylon no longer returns because "
+                "they carry a human review: %s",
+                cleanup["kept_reviewed"], date_str,
+                ", ".join(cleanup["kept_reviewed_ids"][:10]),
+            )
+    else:
+        cleanup = {"deleted": 0, "kept_reviewed": 0, "restored": 0,
+                   "skipped_incomplete": True}
+        logger.warning(
+            "Skipping deletion cleanup for %s — the issue list was incomplete, "
+            "so absence cannot be read as deletion", date_str,
+        )
+
     if scoring_failures:
         logger.error(
             "Rule scoring failed for %d ticket(s) on %s: %s",
@@ -478,7 +523,13 @@ async def fetch_and_store(target: date) -> int:
     # R-scores just changed. Scoped to the fetched date: resyncing the whole
     # table on every fetch grew without bound and rewrote unrelated days.
     await asyncio.to_thread(resync_overall.run, date_str)
-    return count
+    return FetchResult(
+        count=count,
+        deleted=cleanup["deleted"],
+        kept_reviewed=cleanup["kept_reviewed"],
+        restored=cleanup["restored"],
+        complete=day.may_infer_deletions(),
+    )
 
 
 @app.post("/api/fetch/{date_str}")
@@ -487,7 +538,7 @@ async def fetch_day(date_str: str, user: dict = Depends(auth.require_user)):
 
     try:
         with db.advisory_lock(f"fetch:{date_str}", user["email"], ttl_seconds=1800):
-            count = await fetch_and_store(target)
+            res = await fetch_and_store(target)
     except db.LockBusy as e:
         raise HTTPException(409, str(e))
     except pylon.PylonNotConfigured as e:
@@ -495,8 +546,19 @@ async def fetch_day(date_str: str, user: dict = Depends(auth.require_user)):
     except Exception as e:
         raise HTTPException(502, f"Pylon fetch failed: {e}")
 
-    vault.audit(user["email"], "fetch.day", f"{date_str} ({count} tickets)")
-    return {"date": date_str, "ticket_count": count,
+    detail = f"{date_str} ({res.count} tickets)"
+    if res.deleted:
+        detail += f", {res.deleted} removed at source"
+    vault.audit(user["email"], "fetch.day", detail)
+    if res.deleted or res.kept_reviewed:
+        vault.audit(
+            user["email"], "fetch.cleanup",
+            f"{date_str} deleted={res.deleted} kept_reviewed={res.kept_reviewed}"
+            f" restored={res.restored}",
+        )
+    return {"date": date_str, "ticket_count": res.count,
+            "deleted": res.deleted, "kept_reviewed": res.kept_reviewed,
+            "restored": res.restored, "fetch_complete": res.complete,
             "fetched_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -734,7 +796,8 @@ async def get_rules(user: dict = Depends(auth.require_user)):
     def states_seen():
         with db.get_conn() as conn:
             return [r["state"] for r in conn.execute(
-                "SELECT state, COUNT(*) n FROM tickets WHERE state IS NOT NULL"
+                "SELECT state, COUNT(*) n FROM tickets"
+                " WHERE state IS NOT NULL AND deleted_at IS NULL"
                 " GROUP BY state ORDER BY n DESC").fetchall()]
 
     current = qc_rules.current()
@@ -981,14 +1044,16 @@ async def get_analytics(
         _require_month(month)
 
     def query():
+        # Every branch carries the soft-delete guard: a ticket removed at source
+        # must not keep counting toward anyone's leaderboard.
         if start and end:
-            where  = "WHERE t.fetch_date BETWEEN ? AND ?"
+            where  = "WHERE t.deleted_at IS NULL AND t.fetch_date BETWEEN ? AND ?"
             params = (start, end)
         elif month:
-            where  = "WHERE t.fetch_date LIKE ?"
+            where  = "WHERE t.deleted_at IS NULL AND t.fetch_date LIKE ?"
             params = (f"{month}-%",)
         else:
-            where  = ""
+            where  = "WHERE t.deleted_at IS NULL"
             params = ()
         with db.get_conn() as conn:
             rows = conn.execute(f"""

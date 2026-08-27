@@ -237,7 +237,8 @@ async def run_pipeline(target: date, triggered_by: str,
                 )
 
         try:
-            fetched = await app.fetch_and_store(target)
+            fetch = await app.fetch_and_store(target)
+            fetched = fetch.count
             qc = await asyncio.to_thread(
                 qc_runner.run_qc_date, date_str, triggered_by
             )

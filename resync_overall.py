@@ -29,6 +29,10 @@ def run(date_str: str | None = None) -> dict:
     than reading stdout.
     """
     where, params = ("WHERE ac.fetch_date = ?", (date_str,)) if date_str else ("", ())
+    # Soft-deleted tickets keep their rows but must not be resynced — the grade
+    # is frozen at whatever it was when the ticket left Pylon.
+    deleted_guard = ("AND t.deleted_at IS NULL" if where
+                     else "WHERE t.deleted_at IS NULL")
 
     with db.get_conn() as conn:
         rows = conn.execute(f"""
@@ -43,6 +47,7 @@ def run(date_str: str | None = None) -> dict:
             JOIN tickets t      ON ac.ticket_id = t.id
             LEFT JOIN accounts a ON t.account_id = a.id
             {where}
+            {deleted_guard}
         """, params).fetchall()
 
     overall_updates: list = []

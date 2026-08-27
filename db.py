@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # On a container platform the app directory is wiped on every deploy, so the
@@ -47,6 +48,10 @@ _ADDED_COLUMNS = [
     # Hash of the content the AI actually grades, so a refetch that changes
     # nothing no longer rescores — and re-bills — the whole day.
     "ALTER TABLE ai_checks ADD COLUMN qc_fingerprint TEXT",
+    # Set when a ticket stops coming back from Pylon. Soft, not a DELETE:
+    # absence is only an inference, and it takes messages, grades and human
+    # sign-offs with it if it is wrong. NULL means live.
+    "ALTER TABLE tickets ADD COLUMN deleted_at TEXT",
 ]
 
 
@@ -73,7 +78,11 @@ def init_db():
             updated_at    TEXT,
             latest_message_time TEXT,
             customer_portal_visible INTEGER,
-            fetched_at    TEXT
+            fetched_at    TEXT,
+            -- Set when the ticket stops coming back from Pylon; NULL = live.
+            -- Soft because absence is an inference, and every read path filters
+            -- on it rather than the row being destroyed.
+            deleted_at    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS messages (
@@ -291,7 +300,6 @@ class LockBusy(RuntimeError):
 @contextmanager
 def advisory_lock(name: str, holder: str, ttl_seconds: int = 3600):
     """Acquire a named lock or raise LockBusy. Stale locks expire after ttl."""
-    from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
 
@@ -318,6 +326,56 @@ def advisory_lock(name: str, holder: str, ttl_seconds: int = 3600):
             conn.execute("DELETE FROM run_locks WHERE name = ?", (name,))
 
 
+def mark_deleted_tickets(date_str: str, live_ids: list[str]) -> dict:
+    """Soft-delete tickets for this date that Pylon no longer returns.
+
+    The caller must have established that the fetch was COMPLETE — see
+    `pylon.FetchedDay.may_infer_deletions`. Absence is the only signal Pylon
+    gives, so an incomplete fetch is indistinguishable from a mass deletion.
+
+    A ticket carrying a human review is never marked: a sign-off is a record of
+    someone's decision, and refetching cannot bring it back. Those are reported
+    separately so the skip is visible rather than silent.
+
+    Returns {"deleted": n, "kept_reviewed": n, "restored": n}.
+    """
+    live = set(live_ids)
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t.id, EXISTS(SELECT 1 FROM ticket_reviews r"
+            "                    WHERE r.ticket_id = t.id) AS reviewed"
+            " FROM tickets t WHERE t.fetch_date = ? AND t.deleted_at IS NULL",
+            (date_str,),
+        ).fetchall()
+
+        gone = [dict(r) for r in rows if r["id"] not in live]
+        to_mark = [g["id"] for g in gone if not g["reviewed"]]
+        kept = [g["id"] for g in gone if g["reviewed"]]
+
+        now = datetime.now(timezone.utc).isoformat()
+        if to_mark:
+            conn.executemany(
+                "UPDATE tickets SET deleted_at = ? WHERE id = ?",
+                [(now, tid) for tid in to_mark],
+            )
+
+        # A ticket can come back — a moved timestamp, a Pylon-side fix. Clear
+        # the flag rather than leaving it hidden forever.
+        restored = 0
+        if live:
+            placeholders = ",".join("?" * len(live))
+            cur = conn.execute(
+                f"UPDATE tickets SET deleted_at = NULL"
+                f" WHERE fetch_date = ? AND deleted_at IS NOT NULL"
+                f"   AND id IN ({placeholders})",
+                (date_str, *live),
+            )
+            restored = cur.rowcount or 0
+
+    return {"deleted": len(to_mark), "kept_reviewed": len(kept),
+            "restored": restored, "kept_reviewed_ids": kept}
+
+
 def get_fetch_log(date_str: str):
     with get_conn() as conn:
         row = conn.execute(
@@ -341,7 +399,7 @@ def get_day_tickets(date_str: str):
             LEFT JOIN accounts    a  ON t.account_id = a.id
             LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
             LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
-            WHERE t.fetch_date = ?
+            WHERE t.fetch_date = ? AND t.deleted_at IS NULL
             ORDER BY t.number
         """, (date_str,)).fetchall()
         return [dict(r) for r in rows]
@@ -369,7 +427,7 @@ _CALENDAR_CELL_SQL = """
     LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
     LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
     LEFT JOIN fetch_log   fl ON fl.fetch_date = t.fetch_date
-    WHERE {where}
+    WHERE ({where}) AND t.deleted_at IS NULL
     GROUP BY t.fetch_date
 """
 
@@ -467,7 +525,8 @@ def qc_spend_for_date(date_str: str) -> dict:
 
 def ticket_stats(date: str | None = None) -> dict:
     """Pass/Fail/NR counts using the latest human review when present, else the AI grade."""
-    where = "WHERE t.fetch_date = ?" if date else ""
+    where = ("WHERE t.fetch_date = ? AND t.deleted_at IS NULL" if date
+             else "WHERE t.deleted_at IS NULL")
     params = (date,) if date else ()
     with get_conn() as conn:
         row = conn.execute(f"""

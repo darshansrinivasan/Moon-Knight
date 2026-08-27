@@ -34,6 +34,7 @@ def list_assignee_names() -> list[str]:
         rows = conn.execute(
             "SELECT DISTINCT assignee_name FROM tickets"
             " WHERE assignee_name IS NOT NULL AND assignee_name != ''"
+            "   AND deleted_at IS NULL"
             " ORDER BY assignee_name COLLATE NOCASE"
         ).fetchall()
     names = [r["assignee_name"] for r in rows]
@@ -215,7 +216,7 @@ def _ticket_row(ticket_id: str) -> dict | None:
         row = conn.execute(
             "SELECT t.id, t.assignee_name, t.number, ac.overall_result AS ai_result"
             " FROM tickets t LEFT JOIN ai_checks ac ON ac.ticket_id = t.id"
-            " WHERE t.id = ?",
+            " WHERE t.id = ? AND t.deleted_at IS NULL",
             (ticket_id,),
         ).fetchone()
     return dict(row) if row else None

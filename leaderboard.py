@@ -98,7 +98,9 @@ def _load_rows(start: str | None, end: str | None) -> list[dict]:
     """Per-assignee aggregates over the range, with excluded states removed."""
     import rules as qc_rules
 
-    clauses = []
+    # Always present: a ticket removed at source stops counting toward anyone's
+    # standing, rather than freezing their rate at whatever it was.
+    clauses = ["t.deleted_at IS NULL"]
     params: list = []
     if start and end:
         clauses.append("t.fetch_date BETWEEN ? AND ?")

@@ -940,7 +940,7 @@ def _snapshot_and_compare(conn, run_id: int, date_str: str) -> tuple:
         FROM tickets t
         LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
         LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
-        WHERE t.fetch_date = ?
+        WHERE t.fetch_date = ? AND t.deleted_at IS NULL
     """, (date_str,)).fetchall()
 
     for r in rows:
@@ -1002,7 +1002,7 @@ def _load_in_scope(date_str: str) -> list[dict]:
             LEFT JOIN accounts    a  ON t.account_id = a.id
             LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
             LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
-            WHERE t.fetch_date = ?
+            WHERE t.fetch_date = ? AND t.deleted_at IS NULL
               {not_in}
             ORDER BY t.number
         """, params).fetchall()
