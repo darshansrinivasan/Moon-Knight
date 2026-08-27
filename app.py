@@ -32,6 +32,7 @@ import review
 import scheduler
 import scorer
 import slack
+import suggestions
 import vault
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -870,6 +871,23 @@ async def get_rules(user: dict = Depends(auth.require_user)):
         "can_edit":     user["role"] == "admin",
         "rubric":       qc_runner.SYSTEM_PROMPT,
     }
+
+
+@app.get("/api/rules/suggestions")
+async def rules_suggestions(days: int = 30,
+                            user: dict = Depends(auth.require_user)):
+    """Where humans have been overriding the AI — evidence, not actions.
+
+    Read-only by design: the system may propose a rules change and show what it
+    is based on, but never applies one. Auto-tuning a grading rubric from its own
+    past disagreements is a feedback loop with no human in it, and the failure
+    mode is silent drift in what "Pass" means with nobody able to say when it
+    changed. Accepting a suggestion goes through the normal admin-gated rules
+    save.
+    """
+    if not 1 <= days <= 365:
+        raise HTTPException(400, "days must be between 1 and 365")
+    return {"ok": True, **await asyncio.to_thread(suggestions.build, days)}
 
 
 @app.get("/api/directory/slack")
