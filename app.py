@@ -23,6 +23,7 @@ load_dotenv()
 import auth
 import db
 import drilldown
+import evidence
 import gcp
 import leaderboard
 import pylon
