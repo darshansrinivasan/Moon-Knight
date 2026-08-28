@@ -1324,6 +1324,38 @@ async def get_failing_tickets(
         raise HTTPException(400, str(e))
 
 
+@app.get("/api/analytics/assignee")
+async def get_assignee_breakdown(
+    name: str,
+    month: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    user: dict = Depends(auth.require_user),
+):
+    """Per-check pass/fail bifurcation for one assignee — what opens when a
+    name on the analytics leaderboard is clicked.
+
+    Takes the same range shapes as /api/analytics: start+end, or month, or
+    neither for all time. A month is widened to its first/last day here so the
+    query layer only ever sees one range shape.
+    """
+    if start and end:
+        _require_date(start)
+        _require_date(end)
+        if _require_date(start) > _require_date(end):
+            raise HTTPException(400, "start must not be after end")
+    elif month:
+        _require_month(month)
+        # "-31" is a string bound, not a date: fetch_date is ISO text, so it
+        # covers every real day of the month in every month.
+        start, end = f"{month}-01", f"{month}-31"
+    try:
+        return await asyncio.to_thread(
+            drilldown.assignee_breakdown, name, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @app.get("/api/leaderboard/weekly")
 async def get_weekly_leaderboard(weeks: int = 8,
                                  user: dict = Depends(auth.require_user)):

@@ -1004,6 +1004,73 @@
   .count-review { color: var(--review); font-variant-numeric: tabular-nums; }
   .count-pend   { color: var(--muted);  font-variant-numeric: tabular-nums; }
 
+  /* per-assignee breakdown — click a name on the leaderboard to open */
+  .lb-table .assignee-cell { cursor: pointer; }
+  .lb-table .assignee-cell:hover { color: var(--accent2); text-decoration: underline; }
+  .lb-table tbody tr.lb-detail-row,
+  .lb-table tbody tr.lb-detail-row:hover { background: var(--surface); }
+  .lb-detail {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 48px;
+    padding: 12px 8px 14px;
+  }
+  .bd-group { flex: 1; min-width: 360px; }
+  .bd-group-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 8px;
+  }
+  .bd-check {
+    display: grid;
+    grid-template-columns: minmax(150px, 210px) 110px 1fr;
+    gap: 12px;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 12.5px;
+  }
+  .bd-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bd-bar {
+    display: flex;
+    height: 7px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface2);
+    gap: 1px;
+  }
+  .bd-counts {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+  .bd-fail-link {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    color: var(--fail);
+    cursor: pointer;
+    text-decoration: underline dotted;
+    font-variant-numeric: tabular-nums;
+  }
+  .bd-tickets {
+    margin: 4px 0 8px;
+    padding: 8px 12px;
+    background: var(--surface2);
+    border-radius: 8px;
+    font-size: 12px;
+    display: grid;
+    gap: 4px;
+  }
+  .bd-tickets a { color: var(--accent2); text-decoration: none; }
+  .bd-tickets a:hover { text-decoration: underline; }
+  .bd-note { flex-basis: 100%; font-size: 11px; color: var(--muted); }
+
   /* scrollbars */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -2859,9 +2926,9 @@ function renderAnalytics(assignees) {
 
     const rateHtml = `<span class="rate-val ${rateClass(rate)}">${rate != null ? rate + '%' : '—'}</span>`;
 
-    return `<tr>
+    return `<tr data-assignee="${esc(a.assignee)}">
       <td class="rank-cell">${rank}</td>
-      <td class="assignee-cell" title="${esc(a.assignee)}">${esc(a.assignee)}</td>
+      <td class="assignee-cell" title="${esc(a.assignee)} — click for a check-wise breakdown">${esc(a.assignee)}</td>
       <td class="bar-cell">
         <div style="display:flex;align-items:center;gap:8px">
           ${rateHtml}
@@ -2881,6 +2948,142 @@ function renderAnalytics(assignees) {
     </tr>`;
   }).join('');
 }
+
+// ── per-assignee breakdown (click a name on the leaderboard) ─────────────────
+// The current analytics range as {start, end} — the shape the breakdown and
+// ticket drill-down APIs take. A month is widened to its real calendar bounds
+// here because /api/analytics/tickets has no month mode.
+function analyticsStartEnd() {
+  if (analyticWeek) return { start: analyticWeek.start, end: analyticWeek.end };
+  if (analyticMonth) {
+    const [y, mo] = analyticMonth.split('-').map(Number);
+    return { start: _isoDate(y, mo, 1), end: _isoDate(y, mo, new Date(y, mo, 0).getDate()) };
+  }
+  return {};
+}
+
+async function toggleBreakdown(row) {
+  const name = row.dataset.assignee;
+  if (name == null) return;
+  const next = row.nextElementSibling;
+  const wasOpenHere = next && next.classList.contains('lb-detail-row');
+  // One panel at a time: close any open one, then reopen only if the click
+  // was on a different person.
+  document.querySelectorAll('#lb-body .lb-detail-row').forEach(el => el.remove());
+  if (wasOpenHere) return;
+
+  const detail = document.createElement('tr');
+  detail.className = 'lb-detail-row';
+  detail.dataset.assignee = name;
+  const td = document.createElement('td');
+  td.colSpan = 8;
+  td.innerHTML = `<div class="lb-detail" style="color:var(--muted)">Loading breakdown…</div>`;
+  detail.appendChild(td);
+  row.after(detail);
+
+  const { start, end } = analyticsStartEnd();
+  const qs = new URLSearchParams({ name });
+  if (start) { qs.set('start', start); qs.set('end', end); }
+  try {
+    const r = await fetch(`/api/analytics/assignee?${qs}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (td.isConnected) td.innerHTML = renderBreakdown(data);
+  } catch (e) {
+    if (td.isConnected) td.innerHTML =
+      `<div class="lb-detail" style="color:var(--fail)">Failed to load breakdown.</div>`;
+  }
+}
+
+function bdCheckRow(c) {
+  // A2 is sentiment: its "failed" bucket is notable moods, never a failure,
+  // so it gets neutral wording and the review colour instead of red.
+  const okWord  = c.not_a_failure ? 'ok' : 'passed';
+  const badWord = c.not_a_failure ? 'notable' : 'failed';
+  const badColor = c.not_a_failure ? 'var(--review)' : 'var(--fail)';
+  const denom  = c.evaluated || 1;
+  const otherN = Math.max(0, c.evaluated - c.passed - c.failed);
+  const seg = (n, color) => n
+    ? `<div style="width:${(n / denom * 100).toFixed(1)}%;background:${color}"></div>` : '';
+
+  const counts = [`<span class="count-pass">${c.passed} ${okWord}</span>`];
+  counts.push(c.failed
+    ? `<button type="button" class="bd-fail-link" style="color:${badColor}"
+         data-check="${esc(c.key)}" title="List these tickets">${c.failed} ${badWord}</button>`
+    : `<span>0 ${badWord}</span>`);
+  for (const [v, n] of Object.entries(c.other || {})) counts.push(`<span>${n} ${esc(v)}</span>`);
+  if (c.unevaluated) counts.push(`<span>${c.unevaluated} not scored</span>`);
+
+  return `<div class="bd-check">
+    <span class="bd-label" title="${esc(c.label)}">${esc(c.label)}</span>
+    <div class="bd-bar" title="${c.passed} ${okWord} · ${c.failed} ${badWord} of ${c.evaluated} evaluated">
+      ${seg(c.passed, 'var(--pass)')}${seg(c.failed, badColor)}${seg(otherN, 'var(--border)')}
+    </div>
+    <div class="bd-counts">${counts.join('')}</div>
+  </div>`;
+}
+
+function renderBreakdown(d) {
+  const s = d.summary;
+  const group = (title, checks) => `<div class="bd-group">
+      <div class="bd-group-title">${title}</div>
+      ${checks.map(bdCheckRow).join('')}
+    </div>`;
+  return `<div class="lb-detail">
+    ${group('Rule checks', d.rules)}
+    ${group('AI checks', d.ai)}
+    <div class="bd-note">
+      ${s.total} tickets in range · ${s.pass} pass · ${s.fail} fail ·
+      ${s.review} needs review · ${s.pending} pending QC.
+      Click a failed count to list those tickets.
+    </div>
+  </div>`;
+}
+
+async function toggleFailTickets(btn) {
+  const checkDiv = btn.closest('.bd-check');
+  const open = checkDiv.nextElementSibling;
+  if (open && open.classList.contains('bd-tickets')) { open.remove(); return; }
+  btn.closest('.lb-detail').querySelectorAll('.bd-tickets').forEach(el => el.remove());
+
+  const name = btn.closest('tr.lb-detail-row').dataset.assignee;
+  const box = document.createElement('div');
+  box.className = 'bd-tickets';
+  box.textContent = 'Loading tickets…';
+  checkDiv.after(box);
+
+  const { start, end } = analyticsStartEnd();
+  const qs = new URLSearchParams({ check: btn.dataset.check, assignee: name });
+  if (start) { qs.set('start', start); qs.set('end', end); }
+  try {
+    const r = await fetch(`/api/analytics/tickets?${qs}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    if (!box.isConnected) return;
+    if (!d.tickets.length) { box.textContent = 'No tickets in this range.'; return; }
+    box.innerHTML = d.tickets.map(t => {
+      const label = `#${t.number ?? '—'} · ${t.title || '(no title)'}`;
+      const head = t.link
+        ? `<a href="${esc(t.link)}" target="_blank" rel="noopener">${esc(label)}</a>`
+        : esc(label);
+      return `<div>${head}
+        <span style="color:var(--muted)">· ${esc(t.fetch_date || '')} · ${esc(t.overall_result || 'pending')}</span>
+      </div>`;
+    }).join('') + (d.truncated
+      ? `<div style="color:var(--muted)">Showing ${d.tickets.length} of ${d.count}.</div>` : '');
+  } catch (e) {
+    if (box.isConnected) box.textContent = 'Failed to load tickets.';
+  }
+}
+
+document.getElementById('lb-body').addEventListener('click', (ev) => {
+  const failBtn = ev.target.closest('.bd-fail-link');
+  if (failBtn) { toggleFailTickets(failBtn); return; }
+  const cell = ev.target.closest('.assignee-cell');
+  if (!cell) return;
+  const row = cell.closest('tr');
+  if (row && row.dataset.assignee != null) toggleBreakdown(row);
+});
 
 // ── nav ───────────────────────────────────────────────────────────────────────
 // ── assignee multi-select toggle & outside-click ─────────────────────────────

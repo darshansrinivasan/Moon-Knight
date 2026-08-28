@@ -292,6 +292,64 @@ check("result keys", sorted(dd.tickets_failing("r3")),
        "truncated"])
 
 print()
+print("=== assignee_breakdown: the bifurcation behind one leaderboard row ===")
+ticket("bd1", "Jo", grade="Pass")
+ticket("bd2", "Jo", grade="Fail", r3="Fail", a2="Frustrated", a3="Poor")
+ticket("bd3", "Jo", grade="Pass", a3="Needs Improvement", a5="N/A")
+ticket("bd4", "Jo", grade="Pass", ai=False)                 # pending QC
+ticket("bd5", "Jo", grade="Fail", r3="Fail", deleted=T0)    # withdrawn
+ticket("bd6", "Jo", grade="Fail", r3="Fail", state="archived")  # excluded
+
+b = dd.assignee_breakdown("Jo")
+by_key = {c["key"]: c for c in b["rules"] + b["ai"]}
+check("summary counts effective grades",
+      b["summary"], {"total": 4, "pass": 2, "fail": 1, "review": 0, "pending": 1})
+check("r3 bifurcation", (by_key["r3"]["passed"], by_key["r3"]["failed"]), (3, 1))
+check("soft-deleted and archived are out of the bifurcation too",
+      by_key["r3"]["failed"], 1)
+check("a3: Poor fails, Needs Improvement is neither side",
+      (by_key["a3"]["passed"], by_key["a3"]["failed"], by_key["a3"]["other"]),
+      (1, 1, {"Needs Improvement": 1}))
+check("a3: the pending ticket is unevaluated, not a pass",
+      (by_key["a3"]["evaluated"], by_key["a3"]["unevaluated"]), (3, 1))
+check("a5: N/A is neither passed nor failed",
+      (by_key["a5"]["passed"], by_key["a5"]["failed"], by_key["a5"]["other"]),
+      (2, 0, {"N/A": 1}))
+check("a2 is flagged not-a-failure, others are not",
+      sorted(c["key"] for c in b["rules"] + b["ai"] if c["not_a_failure"]),
+      ["a2"])
+check("a2 notable count matches the drill-down's list",
+      by_key["a2"]["failed"], 1)
+check("no value drifted outside the known outcomes",
+      any(c["unexpected"] for c in b["rules"] + b["ai"]), False)
+check("every check the leaderboard counts is present, in order",
+      [c["key"] for c in b["rules"] + b["ai"]],
+      ["r1", "r2", "r3", "r4", "r5", "r7", "r8",
+       "a1", "a2", "a3", "a4", "a5"])
+check("result keys", sorted(b), ["ai", "assignee", "range", "rules", "summary"])
+check("check keys", sorted(by_key["r3"]),
+      ["evaluated", "failed", "key", "label", "not_a_failure", "other",
+       "passed", "unevaluated", "unexpected"])
+
+check("breakdown failed == drill-down count (same definition of failing)",
+      dd.assignee_breakdown("Ann")["rules"][2]["failed"],
+      dd.tickets_failing("r3", assignee="Ann")["count"])
+check("Unassigned folds NULL and blank names",
+      dd.assignee_breakdown("Unassigned")["summary"]["total"], 2)
+check("date range filters the bifurcation",
+      dd.assignee_breakdown("Jo", start=D3, end=D3)["summary"]["total"], 0)
+try:
+    dd.assignee_breakdown("")
+    check("a blank assignee is rejected", "returned", "ValueError")
+except ValueError:
+    check("a blank assignee is rejected", "ValueError", "ValueError")
+try:
+    dd.assignee_breakdown("Jo", start="25-08-2026")
+    check("a malformed date is rejected", "returned", "ValueError")
+except ValueError:
+    check("a malformed date is rejected", "ValueError", "ValueError")
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

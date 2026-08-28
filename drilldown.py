@@ -159,14 +159,18 @@ def _assignee_clause(assignee: str) -> tuple[str, list]:
     return "t.assignee_name = ?", [name]
 
 
-def _build_where(predicate: str, assignee: str | None,
+def _build_where(predicate: str | None, assignee: str | None,
                  start: str | None, end: str | None) -> tuple[str, list]:
-    """WHERE clause and bound parameters shared by the count and the page."""
+    """WHERE clause and bound parameters shared by the count and the page.
+
+    `predicate=None` means no check filter — used by `assignee_breakdown`,
+    which reports every check at once rather than the tickets behind one.
+    """
     import rules as qc_rules
 
     # Always present. A ticket withdrawn at source stops being evidence against
     # anyone, exactly as in leaderboard._load_rows.
-    clauses = ["t.deleted_at IS NULL", predicate]
+    clauses = ["t.deleted_at IS NULL"] + ([predicate] if predicate else [])
     params: list = []
 
     if start:
@@ -273,4 +277,150 @@ def tickets_failing(check: str, assignee: str | None = None,
         "count": count,
         "truncated": count > len(tickets),
         "tickets": tickets,
+    }
+
+
+# ── per-assignee breakdown ────────────────────────────────────────────────────
+# Every value each check column can hold, in display order. The breakdown
+# counts each of these explicitly, plus "unevaluated" (no check row yet) and
+# "unexpected" (a value that drifted outside this list), so nothing is
+# silently dropped from the bifurcation.
+_OUTCOMES: dict[str, tuple[str, ...]] = {
+    **{key: ("Pass", "Fail", "N/A") for key in RULE_KEYS},
+    "a1": ("Pass", "Fail", "Needs Review"),
+    "a2": ("Positive", "Neutral", "Concerned", "Frustrated", "Urgent"),
+    "a3": ("Good", "Needs Improvement", "Poor"),
+    "a4": ("Pass", "Fail", "Needs Review"),
+    "a5": ("Pass", "Fail", "N/A", "Needs Review"),
+}
+
+# Which values count as passed/failed. The failed sets mirror the `_CHECKS`
+# predicates exactly: the count coloured red here must be the same count the
+# per-check drill-down lists tickets for. A2's "failed" set is its *notable*
+# sentiments and is flagged not_a_failure in the output — callers must not
+# word it as failing.
+_PASSED_VALUES: dict[str, frozenset[str]] = {
+    **{key: frozenset({"Pass"}) for key in RULE_KEYS},
+    "a1": frozenset({"Pass"}),
+    "a2": frozenset({"Positive", "Neutral"}),
+    "a3": frozenset({"Good"}),
+    "a4": frozenset({"Pass"}),
+    "a5": frozenset({"Pass"}),
+}
+_FAILED_VALUES: dict[str, frozenset[str]] = {
+    **{key: frozenset({"Fail"}) for key in RULE_KEYS},
+    "a1": frozenset({"Fail"}),
+    "a2": frozenset({"Concerned", "Frustrated", "Urgent"}),
+    "a3": frozenset({"Poor"}),
+    "a4": frozenset({"Fail"}),
+    "a5": frozenset({"Fail"}),
+}
+
+
+def _check_column(key: str) -> str:
+    return f"rc.{key}" if key in RULE_KEYS else f"ac.{key}"
+
+
+def _breakdown_selects() -> str:
+    """One SUM per (check, outcome) pair, plus an evaluated count per check.
+
+    Outcome values are module constants from `_OUTCOMES`, never caller input,
+    so interpolating them is safe — the same discipline `_CHECKS` follows.
+    """
+    parts = []
+    for key, values in _OUTCOMES.items():
+        col = _check_column(key)
+        for i, value in enumerate(values):
+            parts.append(
+                f"SUM(CASE WHEN {col} = '{value}' THEN 1 ELSE 0 END) AS {key}_{i}"
+            )
+        parts.append(
+            f"SUM(CASE WHEN {col} IS NOT NULL THEN 1 ELSE 0 END) AS {key}_n"
+        )
+    return ",\n".join(parts)
+
+
+def _bucketise(key: str, row, total: int) -> dict:
+    """One check's bifurcation from the aggregate row."""
+    values = _OUTCOMES[key]
+    counts = {v: row[f"{key}_{i}"] or 0 for i, v in enumerate(values)}
+    evaluated = row[f"{key}_n"] or 0
+    passed = sum(counts[v] for v in _PASSED_VALUES[key])
+    failed = sum(counts[v] for v in _FAILED_VALUES[key])
+    other = {
+        v: n for v, n in counts.items()
+        if n and v not in _PASSED_VALUES[key] and v not in _FAILED_VALUES[key]
+    }
+    label, _predicate = _CHECKS[key]
+    return {
+        "key": key,
+        "label": label,
+        "passed": passed,
+        "failed": failed,
+        "other": other,
+        "evaluated": evaluated,
+        # Tickets with no check row yet — pending QC, not passes or failures.
+        "unevaluated": total - evaluated,
+        # A value outside _OUTCOMES (data drift) stays visible rather than
+        # quietly deflating the bar.
+        "unexpected": evaluated - sum(counts.values()),
+        "not_a_failure": key in NOT_A_FAILURE,
+    }
+
+
+def assignee_breakdown(assignee: str, start: str | None = None,
+                       end: str | None = None) -> dict:
+    """Per-check pass/fail bifurcation for one assignee over a range.
+
+    For every check the leaderboard counts (R1–R8 rules, A1–A5 AI checks),
+    reports how many of the assignee's tickets passed it, failed it, or landed
+    elsewhere (N/A, Needs Review, Needs Improvement, sentiments). "Failed"
+    means exactly what the per-check drill-down means by it; A2 is sentiment
+    and its notable count is flagged `not_a_failure`.
+
+    `assignee` is required; "Unassigned" (or blank) means tickets with no
+    owner. Dates are optional and inclusive. Soft-deleted tickets and excluded
+    states are removed on the same terms as the leaderboard, and `summary`
+    carries the effective-grade totals so the panel reconciles with the row
+    it opened from.
+    """
+    name = str(assignee or "").strip()
+    if not name:
+        raise ValueError("assignee is required")
+
+    where, params = _build_where(None, name, start, end)
+
+    with db.get_conn() as conn:
+        row = conn.execute(f"""
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN {_EFFECTIVE_GRADE} = 'Pass'
+                         THEN 1 ELSE 0 END) AS pass_count,
+                SUM(CASE WHEN {_EFFECTIVE_GRADE} = 'Fail'
+                         THEN 1 ELSE 0 END) AS fail_count,
+                SUM(CASE WHEN {_EFFECTIVE_GRADE} = 'Needs Review'
+                         THEN 1 ELSE 0 END) AS review_count,
+                SUM(CASE WHEN ac.ticket_id IS NULL
+                         THEN 1 ELSE 0 END) AS pending_count,
+                {_breakdown_selects()}
+            FROM tickets t
+            LEFT JOIN ai_checks   ac ON ac.ticket_id = t.id
+            LEFT JOIN rule_checks rc ON rc.ticket_id = t.id
+            LEFT JOIN ({_LATEST_REVIEW}) rev ON rev.ticket_id = t.id
+            WHERE {where}
+        """, params).fetchone()
+
+    total = row["total"] or 0
+    return {
+        "assignee": name,
+        "range": {"start": start, "end": end},
+        "summary": {
+            "total": total,
+            "pass": row["pass_count"] or 0,
+            "fail": row["fail_count"] or 0,
+            "review": row["review_count"] or 0,
+            "pending": row["pending_count"] or 0,
+        },
+        "rules": [_bucketise(k, row, total) for k in RULE_KEYS],
+        "ai": [_bucketise(k, row, total) for k in ("a1", "a2", "a3", "a4", "a5")],
     }

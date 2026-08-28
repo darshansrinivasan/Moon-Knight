@@ -7,7 +7,9 @@ token nobody defines, and the system's hard rules are not broken.
 import pathlib
 import re
 
-STATIC = pathlib.Path("/Users/ashwinjayaram/Documents/Moon-Knight/static")
+# Resolved from this file, not the working directory or anyone's home folder —
+# a hardcoded absolute path made this suite fail on every machine but one.
+STATIC = pathlib.Path(__file__).resolve().parent.parent / "static"
 SHELL = (STATIC / "shell.css").read_text()
 PAGES = sorted(STATIC.glob("*.html"))
 
