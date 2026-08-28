@@ -135,6 +135,47 @@ check("raw script tag absent", "<script>" in blocks, False)
 check("ampersand escaped", "&amp;" in blocks, True)
 
 print()
+print("=== a failure alarm names the instance that raised it ===")
+# Any deployment holding the same bot token posts to the same channel. An
+# unconfigured second instance alarmed about a run that had actually succeeded
+# in production, and the alarm carried nothing to tell the two apart — so the
+# obvious reading was that production had broken, which it had not.
+import asyncio
+
+import vault
+
+sent = {}
+
+
+async def fake_post(method, payload):
+    sent["method"] = method
+    sent["payload"] = payload
+    return {"ok": True}
+
+
+real_post = slack._post
+try:
+    slack._post = fake_post
+    vault.set_settings({"slack_channel": "#support-qc",
+                        "dashboard_base_url": "https://qc-prod.example.app"},
+                       "test")
+    asyncio.run(slack.post_failure("2026-08-27", "No Google Cloud project configured"))
+    body = str(sent["payload"])
+    check("the date is named", "2026-08-27" in body, True)
+    check("the cause is quoted", "No Google Cloud project" in body, True)
+    check("the instance is named", "qc-prod.example.app" in body, True)
+    check("labelled as provenance", "Reported by" in body, True)
+
+    # With no base URL configured there is simply no line — never a broken one.
+    vault.set_settings({"dashboard_base_url": ""}, "test", allow_clear=True)
+    sent.clear()
+    asyncio.run(slack.post_failure("2026-08-27", "boom"))
+    check("no empty provenance line", "Reported by" in str(sent["payload"]), False)
+    check("the alarm still goes out", sent["payload"]["channel"], "#support-qc")
+finally:
+    slack._post = real_post
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

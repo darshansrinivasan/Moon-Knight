@@ -388,17 +388,30 @@ async def _lead_mention_blocks(summary: dict) -> list:
 
 
 async def post_failure(date_str: str, error: str, channel: str | None = None) -> dict:
-    """Tell the channel a scheduled run failed, rather than failing silently."""
+    """Tell the channel a scheduled run failed, rather than failing silently.
+
+    The alarm names the instance that raised it. Any deployment holding the same
+    bot token posts to the same channel, so an unconfigured second instance —
+    a stale service, a review environment, someone's laptop — can alarm about a
+    failure that never happened to production, while production's own Runs page
+    shows a clean success. That is not hypothetical: it cost a morning here,
+    with a "No Google Cloud project configured" alarm arriving nine minutes
+    after a run that had fetched and scored 44 tickets without incident. One
+    line of provenance turns that from an investigation into a glance.
+    """
     channel = channel or vault.get_setting("slack_channel").strip()
     if not channel:
         raise SlackNotConfigured("No Slack channel configured")
+    body = f"*⚠️ Scheduled QC run failed — {date_str}*\n```{error[:500]}```"
+    origin = vault.get_setting("dashboard_base_url").strip()
+    if origin:
+        body += f"\n_Reported by_ {origin}"
     return await _post("chat.postMessage", {
         "channel": channel,
         "text": f"⚠️ Scheduled QC run for {date_str} failed: {error}",
         "blocks": [{
             "type": "section",
-            "text": {"type": "mrkdwn",
-                     "text": f"*⚠️ Scheduled QC run failed — {date_str}*\n```{error[:500]}```"},
+            "text": {"type": "mrkdwn", "text": body},
         }],
     })
 
