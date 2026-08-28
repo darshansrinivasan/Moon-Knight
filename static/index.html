@@ -1004,6 +1004,28 @@
   .count-review { color: var(--review); font-variant-numeric: tabular-nums; }
   .count-pend   { color: var(--muted);  font-variant-numeric: tabular-nums; }
 
+  /* analytics filters — right side of the nav bar */
+  .analytics-filters {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .analytics-filters .assignee-ms-dropdown { left: auto; right: 0; }
+  .a-search {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 12px;
+    padding: 4px 8px;
+    width: 150px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .a-search::placeholder { color: var(--muted); }
+  .a-search:focus { border-color: var(--accent); }
+
   /* per-assignee breakdown — click a name on the leaderboard to open */
   .lb-table .assignee-cell { cursor: pointer; }
   .lb-table .assignee-cell:hover { color: var(--accent2); text-decoration: underline; }
@@ -1257,6 +1279,25 @@
     <h2 id="analytics-title">All time</h2>
     <button class="nav-btn" id="next-month-a">&#8250;</button>
     <button class="all-time-btn active" id="all-time-btn">All time</button>
+    <div class="analytics-filters">
+      <input class="a-search" id="a-search" type="search" placeholder="Search name…">
+      <div class="assignee-ms" id="a-group-ms">
+        <button class="assignee-ms-btn" id="a-group-ms-btn" title="Filter by review coverage group">All teams</button>
+        <div class="assignee-ms-dropdown" id="a-group-ms-dropdown">
+          <button class="assignee-ms-clear" id="a-group-ms-clear">All teams</button>
+          <hr class="assignee-ms-divider">
+          <div id="a-group-ms-list"></div>
+        </div>
+      </div>
+      <div class="assignee-ms" id="a-assignee-ms">
+        <button class="assignee-ms-btn" id="a-assignee-ms-btn" title="Filter by assignee">All assignees</button>
+        <div class="assignee-ms-dropdown" id="a-assignee-ms-dropdown">
+          <button class="assignee-ms-clear" id="a-assignee-ms-clear">Clear selection</button>
+          <hr class="assignee-ms-divider">
+          <div id="a-assignee-ms-list"></div>
+        </div>
+      </div>
+    </div>
   </div>
   <div class="week-pills-row" id="week-pills-row">
     <span class="week-pill-label">Week</span>
@@ -2855,7 +2896,9 @@ async function loadAnalytics() {
   try {
     const r    = await fetch(url);
     const data = await r.json();
-    renderAnalytics(data.assignees);
+    analyticsRows = data.assignees || [];
+    populateAnalyticsFilters();
+    applyAnalyticsFilters();
   } catch(e) {
     document.getElementById('lb-body').innerHTML =
       `<tr><td colspan="8" style="text-align:center;color:var(--fail);padding:40px">Failed to load.</td></tr>`;
@@ -2910,6 +2953,12 @@ function renderAnalytics(assignees) {
 
   const medals = ['🥇', '🥈', '🥉'];
 
+  if (!sorted.length) {
+    document.getElementById('lb-body').innerHTML =
+      `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:40px">No assignees match the current filters.</td></tr>`;
+    return;
+  }
+
   document.getElementById('lb-body').innerHTML = sorted.map((a, i) => {
     const rate = a.ai_done ? Math.round(a.pass_count / a.ai_done * 100) : null;
     const t    = a.total || 1; // avoid /0
@@ -2948,6 +2997,161 @@ function renderAnalytics(assignees) {
     </tr>`;
   }).join('');
 }
+
+// ── analytics filters (team, assignee, name search) ──────────────────────────
+// Filtering is client-side: /api/analytics already returns one row per
+// assignee, so a filter is a subset of rows, never another request. The KPI
+// tiles are computed from the rows renderAnalytics receives, so they always
+// describe the filtered view.
+let analyticsRows = [];                 // raw rows from the last /api/analytics
+const aSelectedAssignees = new Set();
+const aSelectedGroups    = new Set();   // coverage id strings, plus "ungrouped"
+let aSearchText = "";
+
+// Persisted separately from the dashboard's filters: "my team on the
+// leaderboard" and "my tickets for today" are different questions.
+const A_FILTER_KEY = "qc.analyticsFilters.v1";
+
+function saveAnalyticsFilters() {
+  try {
+    localStorage.setItem(A_FILTER_KEY, JSON.stringify({
+      assignees: [...aSelectedAssignees],
+      groups:    [...aSelectedGroups],
+      search:    aSearchText,
+    }));
+  } catch { /* storage unavailable — filters simply do not persist */ }
+}
+
+(function restoreAnalyticsFilters() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(A_FILTER_KEY) || "null");
+    if (!saved) return;
+    (Array.isArray(saved.assignees) ? saved.assignees : [])
+      .forEach(n => aSelectedAssignees.add(n));
+    (Array.isArray(saved.groups) ? saved.groups : [])
+      .forEach(g => aSelectedGroups.add(g));
+    if (typeof saved.search === "string") aSearchText = saved.search;
+  } catch { /* unreadable state is the same as none */ }
+})();
+
+function _aAssigneeInSelectedGroups(name) {
+  if (!aSelectedGroups.size) return true;
+  const inAny = coverages.some(c => assigneeInCoverage(name, c));
+  if (aSelectedGroups.has("ungrouped") && !inAny) return true;
+  return coverages.some(c =>
+    aSelectedGroups.has(String(c.id)) && assigneeInCoverage(name, c));
+}
+
+function applyAnalyticsFilters() {
+  let rows = analyticsRows;
+  if (aSelectedGroups.size)    rows = rows.filter(r => _aAssigneeInSelectedGroups(r.assignee));
+  if (aSelectedAssignees.size) rows = rows.filter(r => aSelectedAssignees.has(r.assignee));
+  const q = aSearchText.trim().toLowerCase();
+  if (q) rows = rows.filter(r => r.assignee.toLowerCase().includes(q));
+  renderAnalytics(rows);
+}
+
+function _updateAnalyticsFilterBtns() {
+  const aBtn = document.getElementById('a-assignee-ms-btn');
+  aBtn.textContent = !aSelectedAssignees.size ? 'All assignees'
+    : aSelectedAssignees.size === 1 ? [...aSelectedAssignees][0]
+    : `${aSelectedAssignees.size} assignees`;
+  const gBtn = document.getElementById('a-group-ms-btn');
+  gBtn.textContent = !aSelectedGroups.size ? 'All teams'
+    : aSelectedGroups.size === 1 ? groupName([...aSelectedGroups][0])
+    : `${aSelectedGroups.size} teams`;
+}
+
+function populateAnalyticsFilters() {
+  // Assignees: everyone in the current range, plus any selected name that has
+  // no tickets in it — a saved selection must stay visible to be uncheckable,
+  // not silently constrain the page from off-screen.
+  const names = [...new Set([
+    ...analyticsRows.map(r => r.assignee),
+    ...aSelectedAssignees,
+  ])].sort();
+  const totals = new Map(analyticsRows.map(r => [r.assignee, r.total]));
+
+  document.getElementById('a-assignee-ms-list').innerHTML = names.map(n => {
+    const t = totals.get(n) || 0;
+    return `<label class="assignee-ms-item${t ? '' : ' is-zero'}">
+      <input type="checkbox" value="${esc(n)}" ${aSelectedAssignees.has(n) ? 'checked' : ''}>
+      ${esc(n)} <span class="muted">(${t})</span>
+    </label>`;
+  }).join('');
+
+  const gItems = coverages.map(c => {
+    const id = String(c.id);
+    const n = (c.assignees || []).filter(a => totals.has(a)).length;
+    const mine = QC.me && (c.reviewer_email || '').toLowerCase() === (QC.me.email || '').toLowerCase();
+    return `<label class="assignee-ms-item${n ? '' : ' is-zero'}">
+      <input type="checkbox" value="${esc(id)}" ${aSelectedGroups.has(id) ? 'checked' : ''}>
+      ${esc(mine ? `${c.name} (yours)` : c.name)} <span class="muted">(${n})</span>
+    </label>`;
+  });
+  const hasUngrouped = names.some(n => !coverages.some(c => assigneeInCoverage(n, c)));
+  if (hasUngrouped) {
+    gItems.push(`<label class="assignee-ms-item">
+      <input type="checkbox" value="ungrouped" ${aSelectedGroups.has('ungrouped') ? 'checked' : ''}>
+      Ungrouped
+    </label>`);
+  }
+  document.getElementById('a-group-ms-list').innerHTML = gItems.join('');
+  document.getElementById('a-group-ms').style.display = coverages.length ? 'block' : 'none';
+  document.getElementById('a-assignee-ms').style.display = 'block';
+
+  const wire = (listId, set) => {
+    document.querySelectorAll(`#${listId} input[type=checkbox]`).forEach(cb => {
+      cb.addEventListener('change', () => {
+        if (cb.checked) set.add(cb.value); else set.delete(cb.value);
+        _updateAnalyticsFilterBtns();
+        applyAnalyticsFilters();
+        saveAnalyticsFilters();
+      });
+    });
+  };
+  wire('a-assignee-ms-list', aSelectedAssignees);
+  wire('a-group-ms-list', aSelectedGroups);
+  _updateAnalyticsFilterBtns();
+}
+
+// Dropdown open/close and clear buttons, mirroring the dashboard's filters.
+['a-assignee', 'a-group'].forEach(prefix => {
+  const btn  = document.getElementById(`${prefix}-ms-btn`);
+  const drop = document.getElementById(`${prefix}-ms-dropdown`);
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle('open');
+    btn.classList.toggle('open', open);
+  });
+  document.addEventListener('click', (e) => {
+    if (!drop.contains(e.target)) {
+      drop.classList.remove('open');
+      btn.classList.remove('open');
+    }
+  });
+});
+document.getElementById('a-assignee-ms-clear').addEventListener('click', () => {
+  aSelectedAssignees.clear();
+  populateAnalyticsFilters();
+  applyAnalyticsFilters();
+  saveAnalyticsFilters();
+});
+document.getElementById('a-group-ms-clear').addEventListener('click', () => {
+  aSelectedGroups.clear();
+  populateAnalyticsFilters();
+  applyAnalyticsFilters();
+  saveAnalyticsFilters();
+});
+(function () {
+  const search = document.getElementById('a-search');
+  search.value = aSearchText;
+  search.addEventListener('input', () => {
+    aSearchText = search.value;
+    applyAnalyticsFilters();
+    saveAnalyticsFilters();
+  });
+})();
 
 // ── per-assignee breakdown (click a name on the leaderboard) ─────────────────
 // The current analytics range as {start, end} — the shape the breakdown and
