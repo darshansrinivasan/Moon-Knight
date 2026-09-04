@@ -397,9 +397,14 @@ def save(candidate: dict, updated_by: str) -> list:
         return errors
     # Keep the outgoing document before overwriting it, so the save can be
     # undone in one step. Stored only on a save that is actually accepted.
-    existing = vault.get_raw_setting(RULES_KEY)
-    if existing:
-        vault.set_raw_setting(PREV_KEY, existing, updated_by)
+    #
+    # An empty document when nothing was stored yet, rather than skipping: the
+    # state before the first-ever save is "everything at its default", and
+    # `_load` treats an empty document exactly that way. Skipping it left the
+    # first save — often the one an admin most wants to take back — as the only
+    # save with no way out.
+    existing = vault.get_raw_setting(RULES_KEY) or "{}"
+    vault.set_raw_setting(PREV_KEY, existing, updated_by)
 
     vault.set_raw_setting(RULES_KEY, json.dumps(merged), updated_by)
     invalidate()

@@ -259,6 +259,23 @@ check("returning to the newer document",
 set_rules(disabled_checks=[])
 
 print()
+print("=== the first save is undoable too ===")
+# The state before the first-ever save is "everything at its default", so undo
+# has to restore that rather than refusing. Skipping it left the first save —
+# often the one an admin most wants to take back — as the only one with no way
+# out, which only showed up when the whole flow was exercised over HTTP.
+with db.get_conn() as c:
+    c.execute("DELETE FROM app_settings WHERE key IN (?, ?)",
+              (rules.RULES_KEY, rules.PREV_KEY))
+rules.invalidate()
+ok("nothing stored, so nothing to undo yet", not rules.has_previous())
+set_rules(disabled_checks=["r8"])
+ok("after the very first save, undo is offered", rules.has_previous(),
+   "the previous state is 'all defaults', not 'no state'")
+ok("and it restores", rules.restore_previous("test@x"))
+check("back to defaults", sorted(rules.disabled_checks()), [])
+
+print()
 print("=== descriptions never contradict the controls ===")
 import app
 set_rules(disabled_checks=["r8"])

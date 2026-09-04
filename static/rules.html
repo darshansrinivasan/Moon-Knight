@@ -35,6 +35,29 @@
     display: flex; align-items: center; gap: 12px;
   }
   .savebar .meta { font-size: 11.5px; color: var(--muted); flex: 1; }
+
+  /* A check's on/off switch sits inside the section for that check — where
+     someone looking for it would look — rather than on a page of its own. */
+  .toggle-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 11px 14px; margin-bottom: 16px;
+  }
+  .toggle-row input { margin-top: 2px; flex: none; }
+  .toggle-row .t-txt { min-width: 0; }
+  .toggle-row .t-lab { font-size: 13px; font-weight: 500; }
+  .toggle-row .t-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  /* Off is tinted, not greyed: it is a deliberate choice, not a dead control. */
+  .toggle-row.off {
+    background: color-mix(in srgb, var(--review) 9%, transparent);
+    border-color: color-mix(in srgb, var(--review) 32%, transparent);
+  }
+  .nav-off { font-size: 10px; color: var(--review); margin-left: 6px; }
+  .cond-list { display: flex; flex-direction: column; gap: 7px; margin: 10px 0 0; }
+  .cond {
+    display: flex; align-items: center; gap: 9px; font-size: 12.5px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
   input[type=number] { max-width: 120px; }
 
   /* ── Learned suggestions & prompt dry-run ──
@@ -260,6 +283,15 @@
       <div class="section" id="sec-r8">
         <div class="card">
           <h2 id="t-r8"></h2><p class="what" id="d-r8"></p>
+          <h3>Required conditions</h3>
+          <div class="hint">
+            A ticket escalated to oncall passes R8 only when every ticked condition holds.
+            Untick one to stop requiring it — that is how to drop a field Pylon still
+            defines but nobody fills any more, without switching the whole check off.
+            All four unticked is refused: an R8 with no conditions passes every oncall
+            ticket, which looks like a working check and is not one.
+          </div>
+          <div class="cond-list" id="r8-conds"></div>
           <h3>Oncall categories</h3>
           <div class="hint">Comma-separated request_category values accepted as oncall.</div>
           <input type="text" id="r8_oncall_categories" spellcheck="false">
@@ -351,6 +383,8 @@
 
       <div class="savebar" id="savebar">
         <span class="meta" id="meta"></span>
+        <button class="ghost" id="undo" style="display:none"
+                title="Restore the rules as they were before the last save">Undo last save</button>
         <button class="ghost" id="load-defaults">Load defaults into form</button>
         <button id="save">Validate &amp; save</button>
       </div>
@@ -546,6 +580,17 @@ function collect() {
   for (const k of CSVS)  rules[k] = $(k).value.split(",").map(x => x.trim()).filter(Boolean);
   rules.r4_sla_hours = Number($("r4_sla_hours").value);
   Object.assign(rules, draftPrompt());
+  // Disabled checks and R8's conditions. Sent as complete lists because they
+  // are sets, not merges — an unticked box has to be absent from the list.
+  const boxes = [...document.querySelectorAll("[data-check]")];
+  if (boxes.length) {
+    rules.disabled_checks = boxes.filter(b => !b.checked)
+                                 .map(b => b.dataset.check);
+  }
+  const conds = [...document.querySelectorAll("[data-cond]")];
+  if (conds.length) {
+    rules.r8_conditions = conds.filter(b => b.checked).map(b => b.dataset.cond);
+  }
   const gs = {};
   for (const line of $("r5_group_states").value.split("\n")) {
     const [st, tags] = line.split(":");
@@ -553,6 +598,86 @@ function collect() {
   }
   rules.r5_group_states = gs;
   return rules;
+}
+
+/* ── switching a check off ───────────────────────────────────────────────────
+ * Injected into each R-check's own section rather than gathered onto a page of
+ * its own, so the switch is where the rule it governs is.
+ *
+ * The copy has to carry one fact or the control is frightening: turning a check
+ * off does not delete anything. Stored verdicts are kept and simply stop
+ * counting, so turning it back on restores the old grades exactly.
+ */
+function renderCheckToggles() {
+  for (const c of (DATA.checks || [])) {
+    const host = $("sec-" + c.key);
+    if (!host) continue;
+    const card = host.querySelector(".card");
+    if (!card) continue;
+
+    let row = card.querySelector(".toggle-row");
+    if (!row) {
+      row = document.createElement("label");
+      row.className = "toggle-row";
+      card.insertBefore(row, card.firstChild);
+    }
+    row.innerHTML = `
+      <input type="checkbox" data-check="${esc(c.key)}" ${c.enabled ? "checked" : ""}
+             ${DATA.can_edit ? "" : "disabled"}>
+      <span class="t-txt">
+        <span class="t-lab">Run this check</span>
+        <span class="t-sub">Unticking it keeps every stored verdict but stops them
+          counting towards any grade, the leaderboard, the calendar or the Slack
+          report. Ticking it again restores those grades exactly — nothing is
+          deleted.</span>
+      </span>`;
+    row.classList.toggle("off", !c.enabled);
+    const box = row.querySelector("input");
+    box.addEventListener("change", () => {
+      row.classList.toggle("off", !box.checked);
+      markNavOff(c.key, !box.checked);
+    });
+    markNavOff(c.key, !c.enabled);
+  }
+
+  const conds = $("r8-conds");
+  if (conds) {
+    conds.innerHTML = (DATA.r8_conditions || []).map(c => `
+      <label class="cond">
+        <input type="checkbox" data-cond="${esc(c.key)}" ${c.required ? "checked" : ""}
+               ${DATA.can_edit ? "" : "disabled"}>
+        ${esc(c.label)}
+      </label>`).join("");
+  }
+}
+
+// A check that is off should be visible from the nav, not only once you open it.
+function markNavOff(key, off) {
+  const btn = document.querySelector(`#rule-nav [data-jump-nav="${key}"]`);
+  if (!btn) return;
+  btn.querySelector(".nav-off")?.remove();
+  if (off) {
+    const tag = document.createElement("span");
+    tag.className = "nav-off";
+    tag.textContent = "off";
+    btn.appendChild(tag);
+  }
+}
+
+// Titles and descriptions are served, not hardcoded: R4's names the live SLA and
+// R8's lists the conditions actually required, so the prose cannot contradict
+// the controls beside it.
+function renderDescriptions() {
+  for (const [k, pair] of Object.entries(DATA.descriptions || {})) {
+    const [title, what] = pair;
+    if ($(`t-${k}`)) { $(`t-${k}`).textContent = title; $(`d-${k}`).textContent = what; }
+  }
+}
+
+function renderUndo() {
+  const btn = $("undo");
+  if (!btn) return;
+  btn.style.display = (DATA.can_undo && DATA.can_edit) ? "" : "none";
 }
 
 function renderMeta() {
@@ -593,15 +718,15 @@ async function load() {
   if (!r.ok) throw new Error(DATA.detail || `HTTP ${r.status}`);
   DATA.labels = DATA.labels || {};
 
-  for (const [k, [title, what]] of Object.entries(DATA.descriptions)) {
-    if ($(`t-${k}`)) { $(`t-${k}`).textContent = title; $(`d-${k}`).textContent = what; }
-  }
+  renderDescriptions();
   $("rubric").textContent = DATA.rubric;
   renderNav();
   renderPromptSections();
   renderPromptFixed();
   fillForm(DATA.rules, DATA.labels);
+  renderCheckToggles();
   renderMeta();
+  renderUndo();
 
   if (!DATA.can_edit) {
     document.body.classList.add("readonly");
@@ -617,6 +742,37 @@ async function load() {
       These are the rules every run is scored against. Changing them needs an administrator.</div>`;
   }
 }
+
+$("undo").addEventListener("click", async () => {
+  const btn = $("undo");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/rules/undo", {method: "POST"});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { show("err", esc(d.detail || `HTTP ${r.status}`)); return; }
+    DATA.rules = d.rules; DATA.rules_hash = d.rules_hash; DATA.meta = d.meta;
+    DATA.can_undo = d.can_undo;
+    const fresh = await (await fetch("/api/rules")).json();
+    DATA.checks = fresh.checks || DATA.checks;
+    DATA.r8_conditions = fresh.r8_conditions || DATA.r8_conditions;
+    DATA.descriptions = fresh.descriptions || DATA.descriptions;
+    DATA.labels = fresh.labels || DATA.labels;
+    fillForm(DATA.rules, DATA.labels);
+    renderCheckToggles();
+    renderDescriptions();
+    renderMeta();
+    renderUndo();
+    const moved = (d.resync || {}).overall_updated || 0;
+    show("ok", `<b>Restored the previous rules.</b> Hash is now ${esc(d.rules_hash)}.
+      ${moved ? `<b>${esc(moved)}</b> ticket${moved === 1 ? "" : "s"} changed grade back.`
+              : "No stored grade changed."}
+      Pressing Undo again returns to the newer version.`);
+  } catch (e) {
+    show("err", esc(e.message));
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $("load-defaults").addEventListener("click", () => {
   fillForm(DATA.defaults, null);
