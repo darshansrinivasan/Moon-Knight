@@ -214,6 +214,10 @@ SETTING_SPECS = [
     {"key": "vertex_models",      "legacy_env": "VERTEX_MODELS",    "default": ""},
     {"key": "slack_enabled",      "legacy_env": "SLACK_ENABLED",    "default": "0", "bool": True},
     {"key": "slack_channel",      "legacy_env": "SLACK_CHANNEL",    "default": ""},
+    # Opt-in permission for a non-deployed copy to do outward-facing things:
+    # post to Slack, run the scheduler. No legacy_env on purpose — a copied
+    # .env is exactly how a laptop ends up believing it is production.
+    {"key": "allow_local_side_effects", "default": "0", "bool": True},
     # off | leads | all. Defaults to leads: @-mentioning every assignee about
     # their own failed tickets, daily, in a group channel is a deliberate choice
     # and needs to be reversible without a deploy.
@@ -300,6 +304,31 @@ def railway_domain() -> str:
         if host:
             return host if host.startswith("http") else f"https://{host}"
     return ""
+
+
+def is_deployment() -> bool:
+    """True when this process is the deployed instance.
+
+    Railway sets RAILWAY_PUBLIC_DOMAIN in every deployment and nowhere else, so
+    its absence means a laptop, a hand-run container, or a test.
+    """
+    return bool(railway_domain())
+
+
+def may_act_outward() -> bool:
+    """Whether this process may post to Slack or run scheduled work.
+
+    A local copy holding the same tokens reaches the same Slack channel as
+    production. On 28 August that put a "No Google Cloud project configured"
+    alarm into #support-qc nine minutes after production had scored the same
+    date cleanly, 44 of 44, with no matching row in production's database — and
+    it explained an earlier report that scheduler failures never appeared on the
+    Runs page.
+
+    Opt-in rather than opt-out, and with no legacy_env, so the copied `.env`
+    that causes the problem cannot also grant the exemption.
+    """
+    return is_deployment() or get_setting("allow_local_side_effects") == "1"
 
 
 # ── credentials ───────────────────────────────────────────────────────────────

@@ -176,6 +176,57 @@ finally:
     slack._post = real_post
 
 print()
+print("=== a non-deployed copy must not write into the workspace ===")
+# A local copy holding the same bot token reaches the same channel as
+# production. On 28 August that put a "No Google Cloud project configured"
+# alarm into #support-qc nine minutes after production had scored the same date
+# 44 of 44, with no matching row in production's database.
+import os
+
+import vault
+
+saved_env = os.environ.pop("RAILWAY_PUBLIC_DOMAIN", None)
+try:
+    vault.set_settings({"allow_local_side_effects": "0"}, "test")
+    check("this process is not the deployment", vault.is_deployment(), False)
+    check("so it may not act outward", vault.may_act_outward(), False)
+    check("and Slack agrees", slack.may_post(), False)
+
+    async def _attempt(method):
+        try:
+            await slack._post(method, {"channel": "#x", "text": "hi"})
+            return "posted"
+        except slack.NotTheDeployment as e:
+            return str(e)
+
+    refusal = asyncio.run(_attempt("chat.postMessage"))
+    check("a write is refused", refusal != "posted", True)
+    check("the refusal explains why", "not the deployed instance" in refusal, True)
+    check("and names the override", "allow_local_side_effects" in refusal, True)
+
+    # Reads stay available — checking a token from a laptop is legitimate.
+    check("auth.test stays available", "auth.test" not in slack._WRITE_METHODS, True)
+
+    # Explicit opt-in, because someone testing delivery should know they did.
+    vault.set_settings({"allow_local_side_effects": "1"}, "test")
+    check("the override is respected", slack.may_post(), True)
+    vault.set_settings({"allow_local_side_effects": "0"}, "test")
+
+    # A deployment is recognised by the platform variable, nothing else.
+    os.environ["RAILWAY_PUBLIC_DOMAIN"] = "qc-production-d634.up.railway.app"
+    check("a deployment may post", slack.may_post(), True)
+finally:
+    os.environ.pop("RAILWAY_PUBLIC_DOMAIN", None)
+    if saved_env is not None:
+        os.environ["RAILWAY_PUBLIC_DOMAIN"] = saved_env
+
+# The setting must not be grantable from a copied .env — that file is exactly
+# how a laptop comes to believe it is production.
+spec = next(s for s in vault.SETTING_SPECS
+            if s["key"] == "allow_local_side_effects")
+check("no legacy_env on the override", "legacy_env" not in spec, True)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

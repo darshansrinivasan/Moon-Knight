@@ -44,7 +44,35 @@ def _token() -> str:
     return tok
 
 
+class NotTheDeployment(RuntimeError):
+    """This process is not the deployed instance, so it must not post."""
+
+
+# Methods that write into the workspace. Reads (auth.test, users.list) stay
+# available locally, since they are how an admin checks their token works.
+_WRITE_METHODS = frozenset({"chat.postMessage", "chat.update",
+                            "chat.postEphemeral", "files.upload"})
+
+
+def may_post() -> bool:
+    """Whether this process may write into the Slack workspace.
+
+    Delegates to `vault.may_act_outward`, which the scheduler also consults —
+    posting a report and running a scheduled job are the same question about the
+    same process, and answering it in two places is how the two come to
+    disagree.
+    """
+    return vault.may_act_outward()
+
+
 async def _post(method: str, payload: dict) -> dict:
+    if method in _WRITE_METHODS and not may_post():
+        raise NotTheDeployment(
+            "Refusing to post to Slack: this is not the deployed instance "
+            "(no RAILWAY_PUBLIC_DOMAIN). A local copy sharing the bot token "
+            "would post into the team's channel alongside production. Set "
+            "allow_local_side_effects in Admin if you mean to send from here."
+        )
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post(
             f"{SLACK_API}/{method}",

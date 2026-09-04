@@ -126,6 +126,11 @@ def _already_ran(trigger_date: str) -> bool:
     return datetime.now(timezone.utc) - last < RETRY_BACKOFF
 
 
+# Set once when a non-deployed process declines to run, so the explanation
+# appears in the log a single time rather than on every tick.
+_warned_not_deployment = False
+
+
 def _claim_alarm(trigger_date: str) -> bool:
     """Claim the right to post one failure alarm for this trigger date.
 
@@ -300,6 +305,24 @@ async def _tick() -> None:
 
     settings = vault.get_settings()
     if settings["schedule_enabled"] != "1":
+        return
+
+    # `schedule_enabled` already defaults to "0", so a fresh database schedules
+    # nothing. The leak is its legacy_env fallback: a copied `.env` carrying
+    # SCHEDULE_ENABLED=1 turns a laptop into a second scheduler, fetching and
+    # posting daily against the shared Pylon and Slack tokens. Logged once per
+    # process rather than per tick, so the reason is visible without filling
+    # the log minute by minute.
+    if not vault.may_act_outward():
+        global _warned_not_deployment
+        if not _warned_not_deployment:
+            _warned_not_deployment = True
+            logger.warning(
+                "Scheduler is enabled but this is not the deployed instance "
+                "(no RAILWAY_PUBLIC_DOMAIN) — not running. A local copy would "
+                "fetch and post alongside production. Set "
+                "allow_local_side_effects in Admin to override."
+            )
         return
 
     parsed = _parse_schedule_time(settings["schedule_time"])
