@@ -50,6 +50,27 @@ _BOT_ACK_FILLER = {
 # How many NON-filler words may remain around the id before we call it human.
 BOT_ACK_MAX_CONTENT_WORDS = 1
 
+# Checks an admin may switch off. r6 is never computed by `score_all` and r9
+# always returns N/A, so offering a toggle for either would be a control that
+# does nothing — see t_rulecfg for the assertion that keeps this in step with
+# what `score_all` actually produces.
+DEAD_CHECKS = ("r6", "r9")
+TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8")
+
+# R8's conditions, each independently required or not. The field this reads,
+# `does_rootly_exist`, is still defined in Pylon but has stopped being filled;
+# dropping the condition is how an admin says so without a deploy.
+R8_CONDITIONS = ("rootly_yes", "rootly_ref", "jira_link", "oncall_category")
+
+R8_CONDITION_LABELS = {
+    "rootly_yes":      "does_rootly_exist is 'Yes'",
+    "rootly_ref":      "a Rootly incident reference is filled",
+    "jira_link":       "a Jira link is present",
+    "oncall_category": "request_category is an oncall category",
+}
+
+# `waiting_on_engineering` is not a status Pylon reports — the live status list
+# is the 13 in SPEC_v5. Kept only so a historic row carrying it still matches.
 ENGG_STATES = {"waiting_on_engg", "waiting_on_engineering"}
 TERMINAL_STATES = {"closed", "archived"}
 WAITING_CUSTOMER = {"waiting_on_customer"}
@@ -701,13 +722,21 @@ def r8(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     if res_cat != "escalated to oncall" and not has_ref:
         return "N/A"
 
-    has_rootly_yes = (cf.get("does_rootly_exist") or {}).get("value") == "Yes"
-    has_jira_link  = _has_jira(issue, messages, external_issues)
-    req_cat        = (_cf_val(cf.get("request_category")) or "").strip().lower()
-
-    return "Pass" if (
-        has_rootly_yes and has_ref and has_jira_link
-        and req_cat in qc_rules.oncall_categories()
+    # Each condition is required only if the admin still requires it. An empty
+    # set is rejected by validation rather than silently making R8 a free pass,
+    # so `required` always holds at least one entry here.
+    required = qc_rules.r8_conditions()
+    checks = {
+        "rootly_yes": lambda: (cf.get("does_rootly_exist") or {}).get("value") == "Yes",
+        "rootly_ref": lambda: has_ref,
+        "jira_link":  lambda: _has_jira(issue, messages, external_issues),
+        "oncall_category": lambda: (
+            (_cf_val(cf.get("request_category")) or "").strip().lower()
+            in qc_rules.oncall_categories()
+        ),
+    }
+    return "Pass" if all(
+        test() for name, test in checks.items() if name in required
     ) else "Fail"
 
 

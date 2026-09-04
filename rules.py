@@ -26,6 +26,14 @@ _cache: dict | None = None
 
 RULES_KEY = "qc_rules_json"
 
+# The document as it was before the last save, kept for a single undo. Not a
+# version history: one step back, because `set_raw_setting` is INSERT OR REPLACE
+# and the audit log stores only a hash, so before this there was no way to
+# recover from a bad save at all. That was tolerable while edits were rosters
+# and prose; once one save can change what "Pass" means across months of
+# tickets, "nothing breaks" has to include "a bad save is recoverable".
+PREV_KEY = "qc_rules_json_prev"
+
 _USER_ID  = re.compile(r"^[UW][A-Z0-9]{4,}$")
 _GROUP_ID = re.compile(r"^S[A-Z0-9]{4,}$")
 _STATE    = re.compile(r"^[a-z0-9_]+$")
@@ -46,6 +54,20 @@ def defaults() -> dict:
     return {
         # AI scoring scope: tickets in these states are left un-scored.
         "excluded_states":       [],
+
+        # Checks switched off. This is a read-time mask, not a scoring change:
+        # stored verdicts are never rewritten, every consumer filters through
+        # `enabled_rule_keys()`, and saving resyncs the stored overalls with no
+        # AI calls. That makes turning a check off immediate, free and
+        # reversible — see SPEC_v5 decision D1 for why writing N/A at fetch time
+        # was rejected (it moves qc_fingerprint and rebills identical prompts).
+        "disabled_checks":      [],
+
+        # R8's conditions, each required only while it is listed here. The
+        # `does_rootly_exist` field is still defined in Pylon but has stopped
+        # being filled, so dropping `rootly_yes` is how an admin says that
+        # without waiting for a deploy.
+        "r8_conditions":        list(scorer.R8_CONDITIONS),
 
         # R3 — what counts as an internal / invalid account
         "r3_internal_account_ids":   _roster_lines(scorer.INTERNAL_ACCOUNTS),
@@ -164,6 +186,52 @@ def excluded_states() -> list:
     return [s for s in current().get("excluded_states", []) if s]
 
 
+def disabled_checks() -> set:
+    """Checks the admin has switched off. Only toggleable keys count."""
+    import scorer
+    allowed = set(scorer.TOGGLEABLE_CHECKS)
+    return {str(k).strip().lower() for k in current().get("disabled_checks", [])
+            if str(k).strip().lower() in allowed}
+
+
+def enabled_rule_keys(keys=None) -> tuple:
+    """`keys` minus whatever is switched off, order preserved.
+
+    The single gate every consumer reads: the overall verdict, the leaderboard
+    sums, the Slack counts, the calendar's failure column, the drill-down and
+    the dashboard matrix. A disabled check has to disappear from all of them at
+    once or it keeps failing tickets somewhere nobody thought to look.
+
+    Defaults to the toggleable set. Pass the caller's own tuple to preserve
+    keys this does not govern (r9 still appears in stored rows).
+    """
+    import scorer
+    if keys is None:
+        keys = scorer.TOGGLEABLE_CHECKS
+    off = disabled_checks()
+    return tuple(k for k in keys if k not in off)
+
+
+def check_enabled(key: str) -> bool:
+    return str(key).strip().lower() not in disabled_checks()
+
+
+def r8_conditions() -> set:
+    """Which of R8's four conditions are still required.
+
+    Falls back to all of them when the stored list is empty or unrecognised:
+    an empty requirement set would make R8 pass every oncall ticket, which
+    looks like a working check and is not one. Validation rejects the empty
+    list on save; this is the second line of defence for a document written
+    before the key existed.
+    """
+    import scorer
+    allowed = set(scorer.R8_CONDITIONS)
+    chosen = {str(c).strip() for c in current().get("r8_conditions", [])}
+    chosen &= allowed
+    return chosen or set(scorer.R8_CONDITIONS)
+
+
 def excluded_state_clause(alias: str = "t") -> tuple:
     """SQL predicate dropping out-of-scope states, plus its params.
 
@@ -260,6 +328,37 @@ def validate(candidate: dict) -> list:
                 if not str(t).startswith("@"):
                     errors.append(f"r5_group_states: tag '{t}' must start with @")
 
+    import scorer
+    if "disabled_checks" in candidate:
+        raw = candidate.get("disabled_checks")
+        if not isinstance(raw, list):
+            errors.append("disabled_checks must be a list of check keys")
+        else:
+            for key in raw:
+                if str(key).strip().lower() not in scorer.TOGGLEABLE_CHECKS:
+                    errors.append(
+                        f"disabled_checks: '{key}' is not a check that can be "
+                        f"switched off (choose from "
+                        f"{', '.join(scorer.TOGGLEABLE_CHECKS)})")
+
+    if "r8_conditions" in candidate:
+        raw = candidate.get("r8_conditions")
+        if not isinstance(raw, list):
+            errors.append("r8_conditions must be a list")
+        else:
+            unknown = [c for c in raw
+                       if str(c).strip() not in scorer.R8_CONDITIONS]
+            for c in unknown:
+                errors.append(f"r8_conditions: '{c}' is not one of "
+                              f"{', '.join(scorer.R8_CONDITIONS)}")
+            # An R8 with no conditions passes every oncall ticket, which reads
+            # as a working check and is not one. Switching R8 off is the honest
+            # way to say "stop checking this".
+            if not unknown and not [c for c in raw if str(c).strip()]:
+                errors.append(
+                    "r8_conditions cannot be empty — an R8 with no conditions "
+                    "would pass every oncall ticket. Switch R8 off instead.")
+
     if len(str(candidate.get("a_guidance", ""))) > 4000:
         errors.append("a_guidance must be 4000 characters or fewer")
 
@@ -296,6 +395,33 @@ def save(candidate: dict, updated_by: str) -> list:
     errors = validate(merged)
     if errors:
         return errors
+    # Keep the outgoing document before overwriting it, so the save can be
+    # undone in one step. Stored only on a save that is actually accepted.
+    existing = vault.get_raw_setting(RULES_KEY)
+    if existing:
+        vault.set_raw_setting(PREV_KEY, existing, updated_by)
+
     vault.set_raw_setting(RULES_KEY, json.dumps(merged), updated_by)
     invalidate()
     return []
+
+
+def has_previous() -> bool:
+    return bool(vault.get_raw_setting(PREV_KEY))
+
+
+def restore_previous(updated_by: str) -> bool:
+    """Put the previous document back. Returns False when there is none.
+
+    The document being replaced becomes the new undo target, so undo is
+    reversible too — press it twice and you are back where you started, which
+    is what someone comparing two settings actually wants.
+    """
+    prev = vault.get_raw_setting(PREV_KEY)
+    if not prev:
+        return False
+    current_doc = vault.get_raw_setting(RULES_KEY) or ""
+    vault.set_raw_setting(RULES_KEY, prev, updated_by)
+    vault.set_raw_setting(PREV_KEY, current_doc, updated_by)
+    invalidate()
+    return True

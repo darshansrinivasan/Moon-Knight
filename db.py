@@ -514,9 +514,7 @@ _CALENDAR_CELL_SQL = """
         -- archived; and counting archived tickets here made the badge disagree
         -- with the day panel, which excludes them.
         COUNT(DISTINCT t.id) AS ticket_count,
-        SUM(CASE WHEN rc.r1='Fail' OR rc.r2='Fail' OR rc.r3='Fail'
-                      OR rc.r4='Fail' OR rc.r5='Fail' OR rc.r7='Fail'
-                      OR rc.r8='Fail' OR rc.r9='Fail' THEN 1 ELSE 0 END) AS rule_fails,
+        SUM(CASE WHEN {rule_fail_or} THEN 1 ELSE 0 END) AS rule_fails,
         SUM(CASE WHEN ac.overall_result = 'Fail'         THEN 1 ELSE 0 END) AS ai_fails,
         SUM(CASE WHEN ac.overall_result = 'Needs Review' THEN 1 ELSE 0 END) AS needs_review,
         COUNT(ac.ticket_id) AS ai_done_count,
@@ -530,11 +528,27 @@ _CALENDAR_CELL_SQL = """
 """
 
 
+def _rule_fail_or() -> str:
+    """The `rc.rX='Fail' OR …` chain, built from the checks that are switched on.
+
+    This used to be a literal chain of r1..r9. Left literal, a check an admin
+    had switched off would keep colouring calendar squares red — the one place
+    the mask would have leaked, because it is the only failure count expressed
+    as SQL rather than Python.
+    """
+    import rules as qc_rules
+    keys = qc_rules.enabled_rule_keys()
+    if not keys:
+        return "0"          # every check off: no rule failures, not all of them
+    return " OR ".join(f"rc.{k}='Fail'" for k in keys)
+
+
 def _calendar_sql(where: str) -> tuple:
     """The cell query for one WHERE shape, with the scope filter folded in."""
     clause, extra = _scope_clause("t")
     return (_CALENDAR_CELL_SQL.format(
-        where=where, scope=f"AND {clause}" if clause else ""), extra)
+        where=where, scope=f"AND {clause}" if clause else "",
+        rule_fail_or=_rule_fail_or()), extra)
 
 
 def get_calendar_month(year: int, month: int):

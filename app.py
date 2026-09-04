@@ -846,12 +846,43 @@ RULE_DESCRIPTIONS = {
     "r1": ("R1 — Functionality", "The 'functionalities' custom field must be filled. No parameters."),
     "r2": ("R2 — Request category", "The 'request_category' custom field must be filled. No parameters."),
     "r3": ("R3 — Real customer account", "The ticket must link to a genuine external account — not an internal catch-all, dogfooding, or trial account."),
-    "r4": ("R4 — Response time", "No customer message may go unanswered longer than the SLA."),
+    "r4": ("R4 — Response time", "No customer message may go unanswered longer than the SLA."),  # SLA filled in live
     "r5": ("R5 — Status ownership", "A ticket's state must match who owns the next action, proven by an @-mention of someone on the right team (or a Rootly/Jira link for engineering)."),
     "r7": ("R7 — Rootly/Jira link", "Engineering tickets must reference a Rootly incident or Jira issue. No parameters."),
-    "r8": ("R8 — Oncall completeness", "When escalated to oncall, all four fields must be consistent: rootly exists, reference filled, Jira linked, category is an oncall one."),
+    "r8": ("R8 — Oncall completeness", "When escalated to oncall, the required fields must be consistent."),  # conditions filled in live
     "a":  ("A1–A5 — AI grading", "Category accuracy, customer sentiment, response quality, status-vs-conversation, and premature closure — graded by Gemini against a fixed rubric with pinned generation."),
 }
+
+
+def live_rule_descriptions() -> dict:
+    """RULE_DESCRIPTIONS with the configurable parts filled in from the rules.
+
+    The prose used to state settings as facts — "all four fields must be
+    consistent", "the 'functionalities' custom field" — which stops being true
+    the moment an admin changes one. A description that contradicts the control
+    next to it is worse than no description, so the two configurable ones are
+    completed from the live document, and a switched-off check says so first.
+    """
+    import rules as qc_rules
+    import scorer
+
+    out = {}
+    off = qc_rules.disabled_checks()
+    conditions = qc_rules.r8_conditions()
+    for key, (title, desc) in RULE_DESCRIPTIONS.items():
+        if key == "r4":
+            desc = (f"No customer message may go unanswered longer than "
+                    f"{qc_rules.sla_hours():g} hours.")
+        elif key == "r8":
+            required = [scorer.R8_CONDITION_LABELS[c]
+                        for c in scorer.R8_CONDITIONS if c in conditions]
+            desc = ("When escalated to oncall, all of these must hold: "
+                    + "; ".join(required) + ".")
+        if key in off:
+            desc = ("Switched off — stored verdicts are kept but no longer "
+                    "count towards any grade. " + desc)
+        out[key] = (title, desc)
+    return out
 
 
 @app.get("/rules", response_class=HTMLResponse)
@@ -905,7 +936,27 @@ async def get_rules(user: dict = Depends(auth.require_user)):
         "defaults":     qc_rules.defaults(),
         "labels":       labels,
         "rules_hash":   qc_rules.rules_hash(),
-        "descriptions": RULE_DESCRIPTIONS,
+        "descriptions": live_rule_descriptions(),
+        # The toggle surface, served rather than hardcoded in the page so the
+        # controls cannot offer a key validation would reject.
+        "checks": [
+            {
+                "key":     key,
+                "title":   live_rule_descriptions()[key][0],
+                "help":    live_rule_descriptions()[key][1],
+                "enabled": key not in qc_rules.disabled_checks(),
+            }
+            for key in __import__("scorer").TOGGLEABLE_CHECKS
+        ],
+        "r8_conditions": [
+            {
+                "key":      c,
+                "label":    __import__("scorer").R8_CONDITION_LABELS[c],
+                "required": c in qc_rules.r8_conditions(),
+            }
+            for c in __import__("scorer").R8_CONDITIONS
+        ],
+        "can_undo": qc_rules.has_previous(),
         "states_seen":  await asyncio.to_thread(states_seen),
         "meta":         vault.get_setting_meta(qc_rules.RULES_KEY),
         "can_edit":     user["role"] == "admin",
@@ -1055,8 +1106,49 @@ async def put_rules(request: Request, user: dict = Depends(auth.require_admin)):
 
     vault.audit(user["email"], "rules.update",
                 f"hash={qc_rules.rules_hash()} keys={', '.join(sorted(candidate.keys()))}")
+
+    # Stored overalls are derived from stored R-verdicts through the enabled-key
+    # mask, so a rules save can change a verdict without any ticket changing.
+    # Resyncing here is what makes switching a check off take effect now rather
+    # than at the next refetch — and it costs nothing: pure SQL, no AI calls.
+    resync = await asyncio.to_thread(resync_overall.run)
+    if resync["overall_updated"] or resync["notes_updated"]:
+        vault.audit(
+            user["email"], "rules.resync",
+            f"hash={qc_rules.rules_hash()} "
+            f"overall={resync['overall_updated']} notes={resync['notes_updated']} "
+            f"({', '.join(f'{k} x{v}' for k, v in sorted(resync['changes'].items())) or '-'})",
+        )
+
     return {"ok": True, "rules": qc_rules.current(), "rules_hash": qc_rules.rules_hash(),
-            "meta": vault.get_setting_meta(qc_rules.RULES_KEY)}
+            "meta": vault.get_setting_meta(qc_rules.RULES_KEY),
+            # What the save actually moved, so the page can say so instead of
+            # leaving the admin to guess whether it did anything.
+            "resync": resync,
+            "can_undo": qc_rules.has_previous()}
+
+
+@app.post("/api/rules/undo")
+async def undo_rules(user: dict = Depends(auth.require_admin)):
+    """Put the previous rules document back, and resync what it changes.
+
+    One step, not a history. `set_raw_setting` is INSERT OR REPLACE and the
+    audit log records only a hash, so without this a save that moved grades the
+    wrong way could not be walked back.
+    """
+    import rules as qc_rules
+
+    restored = await asyncio.to_thread(qc_rules.restore_previous, user["email"])
+    if not restored:
+        raise HTTPException(400, "There is no previous rules document to restore.")
+
+    vault.audit(user["email"], "rules.undo", f"hash={qc_rules.rules_hash()}")
+    resync = await asyncio.to_thread(resync_overall.run)
+    return {"ok": True, "rules": qc_rules.current(),
+            "rules_hash": qc_rules.rules_hash(),
+            "meta": vault.get_setting_meta(qc_rules.RULES_KEY),
+            "resync": resync,
+            "can_undo": qc_rules.has_previous()}
 
 
 # ── run history ───────────────────────────────────────────────────────────────

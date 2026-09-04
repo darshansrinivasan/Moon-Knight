@@ -458,9 +458,27 @@ def _strip_r_notes(note: str) -> str:
 
 def _r_check_notes(r_checks: dict, cf: dict | None = None,
                    state: str = "", account_name: str = "") -> str:
-    """Return specific, actionable failure reasons for failing R-checks."""
+    """Return specific, actionable failure reasons for failing R-checks.
+
+    This is a third independent statement of the rules — after `scorer` and
+    `evidence` — and it is the only one that gets *persisted*, into
+    `ai_checks.ai_notes`, and read out in the morning Slack report. So it has to
+    follow configuration or it tells people to fix things the rules no longer
+    ask for. It did not: the R4 line said ">24 hours" whatever `r4_sla_hours`
+    was set to, and the R5 line named five Slack groups by hand while
+    `eng_group_ids` was editable underneath it.
+
+    `resync_overall` re-derives these notes from stored verdicts, so a rules
+    save corrects the wording of past notes without any AI call.
+    """
+    import rules as qc_rules
+
     cf = cf or {}
     parts = []
+    # A switched-off check contributes no advice. Its stored verdict is
+    # untouched, but nobody should be told to act on a rule that is not live.
+    r_checks = {k: v for k, v in (r_checks or {}).items()
+                if qc_rules.check_enabled(k)}
 
     if r_checks.get("r1") == "Fail":
         parts.append("R1 Fail: 'Functionalities' field is empty — fill in the product area affected")
@@ -473,7 +491,11 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
         parts.append(f"R3 Fail: linked account{acct} is internal or invalid — re-link to the correct customer account")
 
     if r_checks.get("r4") == "Fail":
-        parts.append("R4 Fail: customer's last message has gone unanswered for >24 hours — reply or update the customer immediately")
+        hours = qc_rules.sla_hours()
+        window = f"{hours:g} hours" if hours != 1 else "1 hour"
+        parts.append(
+            f"R4 Fail: customer's last message has gone unanswered for "
+            f">{window} — reply or update the customer immediately")
 
     if r_checks.get("r5") == "Fail":
         state_lower = state.lower()
@@ -483,10 +505,15 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
                 "@ mention the assigned CSM, IM, @cs, or @implementation to formally hand off"
             )
         elif state_lower in ("waiting_on_engg", "waiting_on_engineering"):
+            # Groups come from the roster, not a hand-written list that goes
+            # stale the first time someone edits eng_group_ids.
+            groups = [e["name"] for e in qc_rules.labeled_entries("eng_group_ids")]
+            named = f" ({', '.join(groups)})" if groups else ""
             parts.append(
-                "R5 Fail: ticket is 'waiting_on_engg' but no engineer or engineering group (@eng-be, @eng-fe, @eng--oncall, "
-                "@pod-sidebar, @pod-ai-infra) is tagged in the thread, and no Rootly/Jira link exists — "
-                "tag the relevant engineer or add a Jira/Rootly link"
+                f"R5 Fail: ticket is 'waiting_on_engg' but no engineer or "
+                f"engineering group{named} is tagged in the thread, and no "
+                f"Rootly/Jira link exists — tag the relevant engineer or add a "
+                f"Jira/Rootly link"
             )
         elif state_lower == "waiting_on_product":
             parts.append(
@@ -539,7 +566,11 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
 
 
 def _compute_overall(r_checks: dict, a: dict) -> str:
-    r_keys = R_CHECK_KEYS
+    # Only the checks that are switched on. A disabled check keeps its stored
+    # verdict — the mask lives here, at read time, so nothing has to be
+    # rewritten and re-enabling restores the old verdict exactly.
+    import rules as qc_rules
+    r_keys = qc_rules.enabled_rule_keys(R_CHECK_KEYS)
     if any(r_checks.get(k) == "Fail" for k in r_keys):
         return "Fail"
     if a.get("a3") == "Poor" or a.get("a5") == "Fail":

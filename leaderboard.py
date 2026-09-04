@@ -51,6 +51,17 @@ _EFFECTIVE_GRADE = EFFECTIVE_GRADE_SQL
 RULE_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8")
 
 
+def _keys() -> tuple:
+    """RULE_KEYS minus the checks an admin has switched off.
+
+    A function rather than a constant: the mask is read per request, so
+    switching a check off takes effect without a restart. The import is
+    deferred to match the rest of this module — `rules` imports `db`.
+    """
+    import rules as qc_rules
+    return qc_rules.enabled_rule_keys(RULE_KEYS)
+
+
 def _pass_rate(pass_count: int, graded: int) -> float | None:
     """None when nothing was graded — see the module docstring."""
     if not graded:
@@ -153,7 +164,7 @@ def _blank(name: str) -> dict:
     return {
         "name": name, "in_scope": 0, "graded": 0,
         "pass": 0, "fail": 0, "review": 0,
-        "rule_fails": {k: 0 for k in RULE_KEYS},
+        "rule_fails": {k: 0 for k in _keys()},
     }
 
 
@@ -163,7 +174,9 @@ def _accumulate(bucket: dict, row: dict) -> None:
     bucket["pass"]     += row["pass_count"]
     bucket["fail"]     += row["fail_count"]
     bucket["review"]   += row["review_count"]
-    for k in RULE_KEYS:
+    # _blank seeded these from the same _keys(), so a disabled check has no
+    # bucket to add to and no row in the report.
+    for k in _keys():
         bucket["rule_fails"][k] += row[f"fail_{k}"] or 0
 
 
@@ -288,7 +301,7 @@ def build(start: str | None = None, end: str | None = None) -> dict:
             "in_scope": row["in_scope"], "graded": row["graded"],
             "pass": row["pass_count"], "fail": row["fail_count"],
             "review": row["review_count"],
-            "rule_fails": {k: row[f"fail_{k}"] or 0 for k in RULE_KEYS},
+            "rule_fails": {k: row[f"fail_{k}"] or 0 for k in _keys()},
         }))
 
     team_list = [_finalise(t) for t in teams.values()]

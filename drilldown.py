@@ -124,6 +124,16 @@ def _resolve_check(check: str) -> tuple[str, str, str]:
         raise ValueError(
             f"Unknown check {check!r}; expected one of {', '.join(ALLOWED_CHECKS)}"
         )
+    # A switched-off check is a known key with nothing to say. Refusing it here
+    # beats listing the tickets it failed before it was turned off, which would
+    # read as the check still being live. `_CHECKS` keeps its predicate so
+    # re-enabling needs no restart.
+    import rules as qc_rules
+    if key in RULE_KEYS and not qc_rules.check_enabled(key):
+        raise ValueError(
+            f"Check {key} is switched off in Rules, so it has no current "
+            f"failures to list. Switch it back on to drill into it."
+        )
     label, predicate = _CHECKS[key]
     return key, label, predicate
 
@@ -321,6 +331,12 @@ def _check_column(key: str) -> str:
     return f"rc.{key}" if key in RULE_KEYS else f"ac.{key}"
 
 
+def _live_rule_keys() -> tuple:
+    """RULE_KEYS minus switched-off checks. Deferred import, as above."""
+    import rules as qc_rules
+    return qc_rules.enabled_rule_keys(RULE_KEYS)
+
+
 def _breakdown_selects() -> str:
     """One SUM per (check, outcome) pair, plus an evaluated count per check.
 
@@ -421,6 +437,9 @@ def assignee_breakdown(assignee: str, start: str | None = None,
             "review": row["review_count"] or 0,
             "pending": row["pending_count"] or 0,
         },
-        "rules": [_bucketise(k, row, total) for k in RULE_KEYS],
+        # Switched-off checks are left out rather than shown at zero: a row
+        # reading "0 failures" is a claim the check ran and found nothing.
+        "rules": [_bucketise(k, row, total)
+                  for k in _live_rule_keys()],
         "ai": [_bucketise(k, row, total) for k in ("a1", "a2", "a3", "a4", "a5")],
     }

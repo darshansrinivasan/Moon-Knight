@@ -138,9 +138,14 @@ def build_summary(date_str: str) -> dict:
 
     total = len(tickets)
 
+    # Only checks that are switched on. A disabled check must not appear in the
+    # morning report as a reason anybody failed.
+    import rules as qc_rules
+    live_rules = qc_rules.enabled_rule_keys(tuple(RULE_LABELS))
+
     rule_fails = {}
     for t in tickets:
-        for key in RULE_LABELS:
+        for key in live_rules:
             if t.get(key) == "Fail":
                 rule_fails[key] = rule_fails.get(key, 0) + 1
 

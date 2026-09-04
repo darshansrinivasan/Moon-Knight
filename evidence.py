@@ -58,6 +58,8 @@ MAX_VALUE_CHARS = 60
 # What a reviewer sees when the explanation, not the verdict, is unavailable.
 UNRECONSTRUCTABLE = "evidence could not be reconstructed for this ticket"
 NOT_SCORED = "not scored yet"
+SWITCHED_OFF = ("this check is switched off in Rules — the stored verdict is "
+                "kept but no longer counts")
 _CF_UNREADABLE = "the ticket's stored custom fields could not be read"
 _ONCALL_THREAD_ONLY = (
     "the deciding check was a fetch of the linked oncall Slack thread, "
@@ -552,8 +554,17 @@ def for_ticket(ticket: dict, messages: list[dict]) -> dict[str, str]:
                          (ticket or {}).get("id"))
         return {key: UNRECONSTRUCTABLE for key in CHECK_KEYS}
 
+    import rules as qc_rules
+
     out: dict[str, str] = {}
     for key, handler in _HANDLERS.items():
+        # A switched-off check keeps its stored verdict, so explaining that
+        # verdict would describe a rule that is no longer live — and because
+        # the panel shows the reason next to the grade, it would read as a
+        # scoring bug rather than a setting.
+        if not qc_rules.check_enabled(key):
+            out[key] = SWITCHED_OFF
+            continue
         stored = str((ticket or {}).get(key) or "").strip()
         try:
             computed, phrase = handler(ctx, stored)
