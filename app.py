@@ -815,6 +815,57 @@ async def run_open_qc(refresh: bool = True,
     return {"refresh": refresh_res, **result}
 
 
+# ── manual Slack reports ──────────────────────────────────────────────────────
+
+def _slack_send_errors(e: Exception):
+    """One place to translate a failed manual send into the right status."""
+    if isinstance(e, slack.SlackNotConfigured):
+        return HTTPException(503, str(e))
+    if isinstance(e, slack.NotTheDeployment):
+        return HTTPException(403, str(e))
+    return HTTPException(502, f"Slack send failed: {e}")
+
+
+@app.post("/api/slack/report/day/{date_str}")
+async def send_day_report(date_str: str,
+                          user: dict = Depends(auth.require_operator)):
+    """Post the day's report to the configured channel, on demand.
+
+    The same report the scheduler posts — same criteria, same mention mode —
+    so a manual send can never say something different from the morning run.
+    """
+    _require_date(date_str)
+    try:
+        result = await slack.post_day_report(date_str)
+    except Exception as e:
+        raise _slack_send_errors(e)
+    vault.audit(user["email"], "slack.report.day",
+                f"{date_str} replies={result.get('thread_replies')}")
+    return {"ok": True, "date": date_str,
+            "thread_replies": result.get("thread_replies"),
+            "mention_mode": result.get("mention_mode"),
+            "unresolved_names": result.get("unresolved_names") or []}
+
+
+@app.post("/api/open/report")
+async def send_open_report(start: str | None = None, end: str | None = None,
+                           states: str | None = None,
+                           user: dict = Depends(auth.require_operator)):
+    """Post the open-backlog report, scoped by the tab's date/status filters."""
+    s, e, st = _open_args(start, end, states)
+    try:
+        result = await slack.post_open_report(s, e, st)
+    except Exception as e2:
+        raise _slack_send_errors(e2)
+    vault.audit(user["email"], "slack.report.open",
+                f"start={s} end={e} states={st} "
+                f"replies={result.get('thread_replies')}")
+    return {"ok": True,
+            "thread_replies": result.get("thread_replies"),
+            "mention_mode": result.get("mention_mode"),
+            "unresolved_names": result.get("unresolved_names") or []}
+
+
 # ── tickets for a day ─────────────────────────────────────────────────────────
 
 @app.get("/api/day/{date_str}")

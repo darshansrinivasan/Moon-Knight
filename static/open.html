@@ -35,17 +35,17 @@
     color: var(--text); cursor: pointer; white-space: nowrap;
   }
   .run-side input[type="checkbox"] { accent-color: var(--color-accent); cursor: pointer; }
-  #run-btn, #refetch-btn {
+  #run-btn, #refetch-btn, #slack-report-btn {
     background: color-mix(in srgb, var(--color-accent) 16%, transparent);
     border: 1px solid var(--color-accent); color: var(--color-accent);
     border-radius: 8px; padding: 6px 16px; font-size: 12.5px;
     font-weight: 700; cursor: pointer; font-family: inherit;
   }
-  #refetch-btn {
+  #refetch-btn, #slack-report-btn {
     background: transparent; border-color: var(--border); color: var(--muted);
   }
-  #refetch-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
-  #run-btn:disabled, #refetch-btn:disabled { opacity: .5; cursor: default; }
+  #refetch-btn:hover, #slack-report-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  #run-btn:disabled, #refetch-btn:disabled, #slack-report-btn:disabled { opacity: .5; cursor: default; }
 
   .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
   .pills .pill-label {
@@ -136,6 +136,9 @@
         <label>To <input type="date" id="end"></label>
         <div class="run-side">
           <span class="hint" id="preview-hint"></span>
+          <button id="slack-report-btn" hidden
+                  title="Post this view's report to the Slack channel — fails and needs-review only, honouring the date and status filters">
+            Send report to Slack</button>
           <button id="refetch-btn" hidden
                   title="Search Pylon for every open ticket — including ones never fetched on any day — and pull them in">
             Re-fetch open tickets</button>
@@ -361,6 +364,36 @@ async function refetchOpen() {
   }
 }
 
+async function sendOpenReport() {
+  if (running) return;
+  running = true;
+  const btn = $("slack-report-btn");
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  const line = $("result-line");
+  line.className = "result-line";
+  try {
+    // rangeQS carries exactly the filters the report honours: dates and
+    // status pills. The QC-result chips are a view filter only — the report
+    // always details Fail and Needs Review, like the scheduler.
+    const r = await QC.api(`/api/open/report${rangeQS()}`, { method: "POST" });
+    const replies = r.thread_replies || 0;
+    let text = `Report sent to Slack — ${replies} detail repl${replies === 1 ? "y" : "ies"} in thread · mentions: ${r.mention_mode}`;
+    if ((r.unresolved_names || []).length) {
+      text += ` · no Slack id for ${r.unresolved_names.join(", ")}`;
+    }
+    line.textContent = text + ".";
+    line.classList.add("show");
+  } catch (e) {
+    line.textContent = e.message;
+    line.className = "result-line err show";
+  } finally {
+    running = false;
+    btn.disabled = false;
+    btn.textContent = "Send report to Slack";
+  }
+}
+
 $("start").addEventListener("change", load);
 $("end").addEventListener("change", load);
 $("all-time").addEventListener("click", () => {
@@ -370,6 +403,7 @@ $("all-time").addEventListener("click", () => {
 });
 $("run-btn").addEventListener("click", runQC);
 $("refetch-btn").addEventListener("click", refetchOpen);
+$("slack-report-btn").addEventListener("click", sendOpenReport);
 
 // QC-result filter: the chips are toggles, client-side over the loaded list.
 $("chips").addEventListener("click", (ev) => {
@@ -407,6 +441,7 @@ window.addEventListener("pageshow", (ev) => {
     $("run-btn").hidden = false;
     $("refresh-wrap").hidden = false;
     $("refetch-btn").hidden = false;
+    $("slack-report-btn").hidden = false;
   }
   await load();
 })();

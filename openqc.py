@@ -190,6 +190,37 @@ def preview(start: str | None = None, end: str | None = None,
     }
 
 
+def report_tickets(start: str | None = None, end: str | None = None,
+                   states: list[str] | None = None) -> list[dict]:
+    """Open tickets in the row shape `db.get_day_tickets` returns.
+
+    The Slack report builder was written against that shape (grades, R-checks,
+    ai_notes, account name), so the open-backlog report feeds it the same rows
+    rather than teaching it a second one. Grades here are raw ai_checks values;
+    the caller applies review.apply_effective_grades, exactly as the day
+    report does.
+    """
+    where, params = _where(start, end, states)
+    with db.get_conn() as conn:
+        rows = conn.execute(f"""
+            SELECT
+                t.*,
+                a.name  AS account_name,
+                a.type  AS account_type,
+                a.domain AS account_domain,
+                rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r6, rc.r7, rc.r8, rc.r9,
+                ac.a1, ac.a2, ac.a3, ac.a4, ac.a5,
+                ac.ai_notes, ac.overall_result, ac.checked_at AS ai_checked_at
+            FROM tickets t
+            LEFT JOIN accounts    a  ON t.account_id = a.id
+            LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
+            LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
+            WHERE {where}
+            ORDER BY t.number
+        """, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── refresh: refetch the backlog by id before grading it ─────────────────────
 
 def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:

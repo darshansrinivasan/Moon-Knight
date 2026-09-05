@@ -154,7 +154,16 @@ def build_summary(date_str: str) -> dict:
 
     tickets  = review.apply_effective_grades(db.get_day_tickets(date_str))
     excluded = db.excluded_ticket_count(date_str)
+    return {"date": date_str, "excluded": excluded, **_aggregate(tickets)}
 
+
+def _aggregate(tickets: list[dict]) -> dict:
+    """The report's numbers over any ticket list with effective grades applied.
+
+    Shared by the day report and the open-backlog report so the two can never
+    hold different opinions about what counts as needing attention: Fail and
+    Needs Review, and nothing else.
+    """
     counts   = {"Pass": 0, "Fail": 0, "Needs Review": 0}
     pending  = 0
     for t in tickets:
@@ -192,13 +201,11 @@ def build_summary(date_str: str) -> dict:
 
     scored = total - pending
     return {
-        "date":       date_str,
         "total":      total,
         "pass":       counts["Pass"],
         "fail":       counts["Fail"],
         "review":     counts["Needs Review"],
         "pending":    pending,
-        "excluded":   excluded,
         "pass_rate":  round(counts["Pass"] / scored * 100) if scored else None,
         "rule_fails": sorted(rule_fails.items(), key=lambda kv: -kv[1]),
         "groups":     groups,
@@ -206,14 +213,73 @@ def build_summary(date_str: str) -> dict:
     }
 
 
+def _open_scope_words(start, end, states) -> str:
+    """The filters, in words a channel reader understands."""
+    if start and end:
+        span = f"{start} to {end}"
+    elif start:
+        span = f"since {start}"
+    elif end:
+        span = f"up to {end}"
+    else:
+        span = "all time"
+    if states:
+        span += " · status " + ", ".join(sorted(states))
+    return span
+
+
+def build_open_summary(start=None, end=None, states=None) -> dict:
+    """The day report's numbers over the open backlog instead of one date.
+
+    Detail criteria are exactly the scheduler's — Fail and Needs Review — via
+    the shared _aggregate. Two deliberate differences, carried as keys the
+    block builders read: pending open tickets are a to-do, not a run failure
+    (an open ticket often simply has not been QC'd yet), and the deep link
+    points at the Open Tickets tab rather than a day.
+    """
+    import openqc
+    import review
+
+    tickets = review.apply_effective_grades(
+        openqc.report_tickets(start, end, states))
+    words = _open_scope_words(start, end, states)
+    return {
+        **_aggregate(tickets),
+        "date": None,
+        # openqc's scope already removed excluded states, so there is no
+        # residual count to explain the way a day has.
+        "excluded": 0,
+        "title": f"Open tickets QC — {words}"[:145],
+        "path": "/open",
+        "link_label": "Open the Open Tickets tab",
+        "scope_note": f"Scope: open backlog · {words}",
+        "pending_is_failure": False,
+        "all_clear": ("• Nothing needs attention — every scored "
+                      "open ticket passed"),
+        "scope_words": words,
+    }
+
+
+def _report_link(s: dict, base_url: str) -> str:
+    """Where this report's numbers can be inspected: a day, or the open tab."""
+    path = s.get("path") or f"/?date={s['date']}"
+    return f"{base_url.rstrip('/')}{path}"
+
+
 def _summary_blocks(s: dict, base_url: str) -> list:
-    """The parent message: what happened, and what stands out."""
-    day_link = f"{base_url.rstrip('/')}/?date={s['date']}"
+    """The parent message: what happened, and what stands out.
+
+    Day summaries carry only counts; the open-backlog summary also sets title,
+    path, scope_note, pending_is_failure and all_clear, and every one of those
+    defaults here to the day report's existing wording.
+    """
+    day_link = _report_link(s, base_url)
     rate = f"{s['pass_rate']}%" if s["pass_rate"] is not None else "\u2014"
 
     blocks = [
         {"type": "header",
-         "text": {"type": "plain_text", "text": f"Support QC run \u2014 {s['date']}",
+         "text": {"type": "plain_text",
+                  "text": s.get("title") or f"Support QC run \u2014 {s['date']}",
                   "emoji": True}},
         {"type": "section", "fields": [
             {"type": "mrkdwn", "text": f"*In scope*\n{s['total']}"},
@@ -224,6 +290,11 @@ def _summary_blocks(s: dict, base_url: str) -> list:
             {"type": "mrkdwn", "text": f"*\u23f3 Not scored*\n{s['pending']}"},
         ]},
     ]
+
+    if s.get("scope_note"):
+        blocks.append({"type": "context", "elements": [
+            {"type": "mrkdwn", "text": _esc(s["scope_note"])}
+        ]})
 
     # Excluded tickets are not a problem to fix, so they sit outside the counts
     # above \u2014 but staying silent about them makes the total look wrong.
@@ -236,13 +307,21 @@ def _summary_blocks(s: dict, base_url: str) -> list:
 
     lines = []
     # A ticket that is in scope but ungraded means scoring dropped it. That is a
-    # run failure, not a statistic, so say so before anything else.
+    # run failure for a day that was scored \u2014 but a normal to-do for the open
+    # backlog, where most tickets simply have not been QC'd yet.
     if s["pending"]:
-        lines.append(
-            f"\u2022 :rotating_light: {s['pending']} in-scope "
-            f"ticket{'s' if s['pending'] != 1 else ''} could not be graded \u2014 "
-            "re-run scoring for this day"
-        )
+        if s.get("pending_is_failure", True):
+            lines.append(
+                f"\u2022 :rotating_light: {s['pending']} in-scope "
+                f"ticket{'s' if s['pending'] != 1 else ''} could not be graded \u2014 "
+                "re-run scoring for this day"
+            )
+        else:
+            lines.append(
+                f"\u2022 \u23f3 {s['pending']} open "
+                f"ticket{'s' if s['pending'] != 1 else ''} not scored yet \u2014 "
+                "run QC on the Open Tickets tab to grade them"
+            )
     if s["rule_fails"]:
         top = ", ".join(f"{RULE_LABELS[k]} ({n})" for k, n in s["rule_fails"][:3])
         lines.append(f"\u2022 Most common rule failures: {top}")
@@ -256,12 +335,14 @@ def _summary_blocks(s: dict, base_url: str) -> list:
         lines.append(f"\u2022 {s['attention']} ticket{aplural} need attention across "
                      f"{len(s['groups'])} {people} \u2014 details in the thread")
     else:
-        lines.append("\u2022 Nothing needs attention today \u2014 every scored ticket passed")
+        lines.append(s.get("all_clear")
+                     or "\u2022 Nothing needs attention today \u2014 every scored ticket passed")
 
     blocks.append({"type": "section",
                    "text": {"type": "mrkdwn", "text": "*Analysis*\n" + "\n".join(lines)}})
     blocks.append({"type": "context", "elements": [
-        {"type": "mrkdwn", "text": f"<{day_link}|Open the QC dashboard for this day>"}
+        {"type": "mrkdwn",
+         "text": f"<{day_link}|{s.get('link_label') or 'Open the QC dashboard for this day'}>"}
     ]})
     return blocks
 
@@ -273,7 +354,7 @@ def _assignee_sections(s: dict, base_url: str, mentions: dict | None = None) -> 
     unambiguously. Anyone absent is rendered as plain text: see
     resolve_assignee_ids for why guessing is not an option.
     """
-    day_link = f"{base_url.rstrip('/')}/?date={s['date']}"
+    day_link = _report_link(s, base_url)
     blocks = []
 
     for name, tickets in s["groups"]:
@@ -382,15 +463,21 @@ async def _field_drift_blocks() -> list:
     }]
 
 
-async def post_day_report(date_str: str, channel: str | None = None) -> dict:
-    """Post the day's QC report: a summary, then per-person detail in a thread."""
+async def _post_report(summary: dict, channel: str | None,
+                       fallback: str, detail_text: str,
+                       include_drift: bool) -> dict:
+    """Post one report: a summary message, then per-person detail in a thread.
+
+    Shared by the scheduled day report and the manual open-backlog report so
+    mention handling, chunking and posting can never drift apart. Both honour
+    the configured mention mode identically \u2014 a manual send tags exactly the
+    people the scheduler would have tagged.
+    """
     channel = channel or vault.get_setting("slack_channel").strip()
     if not channel:
         raise SlackNotConfigured("No Slack channel configured \u2014 set it in Admin \u2192 Slack")
 
-    summary  = build_summary(date_str)
     base_url = vault.get_setting("dashboard_base_url")
-    rate = f"{summary['pass_rate']}%" if summary["pass_rate"] is not None else "\u2014"
 
     mode = mention_mode()
     mentions: dict = {}
@@ -407,30 +494,61 @@ async def post_day_report(date_str: str, channel: str | None = None) -> dict:
             )
 
     lead_blocks = await _lead_mention_blocks(summary) if mode != MENTION_OFF else []
-    drift_blocks = await _field_drift_blocks()
+    drift_blocks = await _field_drift_blocks() if include_drift else []
 
     parent = await _post("chat.postMessage", {
         "channel": channel,
-        "text": (f"Support QC {date_str}: {summary['total']} tickets, "
-                 f"{summary['pass']} pass / {summary['fail']} fail ({rate})"),
+        "text": fallback,
         "blocks": _summary_blocks(summary, base_url) + drift_blocks + lead_blocks,
     })
 
     # Detail lives in the thread so the channel stays readable, split across as
-    # many replies as the day needs rather than being cut short.
+    # many replies as the report needs rather than being cut short.
     thread_ts = parent.get("ts")
     replies = 0
     for chunk in _chunk(_assignee_sections(summary, base_url, mentions)):
         await _post("chat.postMessage", {
             "channel": channel,
             "thread_ts": thread_ts,
-            "text": f"QC detail for {date_str}",
+            "text": detail_text,
             "blocks": chunk,
         })
         replies += 1
 
     return {**parent, "thread_replies": replies,
             "mention_mode": mode, "unresolved_names": unresolved}
+
+
+async def post_day_report(date_str: str, channel: str | None = None) -> dict:
+    """Post the day's QC report: a summary, then per-person detail in a thread."""
+    summary = build_summary(date_str)
+    rate = f"{summary['pass_rate']}%" if summary["pass_rate"] is not None else "\u2014"
+    return await _post_report(
+        summary, channel,
+        fallback=(f"Support QC {date_str}: {summary['total']} tickets, "
+                  f"{summary['pass']} pass / {summary['fail']} fail ({rate})"),
+        detail_text=f"QC detail for {date_str}",
+        include_drift=True,
+    )
+
+
+async def post_open_report(start=None, end=None, states=None,
+                           channel: str | None = None) -> dict:
+    """Post the open-backlog report, scoped by the Open Tickets tab's filters.
+
+    Same criteria as the scheduled report \u2014 detail covers Fail and Needs
+    Review only. Field-drift notes are the daily run's concern and are left
+    out here.
+    """
+    summary = build_open_summary(start, end, states)
+    words = summary["scope_words"]
+    return await _post_report(
+        summary, channel,
+        fallback=(f"Open tickets QC ({words}): {summary['total']} open, "
+                  f"{summary['fail']} fail / {summary['review']} needs review"),
+        detail_text=f"Open tickets QC detail ({words})",
+        include_drift=False,
+    )
 
 
 async def _lead_mention_blocks(summary: dict) -> list:

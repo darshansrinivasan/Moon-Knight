@@ -1161,6 +1161,7 @@
       <button class="refetch-btn" id="refetch-btn" title="Re-fetch from Pylon to pick up new tickets">↻ Refetch</button>
       <button class="qc-btn" id="qc-btn" title="Run AI quality checks (A1–A5) for this day">▶ Run QC</button>
       <button class="refetch-btn download-btn" id="download-btn" title="Download QC results as CSV" style="display:none">↓ CSV</button>
+      <button class="refetch-btn" id="slack-btn" title="Post this day's QC report to the Slack channel — same content and mentions as the scheduled report" style="display:none">➤ Slack report</button>
     </div>
     <div class="filter-bar" id="filter-bar">
       <span class="filter-label">Verdict</span>
@@ -1557,9 +1558,11 @@ async function selectDay(dateStr) {
   const refetchBtn = document.getElementById("refetch-btn");
   const qcBtn      = document.getElementById("qc-btn");
   const dlBtn      = document.getElementById("download-btn");
+  const slackBtn   = document.getElementById("slack-btn");
   refetchBtn.style.display = "none"; refetchBtn.disabled = false; refetchBtn.textContent = "↻ Refetch";
   qcBtn.style.display      = "none"; qcBtn.disabled      = false; qcBtn.textContent      = "▶ Run QC";
   dlBtn.style.display      = "none"; dlBtn.disabled      = false;
+  slackBtn.style.display   = "none"; slackBtn.disabled   = false; slackBtn.textContent   = "➤ Slack report";
   applyRunPermission();   // the resets above cleared `disabled`
   document.getElementById("assignee-ms").style.display = "none";
   document.getElementById("group-ms").style.display = "none";
@@ -1623,6 +1626,7 @@ async function selectDay(dateStr) {
   applyRunPermission();
   document.getElementById("download-btn").style.display = "flex";
   document.getElementById("qc-btn").style.display = "flex";
+  document.getElementById("slack-btn").style.display = "flex";
   applyRunPermission();
   allTickets = day2.tickets || [];
   populateAssigneeFilter(allTickets);
@@ -1702,7 +1706,9 @@ const NO_RUN_REASON =
 // cannot restore a button this viewer may not press.
 function applyRunPermission() {
   if (canRunQC()) return;
-  for (const id of ["refetch-btn", "qc-btn"]) {
+  // Sending the report to the channel is outward-facing, so it follows the
+  // same operator gate as fetching and scoring.
+  for (const id of ["refetch-btn", "qc-btn", "slack-btn"]) {
     const btn = document.getElementById(id);
     if (!btn) continue;
     btn.disabled = true;
@@ -3492,6 +3498,25 @@ document.querySelectorAll(".status-pill").forEach(pill => {
 document.getElementById("refetch-btn").addEventListener("click", refetchDay);
 document.getElementById("qc-btn").addEventListener("click", runQC);
 document.getElementById("download-btn").addEventListener("click", downloadCSV);
+document.getElementById("slack-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("slack-btn");
+  btn.disabled = true;
+  btn.textContent = "➤ Sending…";
+  try {
+    const d = await getJSON(`/api/slack/report/day/${selDate}`, { method: "POST" });
+    const replies = d.thread_replies || 0;
+    let note = `Report sent to Slack — ${replies} detail repl${replies === 1 ? "y" : "ies"} in thread`;
+    if ((d.unresolved_names || []).length) {
+      note += `; no Slack id for ${d.unresolved_names.join(", ")}`;
+    }
+    document.getElementById("panel-meta").textContent = note;
+  } catch (e) {
+    showError(`Slack send failed: ${e.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "➤ Slack report";
+  }
+});
 document.getElementById("prev-month").addEventListener("click", () => {
   if (--curMonth < 1) { curMonth = 12; curYear--; }
   renderCalendar();

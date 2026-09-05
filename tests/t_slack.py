@@ -303,6 +303,76 @@ spec = next(s for s in vault.SETTING_SPECS
 check("no legacy_env on the override", "legacy_env" not in spec, True)
 
 print()
+print("=== the open-backlog report: the scheduler's criteria, another scope ===")
+_num = [9000]
+
+
+def seed_open(tid, state, grade=None, r3="Pass", assignee="Ann Unique",
+              date="2026-09-01", note="r3 failed the account check"):
+    _num[0] += 1
+    with db.get_conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,link,"
+            "state,assignee_name,custom_fields,fetched_at)"
+            " VALUES (?,?,?,?,?,?,?,'{}','2026-09-01T00:00:00+00:00')",
+            (tid, _num[0], date, f"Ticket {tid}",
+             f"https://app.usepylon.com/issues/{tid}", state, assignee))
+        c.execute(
+            "INSERT OR REPLACE INTO rule_checks (ticket_id,fetch_date,r1,r2,r3,"
+            "r4,r5,r7,r8,checked_at) VALUES (?,?,'Pass','Pass',?,'Pass','Pass',"
+            "'Pass','Pass','t')", (tid, date, r3))
+        if grade:
+            c.execute(
+                "INSERT OR REPLACE INTO ai_checks (ticket_id,fetch_date,a1,a2,"
+                "a3,a4,a5,ai_notes,overall_result,checked_at)"
+                " VALUES (?,?,'Pass','Neutral','Good','Pass','Pass',?,?,'t')",
+                (tid, date, note, grade))
+
+
+seed_open("op1", "new", grade="Fail", r3="Fail")
+seed_open("op2", "new", grade="Needs Review")
+seed_open("op3", "new", grade="Pass")
+seed_open("op4", "investigating")            # pending QC — normal for open
+seed_open("op5", "closed", grade="Fail")     # terminal: out of the open scope
+
+s = slack.build_open_summary()
+check("only open tickets counted", s["total"], 4)
+check("grade split", (s["pass"], s["fail"], s["review"], s["pending"]),
+      (1, 1, 1, 1))
+check("attention is Fail + Needs Review only", s["attention"], 2)
+check("a closed Fail is not attention", any(
+    t["id"] == "op5" for _, ts in s["groups"] for t in ts), False)
+check("groups carry only attention tickets",
+      sorted(t["id"] for _, ts in s["groups"] for t in ts), ["op1", "op2"])
+check("rule failures counted", s["rule_fails"], [("r3", 1)])
+check("pending is a to-do, not a run failure", s["pending_is_failure"], False)
+check("title names the scope", s["title"], "Open tickets QC — all time")
+check("the link goes to the tab", (s["path"], s["link_label"]),
+      ("/open", "Open the Open Tickets tab"))
+check("a status filter narrows the report",
+      (slack.build_open_summary(states=["investigating"])["total"],
+       slack.build_open_summary(states=["investigating"])["attention"]),
+      (1, 0))
+check("a date filter narrows the report",
+      slack.build_open_summary(start="2026-09-02")["total"], 0)
+
+blocks = slack._summary_blocks(s, "http://x")
+analysis = next(b for b in blocks
+                if b.get("text", {}).get("text", "").startswith("*Analysis*"))
+check("open pending line is calm", "not scored yet" in analysis["text"]["text"],
+      True)
+check("and never the day report's alarm",
+      "rotating_light" in analysis["text"]["text"], False)
+day_blocks = slack._summary_blocks(
+    {"date": "2026-09-01", "total": 1, "pass": 0, "fail": 0, "review": 0,
+     "pending": 1, "pass_rate": None, "rule_fails": [], "groups": [],
+     "attention": 0}, "http://x")
+day_analysis = next(b for b in day_blocks
+                    if b.get("text", {}).get("text", "").startswith("*Analysis*"))
+check("the day report's alarm wording is untouched",
+      "rotating_light" in day_analysis["text"]["text"], True)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)
