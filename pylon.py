@@ -190,7 +190,9 @@ async def fetch_messages(
         f"{BASE_URL}/issues/{issue_id}/messages", headers=_headers()
     )
     r.raise_for_status()
-    return r.json()["data"]
+    # A ticket with no messages comes back as {"data": null}, not [] — seen on
+    # open tickets found via search that nothing has answered yet.
+    return r.json()["data"] or []
 
 
 # ── account ─────────────────────────────────────────────────────────────────
@@ -205,6 +207,232 @@ async def fetch_account(
         return None
     r.raise_for_status()
     return r.json()["data"]
+
+
+# ── refresh specific tickets by id ──────────────────────────────────────────
+
+@dataclass
+class FetchedTickets:
+    """A refresh of named tickets, plus what could not be refreshed.
+
+    Unlike absence from a date window, `missing_ids` is a positive deletion
+    signal: a 404 on GET /issues/{id} means Pylon no longer has that ticket,
+    so no completeness proof is needed before acting on it. `failed_ids` are
+    network failures and mean nothing about the ticket.
+
+    `issues_complete` matters only for a discovery fetch (`fetch_open_issues`):
+    it says the issue list is the authoritative open set right now, which is
+    what justifies treating a known-open ticket's absence from it as "no
+    longer open" rather than "page dropped".
+    """
+
+    issues: list
+    messages_by_id: dict
+    accounts_by_id: dict
+    missing_ids: set = field(default_factory=set)
+    failed_ids: set = field(default_factory=set)
+    failed_messages: set = field(default_factory=set)
+    failed_accounts: set = field(default_factory=set)
+    issues_complete: bool = True
+
+    def is_complete(self, issue: dict) -> bool:
+        """Same contract as FetchedDay: everything the R-checks need arrived."""
+        if issue["id"] in self.failed_messages:
+            return False
+        account_id = (issue.get("account") or {}).get("id")
+        return not (account_id and account_id in self.failed_accounts)
+
+
+async def fetch_issue(
+    issue_id: str, client: httpx.AsyncClient
+) -> dict | None:
+    """One issue by id, or None when Pylon answers 404 (deleted at source)."""
+    r = await client.get(f"{BASE_URL}/issues/{issue_id}", headers=_headers())
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()["data"]
+
+
+async def _hydrate_issues(
+    issues: list, client: httpx.AsyncClient, sem: asyncio.Semaphore
+) -> tuple[dict, dict, set, set]:
+    """Messages and accounts for a list of issues, concurrently.
+
+    Returns (messages_by_id, accounts_by_id, failed_messages, failed_accounts)
+    with the same failure semantics as `fetch_day`: what could not be fetched
+    is reported, never silently returned as empty.
+    """
+    failed_messages: set[str] = set()
+    failed_accounts: set[str] = set()
+
+    async def safe_messages(issue_id: str) -> tuple[str, list]:
+        async with sem:
+            try:
+                return issue_id, await _with_retry(
+                    lambda: fetch_messages(issue_id, client)
+                )
+            except Exception as e:
+                logger.warning("Messages unavailable for %s: %s", issue_id, e)
+                failed_messages.add(issue_id)
+                return issue_id, []
+
+    async def safe_account(account_id: str) -> tuple[str, dict | None]:
+        async with sem:
+            try:
+                return account_id, await _with_retry(
+                    lambda: fetch_account(account_id, client)
+                )
+            except Exception as e:
+                logger.warning("Account unavailable for %s: %s", account_id, e)
+                failed_accounts.add(account_id)
+                return account_id, None
+
+    msg_results = await asyncio.gather(
+        *[safe_messages(i["id"]) for i in issues]
+    )
+    messages_by_id = dict(msg_results)
+
+    account_ids = {
+        i["account"]["id"]
+        for i in issues
+        if i.get("account") and i["account"].get("id")
+    }
+    acc_results = await asyncio.gather(
+        *[safe_account(aid) for aid in account_ids]
+    )
+    accounts_by_id = {aid: acc for aid, acc in acc_results if acc}
+
+    return messages_by_id, accounts_by_id, failed_messages, failed_accounts
+
+
+async def fetch_tickets_by_id(ids: list[str]) -> FetchedTickets:
+    """Refresh named tickets: issue, messages, account, concurrently.
+
+    Used by the open-backlog QC, where the tickets are already known and what
+    is stale is their content — a date window cannot re-find a ticket fetched
+    weeks ago, but its id can.
+    """
+    sem = asyncio.Semaphore(10)
+    missing_ids: set[str] = set()
+    failed_ids: set[str] = set()
+
+    async with httpx.AsyncClient(timeout=30, headers=_headers()) as client:
+
+        async def safe_issue(tid: str) -> dict | None:
+            async with sem:
+                try:
+                    issue = await _with_retry(lambda: fetch_issue(tid, client))
+                except Exception as e:
+                    logger.warning("Issue unavailable for %s: %s", tid, e)
+                    failed_ids.add(tid)
+                    return None
+            if issue is None:
+                missing_ids.add(tid)
+            return issue
+
+        results = await asyncio.gather(*[safe_issue(t) for t in ids])
+        issues = [i for i in results if i]
+
+        (messages_by_id, accounts_by_id,
+         failed_messages, failed_accounts) = await _hydrate_issues(
+            issues, client, sem)
+
+    return FetchedTickets(
+        issues=issues,
+        messages_by_id=messages_by_id,
+        accounts_by_id=accounts_by_id,
+        missing_ids=missing_ids,
+        failed_ids=failed_ids,
+        failed_messages=failed_messages,
+        failed_accounts=failed_accounts,
+    )
+
+
+# ── discover the open backlog (search, no date window) ──────────────────────
+
+async def _search_issues_page(
+    client: httpx.AsyncClient, exclude_states: tuple, cursor: str | None
+) -> IssuePage:
+    """One page of POST /issues/search for issues outside `exclude_states`.
+
+    Search is the only listing that is not date-windowed, which is what makes
+    it able to FIND tickets never fetched on any day. The filter is `not_in`
+    rather than an `in` of open states, because custom statuses mean the open
+    set cannot be enumerated up front. (Pylon allows not_in on state but
+    rejects not_equals — verified against the live API.)
+    """
+    body: dict = {
+        "filter": {
+            "field": "state",
+            "operator": "not_in",
+            "values": list(exclude_states),
+        },
+        "limit": 100,
+    }
+    if cursor:
+        body["cursor"] = cursor
+    r = await client.post(
+        f"{BASE_URL}/issues/search", headers=_headers(), json=body
+    )
+    r.raise_for_status()
+    payload = r.json()
+    if "data" not in payload:
+        logger.warning(
+            "Pylon search returned no data page (states not in %s): %s",
+            exclude_states, str(payload)[:200],
+        )
+        return IssuePage([], None, False, ok=False)
+    pag = payload.get("pagination", {})
+    return IssuePage(
+        payload["data"], pag.get("cursor"), pag.get("has_next_page", False),
+        ok=True,
+    )
+
+
+async def fetch_open_issues(exclude_states: tuple) -> FetchedTickets:
+    """Every issue currently outside `exclude_states`, with messages/accounts.
+
+    This is a discovery fetch: unlike `fetch_tickets_by_id` it needs no prior
+    knowledge of the tickets, so it is what closes the gap between "open in
+    Pylon" and "open in the local database". `issues_complete` is False when
+    any page could not be read, in which case absence from the result must not
+    be read as "no longer open".
+    """
+    sem = asyncio.Semaphore(10)
+
+    async with httpx.AsyncClient(timeout=30, headers=_headers()) as client:
+        page = await _with_retry(
+            lambda: _search_issues_page(client, exclude_states, None))
+        if not page.ok:
+            raise RuntimeError(
+                "Pylon search for open issues returned no data — "
+                "see the server log for Pylon's response")
+
+        issues = list(page.issues)
+        cursor, has_next = page.cursor, page.has_next
+        complete = True
+        while has_next:
+            nxt = await _with_retry(
+                lambda c=cursor: _search_issues_page(client, exclude_states, c))
+            if not nxt.ok:
+                complete = False
+                break
+            issues.extend(nxt.issues)
+            cursor, has_next = nxt.cursor, nxt.has_next
+
+        (messages_by_id, accounts_by_id,
+         failed_messages, failed_accounts) = await _hydrate_issues(
+            issues, client, sem)
+
+    return FetchedTickets(
+        issues=issues,
+        messages_by_id=messages_by_id,
+        accounts_by_id=accounts_by_id,
+        failed_messages=failed_messages,
+        failed_accounts=failed_accounts,
+        issues_complete=complete,
+    )
 
 
 # ── fetch everything for one day ────────────────────────────────────────────

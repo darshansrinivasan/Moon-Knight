@@ -860,8 +860,13 @@ def _score_batch(batch: list[dict],
         return individual
 
 
-def _write_results(batch: list[dict], results: list[dict], date_str: str, now: str) -> tuple[int, int]:
-    """Write scored results to DB. Returns (scored, skipped)."""
+def _write_results(batch: list[dict], results: list[dict], now: str) -> tuple[int, int]:
+    """Write scored results to DB. Returns (scored, skipped).
+
+    Each grade is written under the ticket's own `fetch_date`, not the run's
+    label: an open-backlog run crosses dates, and stamping the label would tear
+    the grade away from the day every other query files the ticket under.
+    """
     scored = skipped = 0
     with db.get_conn() as conn:
         for i, (t, r) in enumerate(zip(batch, results)):
@@ -892,7 +897,7 @@ def _write_results(batch: list[dict], results: list[dict], date_str: str, now: s
                      overall_result, checked_at, qc_fingerprint)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                t["id"], date_str,
+                t["id"], t["fetch_date"],
                 r.get("a1"), r.get("a2"), r.get("a3"), r.get("a4"), r.get("a5"),
                 full_note, overall, now, fingerprint,
             ))
@@ -900,9 +905,15 @@ def _write_results(batch: list[dict], results: list[dict], date_str: str, now: s
     return scored, skipped
 
 
-def _effective_config(date_str: str, triggered_by: str) -> dict:
-    """Everything that could influence this run's grades, for the run record."""
+def _effective_config(date_str: str, triggered_by: str,
+                      extra: dict | None = None) -> dict:
+    """Everything that could influence this run's grades, for the run record.
+
+    `extra` carries scope details a label cannot — the open backlog's filters,
+    say — so a run record stays reconstructible from its own row.
+    """
     return {
+        **(extra or {}),
         "date":            date_str,
         "triggered_by":    triggered_by,
         "project":         vault.get_setting("vertex_project"),
@@ -921,17 +932,24 @@ def _effective_config(date_str: str, triggered_by: str) -> dict:
     }
 
 
-def _snapshot_and_compare(conn, run_id: int, date_str: str) -> tuple:
-    """Snapshot the day's end-of-run grades; measure agreement with the
-    previous run of the same date. Returns (compared_to, stability, changed)."""
-    rows = conn.execute("""
+def _snapshot_and_compare(conn, run_id: int, label: str,
+                          scope_clause: str, scope_params: list) -> tuple:
+    """Snapshot the scope's end-of-run grades; measure agreement with the
+    previous run under the same label. Returns (compared_to, stability, changed).
+
+    For a date run the scope is that date and the comparison is run-over-run of
+    the same day. For the open backlog the scope is whatever is open now, so
+    the comparison covers the tickets both runs saw — the join below already
+    restricts to the intersection.
+    """
+    rows = conn.execute(f"""
         SELECT t.id, t.number, ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.overall_result,
                rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8
         FROM tickets t
         LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
         LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
-        WHERE t.fetch_date = ? AND t.deleted_at IS NULL
-    """, (date_str,)).fetchall()
+        WHERE t.deleted_at IS NULL AND ({scope_clause})
+    """, scope_params).fetchall()
 
     for r in rows:
         d = dict(r)
@@ -946,7 +964,7 @@ def _snapshot_and_compare(conn, run_id: int, date_str: str) -> tuple:
 
     prev = conn.execute(
         "SELECT id FROM qc_runs WHERE date = ? AND id < ? AND status IN ('success','partial')"
-        " ORDER BY id DESC LIMIT 1", (date_str, run_id)).fetchone()
+        " ORDER BY id DESC LIMIT 1", (label, run_id)).fetchone()
     if not prev:
         return None, None, None
 
@@ -965,22 +983,25 @@ def _snapshot_and_compare(conn, run_id: int, date_str: str) -> tuple:
     return prev_id, round(same / len(pairs) * 100, 1), len(pairs) - same
 
 
-def _load_in_scope(date_str: str) -> list[dict]:
-    """Every ticket eligible for AI scoring on this date, with its messages.
+def _load_in_scope_where(scope_clause: str, scope_params: list) -> list[dict]:
+    """Every ticket eligible for AI scoring in a scope, with its messages.
 
-    Loads all in-scope tickets regardless of whether they need regrading, so a
-    single function decides scope and the caller decides freshness. Excluded
-    states (typically 'archived') are filtered here.
+    `scope_clause` selects the tickets (alias `t`) and is module or trusted-
+    caller source, never request input. Loads all in-scope tickets regardless
+    of whether they need regrading, so a single function decides scope and the
+    caller decides freshness. Excluded states (typically 'archived') are
+    filtered here, and `fetch_date` rides along because a cross-date scope
+    (the open backlog) must write each grade under the ticket's own date.
     """
     import rules as qc_rules
 
     clause, extra = qc_rules.excluded_state_clause("t")
     not_in = f"AND {clause}" if clause else ""
-    params: list = [date_str, *extra]
+    params: list = [*scope_params, *extra]
 
     with db.get_conn() as conn:
         rows = conn.execute(f"""
-            SELECT t.id, t.number, t.title, t.state, t.assignee_name,
+            SELECT t.id, t.number, t.title, t.state, t.assignee_name, t.fetch_date,
                    t.account_id, t.custom_fields, t.source, t.customer_portal_visible,
                    a.name AS account_name, a.type AS account_type,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
@@ -989,9 +1010,9 @@ def _load_in_scope(date_str: str) -> list[dict]:
             LEFT JOIN accounts    a  ON t.account_id = a.id
             LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
             LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
-            WHERE t.fetch_date = ? AND t.deleted_at IS NULL
+            WHERE t.deleted_at IS NULL AND ({scope_clause})
               {not_in}
-            ORDER BY t.number
+            ORDER BY t.fetch_date, t.number
         """, params).fetchall()
 
         tickets = [dict(r) for r in rows]
@@ -1004,6 +1025,11 @@ def _load_in_scope(date_str: str) -> list[dict]:
             t["messages"] = [dict(m) for m in msgs]
 
     return tickets
+
+
+def _load_in_scope(date_str: str) -> list[dict]:
+    """Every ticket eligible for AI scoring on one date, with its messages."""
+    return _load_in_scope_where("t.fetch_date = ?", [date_str])
 
 
 def _needs_scoring(ticket: dict) -> bool:
@@ -1037,12 +1063,26 @@ def eligible_for_scoring(date_str: str) -> tuple[list[dict], int]:
 
 
 def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
-    """Score tickets whose content has changed, or that were never scored.
+    """Score one date's tickets that changed, or were never scored.
 
     Records the run — config, tokens, cost, and grade stability vs the
     previous run of the same date. Returns counts plus run metadata.
     """
-    tickets, _in_scope_total = eligible_for_scoring(date_str)
+    return _execute_run(date_str, triggered_by, "t.fetch_date = ?", [date_str])
+
+
+def _execute_run(label: str, triggered_by: str,
+                 scope_clause: str, scope_params: list,
+                 config_extra: dict | None = None) -> dict:
+    """Score every ticket in a scope whose content changed or was never graded.
+
+    `label` is what the run is filed under in qc_runs.date — an ISO date for
+    day runs, 'open' for the open backlog — and is what stability comparisons
+    key on. `scope_clause`/`scope_params` select the tickets (alias `t`) and
+    must come from module or trusted-caller source, never a request.
+    """
+    tickets = [t for t in _load_in_scope_where(scope_clause, scope_params)
+               if _needs_scoring(t)]
     if not tickets:
         # Nothing to grade is a legitimate outcome, but it used to return
         # without recording anything — so a day that was already complete left
@@ -1052,8 +1092,8 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
                 INSERT INTO qc_runs (date, triggered_by, started_at, finished_at,
                                      status, total, scored, skipped, config_json)
                 VALUES (?, ?, ?, ?, 'success', 0, 0, 0, ?)
-            """, (date_str, triggered_by, _utc_now(), _utc_now(),
-                  json.dumps(_effective_config(date_str, triggered_by))))
+            """, (label, triggered_by, _utc_now(), _utc_now(),
+                  json.dumps(_effective_config(label, triggered_by, config_extra))))
             run_id = cur.lastrowid
         return {"scored": 0, "skipped": 0, "already_done": True,
                 "run_id": run_id, "status": "success"}
@@ -1062,12 +1102,12 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
     get_vertex_client()
 
     # Open the run record before scoring so a crash still leaves evidence.
-    config = _effective_config(date_str, triggered_by)
+    config = _effective_config(label, triggered_by, config_extra)
     with db.get_conn() as conn:
         cur = conn.execute("""
             INSERT INTO qc_runs (date, triggered_by, started_at, status, total, config_json)
             VALUES (?, ?, ?, 'running', ?, ?)
-        """, (date_str, triggered_by, _utc_now(),
+        """, (label, triggered_by, _utc_now(),
               len(tickets), json.dumps(config)))
         run_id = cur.lastrowid
 
@@ -1099,7 +1139,7 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
                 skipped += len(batch)
                 continue
 
-            s, sk = _write_results(batch, results, date_str, now)
+            s, sk = _write_results(batch, results, now)
             scored  += s
             skipped += sk
 
@@ -1118,7 +1158,8 @@ def run_qc_date(date_str: str, triggered_by: str = "manual") -> dict:
     with db.get_conn() as conn:
         compared_to = stability = changed = None
         if status != "error":
-            compared_to, stability, changed = _snapshot_and_compare(conn, run_id, date_str)
+            compared_to, stability, changed = _snapshot_and_compare(
+                conn, run_id, label, scope_clause, scope_params)
         conn.execute("""
             UPDATE qc_runs SET finished_at = ?, status = ?, scored = ?, skipped = ?,
                    model_used = ?, prompt_tokens = ?, output_tokens = ?, cost_usd = ?,

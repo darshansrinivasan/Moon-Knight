@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open Tickets · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin-bottom: 12px;
+  }
+  .controls label { font-size: 12px; color: var(--muted); }
+  .controls input[type="date"] {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 5px 8px;
+    font-size: 12px; font-family: inherit;
+    color-scheme: dark;
+  }
+  .controls .all-time {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 999px; padding: 5px 13px;
+    font-size: 12px; font-weight: 600; cursor: pointer;
+  }
+  .controls .all-time.active {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-color: var(--color-accent); color: var(--color-accent);
+  }
+  .run-side { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .run-side .hint { font-size: 11.5px; color: var(--muted); max-width: 380px; }
+  .run-side label.refresh {
+    display: flex; gap: 6px; align-items: center; font-size: 12px;
+    color: var(--text); cursor: pointer; white-space: nowrap;
+  }
+  .run-side input[type="checkbox"] { accent-color: var(--color-accent); cursor: pointer; }
+  #run-btn, #refetch-btn {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+    border-radius: 8px; padding: 6px 16px; font-size: 12.5px;
+    font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  #refetch-btn {
+    background: transparent; border-color: var(--border); color: var(--muted);
+  }
+  #refetch-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  #run-btn:disabled, #refetch-btn:disabled { opacity: .5; cursor: default; }
+
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
+  .pills .pill-label {
+    font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px; margin-right: 4px;
+  }
+  .state-pill {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-size: 11.5px; padding: 3px 11px;
+    border-radius: 12px; cursor: pointer; font-family: inherit;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .state-pill:hover { border-color: var(--accent2); color: var(--accent2); }
+  .state-pill.active {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 16px; min-width: 96px;
+  }
+  .chip b { display: block; font-size: 20px; font-weight: 700; color: var(--text); }
+  .chip span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+  .chip.c-pass b   { color: var(--pass); }
+  .chip.c-fail b   { color: var(--fail); }
+  .chip.c-review b { color: var(--review); }
+
+  .result-line {
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); padding: 10px 13px; font-size: 12.5px;
+    color: var(--text); margin-bottom: 14px; display: none;
+  }
+  .result-line.err { border-color: var(--fail); }
+  .result-line.show { display: block; }
+
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
+  th {
+    text-align: left; padding: 9px 12px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+    white-space: nowrap;
+  }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:last-child td { border-bottom: 0; }
+  td a { color: var(--accent2); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+  .grade { font-weight: 600; }
+  .grade.Pass { color: var(--pass); }
+  .grade.Fail { color: var(--fail); }
+  .grade.NR   { color: var(--review); }
+  .grade.pending { color: var(--muted); font-weight: 400; }
+  .state-cell { text-transform: capitalize; white-space: nowrap; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 22px; text-align: center; font-size: 13px; }
+</style>
+</head>
+<body class="shell" data-page="open">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Open Tickets</h1>
+    <span class="muted">QC on everything not Closed or Archived — whatever day it was fetched.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+
+      <div class="controls">
+        <button class="all-time active" id="all-time">All time</button>
+        <label>From <input type="date" id="start"></label>
+        <label>To <input type="date" id="end"></label>
+        <div class="run-side">
+          <span class="hint" id="preview-hint"></span>
+          <button id="refetch-btn" hidden
+                  title="Search Pylon for every open ticket — including ones never fetched on any day — and pull them in">
+            Re-fetch open tickets</button>
+          <label class="refresh" id="refresh-wrap" hidden>
+            <input type="checkbox" id="refresh-cb" checked>
+            Refresh from Pylon first
+          </label>
+          <button id="run-btn" hidden>Run QC</button>
+        </div>
+      </div>
+
+      <div class="pills" id="pills" hidden>
+        <span class="pill-label">Status</span>
+      </div>
+
+      <div class="result-line" id="result-line"></div>
+
+      <div class="chips" id="chips"></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>#</th><th>Title</th><th>Status</th><th>Assignee</th>
+          <th>Fetched</th><th>QC</th><th>Last checked</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+
+let selStates = new Set();   // lowercase status values; empty = all open
+let loadToken = 0;
+let running   = false;
+
+function rangeQS() {
+  const parts = [];
+  const s = $("start").value, e = $("end").value;
+  if (s) parts.push(`start=${s}`);
+  if (e) parts.push(`end=${e}`);
+  if (selStates.size) parts.push(`states=${encodeURIComponent([...selStates].join(","))}`);
+  return parts.length ? "?" + parts.join("&") : "";
+}
+
+function stateLabel(s) {
+  const t = (s || "—").replace(/_/g, " ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function gradeCell(g) {
+  if (!g) return `<span class="grade pending">pending</span>`;
+  const cls = g === "Needs Review" ? "NR" : g;
+  return `<span class="grade ${esc(cls)}">${esc(g)}</span>`;
+}
+
+function renderPills(counts) {
+  const host = $("pills");
+  host.querySelectorAll(".state-pill").forEach(el => el.remove());
+  // The pill list comes from the range, not the state filter, so numbers hold
+  // steady while pills are toggled.
+  counts.forEach(c => {
+    const btn = document.createElement("button");
+    btn.className = "state-pill" + (selStates.has(c.state) ? " active" : "");
+    btn.textContent = `${stateLabel(c.state)} (${c.n})`;
+    btn.dataset.state = c.state;
+    btn.addEventListener("click", () => {
+      if (selStates.has(c.state)) selStates.delete(c.state);
+      else selStates.add(c.state);
+      load();
+    });
+    host.appendChild(btn);
+  });
+  host.hidden = !counts.length;
+}
+
+function renderChips(s) {
+  $("chips").innerHTML = `
+    <div class="chip"><b>${s.total}</b><span>Open in scope</span></div>
+    <div class="chip c-pass"><b>${s.pass}</b><span>Pass</span></div>
+    <div class="chip c-fail"><b>${s.fail}</b><span>Fail</span></div>
+    <div class="chip c-review"><b>${s.review}</b><span>Needs review</span></div>
+    <div class="chip"><b>${s.pending}</b><span>Pending QC</span></div>`;
+}
+
+function renderRows(tickets) {
+  if (!tickets.length) {
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">No open tickets match.</td></tr>`;
+    return;
+  }
+  $("rows").innerHTML = tickets.map(t => {
+    const num = t.link
+      ? `<a href="${esc(t.link)}" target="_blank" rel="noopener noreferrer">#${esc(t.number ?? "—")}</a>`
+      : `#${esc(t.number ?? "—")}`;
+    return `<tr>
+      <td>${num}</td>
+      <td>${esc(t.title || "(no title)")}</td>
+      <td class="state-cell">${esc(stateLabel(t.state))}</td>
+      <td>${esc(t.assignee_name)}</td>
+      <td class="muted">${esc(t.fetch_date || "—")}</td>
+      <td>${gradeCell(t.overall_result)}</td>
+      <td class="muted">${t.checked_at ? esc(QC.fmtTime(t.checked_at)) : "—"}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function load() {
+  const token = ++loadToken;
+  $("all-time").classList.toggle("active", !$("start").value && !$("end").value);
+  try {
+    const [list, prev] = await Promise.all([
+      QC.api(`/api/open/tickets${rangeQS()}`),
+      QC.api(`/api/open/preview${rangeQS()}`),
+    ]);
+    if (token !== loadToken) return;   // a newer filter already landed
+    renderPills(list.state_counts);
+    renderChips(list.summary);
+    renderRows(list.tickets);
+    const spent = prev.spend && prev.spend.runs
+      ? ` Backlog runs so far: ${prev.spend.runs} (~$${Number(prev.spend.total_cost_usd).toFixed(4)}).`
+      : "";
+    $("preview-hint").textContent = prev.reason + spent;
+  } catch (e) {
+    if (token !== loadToken) return;
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function runQC() {
+  if (running) return;
+  running = true;
+  const btn = $("run-btn");
+  btn.disabled = true;
+  btn.textContent = "Running…";
+  const line = $("result-line");
+  line.className = "result-line";
+  try {
+    const refresh = $("refresh-cb").checked ? 1 : 0;
+    const qs = rangeQS();
+    const url = `/api/open/qc${qs ? qs + "&" : "?"}refresh=${refresh}`;
+    const r = await QC.api(url, { method: "POST" });
+    const bits = [];
+    if (r.refresh) {
+      bits.push(`refreshed ${r.refresh.stored} of ${r.refresh.requested} from Pylon`);
+      if (r.refresh.deleted) bits.push(`${r.refresh.deleted} gone at source`);
+      if (r.refresh.failed) bits.push(`${r.refresh.failed} could not be refreshed`);
+    }
+    if (r.already_done) {
+      bits.push("nothing needed scoring — every open ticket is already graded and unchanged");
+    } else {
+      bits.push(`scored ${r.scored}`);
+      if (r.skipped) bits.push(`${r.skipped} skipped`);
+      if (r.cost_usd != null) bits.push(`~$${Number(r.cost_usd).toFixed(4)}`);
+      bits.push(`status: ${r.status}`);
+    }
+    line.textContent = "Run finished — " + bits.join(" · ") + ".";
+    line.classList.add("show");
+    if (r.status && r.status !== "success") line.classList.add("err");
+  } catch (e) {
+    line.textContent = e.message;
+    line.className = "result-line err show";
+  } finally {
+    running = false;
+    btn.disabled = false;
+    btn.textContent = "Run QC";
+    load();
+  }
+}
+
+async function refetchOpen() {
+  if (running) return;
+  running = true;
+  const btn = $("refetch-btn");
+  btn.disabled = true;
+  btn.textContent = "Re-fetching…";
+  const line = $("result-line");
+  line.className = "result-line";
+  try {
+    const r = await QC.api("/api/open/refetch", { method: "POST" });
+    const bits = [
+      `${r.found_open} open in Pylon`,
+      `${r.new} new to the database`,
+      `${r.stored} stored`,
+    ];
+    if (r.no_longer_open_checked) bits.push(`${r.no_longer_open_checked} no longer open — updated`);
+    if (r.deleted) bits.push(`${r.deleted} gone at source`);
+    if (!r.search_complete) bits.push("search was incomplete — some pages could not be read");
+    line.textContent = "Re-fetch finished — " + bits.join(" · ") + ".";
+    line.classList.add("show");
+    if (!r.search_complete) line.classList.add("err");
+  } catch (e) {
+    line.textContent = e.message;
+    line.className = "result-line err show";
+  } finally {
+    running = false;
+    btn.disabled = false;
+    btn.textContent = "Re-fetch open tickets";
+    load();
+  }
+}
+
+$("start").addEventListener("change", load);
+$("end").addEventListener("change", load);
+$("all-time").addEventListener("click", () => {
+  $("start").value = "";
+  $("end").value = "";
+  load();
+});
+$("run-btn").addEventListener("click", runQC);
+$("refetch-btn").addEventListener("click", refetchOpen);
+
+(async () => {
+  await QC.ready;
+  // The buttons that spend money follow the same role gate as the dashboard's.
+  if (QC.me && QC.me.can_run_qc) {
+    $("run-btn").hidden = false;
+    $("refresh-wrap").hidden = false;
+    $("refetch-btn").hidden = false;
+  }
+  await load();
+})();
+</script>
+</body>
+</html>

@@ -27,6 +27,7 @@ import dryrun
 import evidence
 import gcp
 import leaderboard
+import openqc
 import prompts
 import pylon
 import qc_runner
@@ -708,6 +709,110 @@ async def run_qc(date_str: str, refetch: bool = False,
             "any_estimated": spend_after["any_estimated"],
         },
     }
+
+
+# ── open backlog: list, preview and QC regardless of fetch date ──────────────
+
+@app.get("/open", response_class=HTMLResponse)
+async def open_page(user: dict = Depends(auth.require_user)):
+    return _page("open.html")
+
+
+def _open_args(start: str | None, end: str | None,
+               states: str | None) -> tuple:
+    """Validate the open tab's filters. `states` is a comma list from the URL;
+    it narrows within the open set and can never widen it — openqc's NOT IN
+    on the terminal states is unconditional."""
+    if start:
+        _require_date(start)
+    if end:
+        _require_date(end)
+    if start and end and _require_date(start) > _require_date(end):
+        raise HTTPException(400, "start must not be after end")
+    state_list = [s.strip().lower() for s in (states or "").split(",")
+                  if s.strip()] or None
+    return start, end, state_list
+
+
+@app.get("/api/open/tickets")
+async def open_tickets(start: str | None = None, end: str | None = None,
+                       states: str | None = None,
+                       user: dict = Depends(auth.require_user)):
+    s, e, st = _open_args(start, end, states)
+    return await asyncio.to_thread(openqc.list_open, s, e, st)
+
+
+@app.get("/api/open/preview")
+async def open_preview(start: str | None = None, end: str | None = None,
+                       states: str | None = None,
+                       user: dict = Depends(auth.require_user)):
+    s, e, st = _open_args(start, end, states)
+    return await asyncio.to_thread(openqc.preview, s, e, st)
+
+
+@app.post("/api/open/refetch")
+async def refetch_open_tickets(user: dict = Depends(auth.require_operator)):
+    """Discover and pull the whole open backlog from Pylon.
+
+    The listing and the by-id refresh can only see tickets some day-fetch
+    already brought in; this is the one call that finds open tickets created
+    on days nobody fetched. Not filtered on purpose: discovery is about what
+    exists, and the tab's filters then narrow the view of it.
+    """
+    try:
+        with db.advisory_lock("fetch:open", user["email"], ttl_seconds=1800):
+            res = await openqc.refetch_open()
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Pylon re-fetch failed: {e}")
+
+    vault.audit(
+        user["email"], "fetch.open",
+        f"found={res['found_open']} new={res['new']} stored={res['stored']}"
+        f" no_longer_open={res['no_longer_open_checked']}"
+        f" deleted={res['deleted']}"
+        + ("" if res["search_complete"] else " (search incomplete)"),
+    )
+    return res
+
+
+@app.post("/api/open/qc")
+async def run_open_qc(refresh: bool = True,
+                      start: str | None = None, end: str | None = None,
+                      states: str | None = None,
+                      user: dict = Depends(auth.require_operator)):
+    """Score the open backlog. With `refresh=1` (the default), refetch it from
+    Pylon by id first — scoring an open ticket's fetch-time snapshot grades
+    stale evidence, so freshness is opt-out here where the day run's is opt-in.
+    """
+    s, e, st = _open_args(start, end, states)
+
+    refresh_res = None
+    try:
+        with db.advisory_lock("qc:open", user["email"], ttl_seconds=3600):
+            if refresh:
+                refresh_res = await openqc.refresh_open(s, e, st)
+            result = await asyncio.to_thread(openqc.run, user["email"], s, e, st)
+    except db.LockBusy as e2:
+        raise HTTPException(409, str(e2))
+    except pylon.PylonNotConfigured as e2:
+        raise HTTPException(503, str(e2))
+    except qc_runner.VertexNotConfigured as e2:
+        raise HTTPException(503, str(e2))
+    except Exception as e2:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e2))
+
+    vault.audit(
+        user["email"], "qc.open",
+        f"scored={result.get('scored')} skipped={result.get('skipped')}"
+        + (f" refreshed={refresh_res['stored']}" if refresh_res else "")
+        + (f" filters start={s} end={e} states={st}"
+           if (s or e or st) else " (all time)"),
+    )
+    return {"refresh": refresh_res, **result}
 
 
 # ── tickets for a day ─────────────────────────────────────────────────────────

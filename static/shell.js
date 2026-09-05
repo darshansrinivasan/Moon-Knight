@@ -3,6 +3,7 @@
   const PAGES = [
     { id: "dashboard",   href: "/",                   label: "Dashboard" },
     { id: "analytics",   href: "/?view=analytics",    label: "Analytics" },
+    { id: "open",        href: "/open",               label: "Open Tickets" },
     { id: "leaderboard", href: "/leaderboard",        label: "Leaderboard" },
     { id: "runs",        href: "/runs",               label: "Runs" },
     { id: "rules",       href: "/rules",              label: "Rules" },
