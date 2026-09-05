@@ -931,6 +931,17 @@ async def get_rules(user: dict = Depends(auth.require_user)):
         ACCOUNT_KEY, acc_names, fallback
     )
 
+    # How many tickets carry each status, so a row says what editing it affects.
+    # Its own query: `states_seen` returns bare names for the scope chips.
+    def status_counts():
+        with db.get_conn() as conn:
+            return {r["state"]: r["n"] for r in conn.execute(
+                "SELECT state, COUNT(*) n FROM tickets"
+                " WHERE state IS NOT NULL AND state != '' AND deleted_at IS NULL"
+                " GROUP BY state").fetchall()}
+
+    state_counts = await asyncio.to_thread(status_counts)
+
     return {
         "rules":        current,
         "defaults":     qc_rules.defaults(),
@@ -957,6 +968,23 @@ async def get_rules(user: dict = Depends(auth.require_user)):
             for c in __import__("scorer").R8_CONDITIONS
         ],
         "can_undo": qc_rules.has_previous(),
+        # What each status means to the checks, plus the vocabulary the editor
+        # offers, served so the UI cannot present a value validation rejects.
+        "statuses": sorted(
+            (
+                {"state": state, **row,
+                 "seen": state_counts.get(state, 0),
+                 "is_default": row == {**__import__("scorer").STATUS_FALLBACK,
+                                       **__import__("scorer")
+                                       .DEFAULT_STATUS_POLICY.get(state, {})}}
+                for state, row in qc_rules.all_status_policies().items()
+            ),
+            key=lambda r: (-r["seen"], r["state"]),
+        ),
+        "r5_expectations": [
+            {"value": v, "label": __import__("scorer").R5_EXPECTATION_LABELS[v]}
+            for v in __import__("scorer").R5_EXPECTATIONS
+        ],
         # Which Pylon field each check reads, and what it is called, so the
         # editor can offer a picker rather than a slug to type from memory.
         "fields": [

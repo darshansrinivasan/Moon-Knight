@@ -63,6 +63,13 @@ def defaults() -> dict:
         # was rejected (it moves qc_fingerprint and rebills identical prompts).
         "disabled_checks":      [],
 
+        # What each Pylon status means to the checks — see
+        # scorer.DEFAULT_STATUS_POLICY. Replaces five overlapping hardcoded
+        # sets, and gives a status Pylon adds later a row to decide about
+        # rather than a silent default.
+        "status_policy": {k: dict(v)
+                          for k, v in scorer.DEFAULT_STATUS_POLICY.items()},
+
         # Which Pylon custom field each check reads. Slugs were literals in
         # five files, so a field Pylon renames or retires could only be
         # followed with a deploy — and the check meanwhile fails every ticket,
@@ -243,6 +250,29 @@ def field_map() -> dict:
     return {name: field(name) for name in scorer.DEFAULT_FIELD_MAP}
 
 
+def status_policy(state: str) -> dict:
+    """How the checks should treat this status.
+
+    Unknown statuses get `scorer.STATUS_FALLBACK`, which is deliberately the
+    lenient reading — scored, but never failed by R5 or R7 for a rule nobody
+    has written yet. `migration` reached production before anyone configured
+    it and landed on that reading by accident; now it is a decision.
+    """
+    import scorer
+    stored = current().get("status_policy") or {}
+    row = stored.get(str(state or "").strip().lower())
+    if not isinstance(row, dict):
+        return dict(scorer.STATUS_FALLBACK)
+    return {**scorer.STATUS_FALLBACK, **row}
+
+
+def all_status_policies() -> dict:
+    import scorer
+    stored = current().get("status_policy") or {}
+    return {k: {**scorer.STATUS_FALLBACK, **v}
+            for k, v in stored.items() if isinstance(v, dict)}
+
+
 def r8_conditions() -> set:
     """Which of R8's four conditions are still required.
 
@@ -399,6 +429,34 @@ def validate(candidate: dict) -> list:
                 f"{key}: '{value}' is not a Pylon field slug — expected "
                 f"lowercase letters, digits and underscores, e.g. "
                 f"'{scorer.DEFAULT_FIELD_MAP[name]}'")
+
+    if "status_policy" in candidate:
+        policy = candidate.get("status_policy")
+        if not isinstance(policy, dict):
+            errors.append("status_policy must map a status to its settings")
+        else:
+            for state, row in policy.items():
+                if not _STATE.match(str(state)):
+                    errors.append(f"status_policy: '{state}' is not a status name")
+                    continue
+                if not isinstance(row, dict):
+                    errors.append(f"status_policy: '{state}' must be an object")
+                    continue
+                exp = row.get("r5", "none")
+                if exp not in scorer.R5_EXPECTATIONS:
+                    errors.append(
+                        f"status_policy: '{state}' expects r5 to be one of "
+                        f"{', '.join(scorer.R5_EXPECTATIONS)}, not '{exp}'")
+                if exp == "tags" and not [x for x in (row.get("tags") or []) if x]:
+                    # "require a tag" with no tag listed fails every ticket in
+                    # that status and reads as a broken check.
+                    errors.append(
+                        f"status_policy: '{state}' expects a literal tag but "
+                        f"lists none — add a tag, or choose another expectation")
+                for flag in ("in_scope", "r4_reply_owed", "r7_engineering"):
+                    if flag in row and not isinstance(row[flag], bool):
+                        errors.append(
+                            f"status_policy: '{state}'.{flag} must be true or false")
 
     if len(str(candidate.get("a_guidance", ""))) > 4000:
         errors.append("a_guidance must be 4000 characters or fewer")

@@ -54,6 +54,29 @@
   }
   .nav-off { font-size: 10px; color: var(--review); margin-left: 6px; }
   .cond-list { display: flex; flex-direction: column; gap: 7px; margin: 10px 0 0; }
+  .scroll-x { overflow-x: auto; margin: 14px 0; }
+  table.statuses { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.statuses th {
+    text-align: left; font-size: 10px; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+    padding: 0 12px 8px 0; border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  table.statuses td {
+    padding: 8px 12px 8px 0; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  table.statuses tr:last-child td { border-bottom: none; }
+  .st-name { font-family: ui-monospace, Menlo, monospace; }
+  .st-seen { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  /* A row that differs from the shipped seed is the thing worth spotting when
+     you open this page wondering why a status grades the way it does. */
+  .st-edited { color: var(--accent2); font-size: 10px; margin-left: 6px; }
+  .st-na { display: none; color: var(--muted); }
+  .st-tags.na input { display: none; }
+  .st-tags.na .st-na { display: inline; }
+  table.statuses select { font-size: 12px; min-width: 210px; }
+  table.statuses input[type=text] { font-size: 12px; min-width: 130px; }
+
   .fmap { display: flex; flex-direction: column; gap: 12px; margin: 14px 0; }
   .fmap-row {
     display: grid; grid-template-columns: 190px 1fr; gap: 12px;
@@ -373,6 +396,27 @@
         </div>
       </div>
 
+      <div class="section" id="sec-statuses">
+        <div class="card">
+          <h2>Ticket statuses</h2>
+          <p class="what">
+            What each Pylon status means to the checks. This replaced five overlapping
+            lists in code, seeded to match them exactly — so nothing moved when it was
+            adopted, and a status Pylon adds later arrives as a row to decide about
+            rather than silently defaulting.
+          </p>
+          <div class="hint">
+            <b>In scope</b> — scored and counted at all.
+            <b>Reply owed</b> — whether R4's clock runs, or the status short-circuits
+            to Pass. <b>R5 expects</b> — who owns the next action, and what proves it.
+            <b>Engineering</b> — whether R7 applies. These are independent: a closed
+            ticket owes no reply but is still graded, because A5 exists to judge
+            closures.
+          </div>
+          <div class="scroll-x"><table class="statuses" id="status-table"></table></div>
+        </div>
+      </div>
+
       <div class="section" id="sec-fields">
         <div class="card">
           <h2>Pylon fields</h2>
@@ -445,6 +489,7 @@ const NAV = [
   ["r7", "R7 Rootly/Jira"],
   ["r8", "R8 Oncall"],
   ["a",  "A1–A5 AI grading"],
+  ["statuses", "Ticket statuses"],
   ["fields", "Pylon fields"],
   ["suggest", "Learned suggestions"],
 ];
@@ -622,6 +667,11 @@ function collect() {
   for (const el of document.querySelectorAll("[data-field]")) {
     if (el.value) rules[`field_${el.dataset.field}`] = el.value;
   }
+  // Only when the table rendered; a page that never opened the section must
+  // not save an empty policy over a configured one.
+  if (document.querySelector("[data-status-row]")) {
+    rules.status_policy = collectStatuses();
+  }
   const conds = [...document.querySelectorAll("[data-cond]")];
   if (conds.length) {
     rules.r8_conditions = conds.filter(b => b.checked).map(b => b.dataset.cond);
@@ -747,6 +797,7 @@ function selectSection(id) {
   // Fetched on first open, not on page load: it is a live call to Pylon, and
   // most visits to this page never look at the mapping.
   if (id === "fields") ensureFields();
+  if (id === "statuses") renderStatusTable();
   return true;
 }
 
@@ -967,6 +1018,79 @@ function draftPrompt() {
     if (el) draft[s.key] = el.value;
   }
   return draft;
+}
+
+/* ── the status matrix ──────────────────────────────────────────────────────
+ * One row per status, four independent attributes. Two would not have been
+ * enough: `closed` owes no reply but is still graded, `investigating` is R5-N/A
+ * but R4 applies, and `waiting_on_engg` also decides whether R7 runs at all.
+ */
+function renderStatusTable() {
+  const rows = DATA.statuses || [];
+  const opts = (DATA.r5_expectations || []).map(e =>
+    `<option value="${esc(e.value)}">${esc(e.label)}</option>`).join("");
+
+  $("status-table").innerHTML = `
+    <thead><tr>
+      <th>Status</th><th>Tickets</th><th>In scope</th><th>Reply owed</th>
+      <th>R5 expects</th><th>Tags</th><th>Engineering</th>
+    </tr></thead>
+    <tbody>${rows.map(r => `
+      <tr data-status-row="${esc(r.state)}">
+        <td><span class="st-name">${esc(r.state)}</span>${
+          r.is_default ? "" : `<span class="st-edited">edited</span>`}</td>
+        <td class="st-seen">${r.seen ? esc(r.seen) : "—"}</td>
+        <td><input type="checkbox" data-st="in_scope" ${r.in_scope ? "checked" : ""}
+                   ${DATA.can_edit ? "" : "disabled"}></td>
+        <td><input type="checkbox" data-st="r4_reply_owed" ${r.r4_reply_owed ? "checked" : ""}
+                   ${DATA.can_edit ? "" : "disabled"}></td>
+        <td><select data-st="r5" ${DATA.can_edit ? "" : "disabled"}>${opts}</select></td>
+        <td class="st-tags"><input type="text" data-st="tags" spellcheck="false"
+                   placeholder="@legal-ops" value="${esc((r.tags || []).join(", "))}"
+                   ${DATA.can_edit ? "" : "disabled"}><span class="st-na">—</span></td>
+        <td><input type="checkbox" data-st="r7_engineering" ${r.r7_engineering ? "checked" : ""}
+                   ${DATA.can_edit ? "" : "disabled"}></td>
+      </tr>`).join("")}</tbody>`;
+
+  // A <select> assigned a value with no matching <option> silently stays on the
+  // first one, so set it after the options exist rather than in the template.
+  for (const r of rows) {
+    const tr = document.querySelector(`[data-status-row="${CSS.escape(r.state)}"]`);
+    if (!tr) continue;
+    const sel = tr.querySelector('[data-st="r5"]');
+    sel.value = r.r5;
+    syncTagsCell(tr);
+    sel.addEventListener("change", () => syncTagsCell(tr));
+  }
+}
+
+// Tags only mean anything to the "tags" expectation. Left visible on every row,
+// the placeholder reads as though every status expects @legal-ops.
+function syncTagsCell(tr) {
+  const wants = tr.querySelector('[data-st="r5"]').value === "tags";
+  tr.querySelector(".st-tags").classList.toggle("na", !wants);
+}
+
+function collectStatuses() {
+  const out = {};
+  for (const tr of document.querySelectorAll("[data-status-row]")) {
+    const state = tr.dataset.statusRow;
+    const get = k => tr.querySelector(`[data-st="${k}"]`);
+    const wantsTags = get("r5").value === "tags";
+    const tags = wantsTags
+      ? (get("tags").value || "").split(",").map(s => s.trim()).filter(Boolean)
+      : [];
+    out[state] = {
+      // Tags are only sent for the expectation that uses them, so switching
+      // away from "tags" and back does not resurrect a stale list.
+      in_scope:       get("in_scope").checked,
+      r4_reply_owed:  get("r4_reply_owed").checked,
+      r5:             get("r5").value,
+      r7_engineering: get("r7_engineering").checked,
+      ...(tags.length ? {tags} : {}),
+    };
+  }
+  return out;
 }
 
 /* ── Pylon field mapping ─────────────────────────────────────────────────────

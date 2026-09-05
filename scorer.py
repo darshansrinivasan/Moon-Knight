@@ -94,6 +94,74 @@ R8_CONDITION_LABELS = {
     "oncall_category": "request_category is an oncall category",
 }
 
+# What each Pylon status means to the checks. Seeded to reproduce exactly what
+# the constants below already do, so adopting it moves no grade — t_status
+# proves that status by status against the original sets.
+#
+# Four attributes, not two, because the old sets encode three independent
+# dimensions with different combinations per status. `closed` owes no reply but
+# is still fully scored — A5 exists precisely to judge closures, so treating it
+# as out of scope would delete a working check. `investigating` is R5-N/A but
+# R4 applies. `waiting_on_customer` is exempt from both. And `waiting_on_engg`
+# additionally decides whether R7 applies at all.
+#
+#   in_scope        counted and AI-scored at all
+#   r4_reply_owed   whether R4's clock runs, or short-circuits to Pass
+#   r5              none | support_reply | handoff:<roster> | tags
+#   r7_engineering  whether R7 applies
+#
+# A status Pylon adds later and nobody has configured falls to STATUS_FALLBACK,
+# which is deliberately the lenient reading: scored, but never failed by R5 or
+# R7 for a rule nobody has written yet.
+STATUS_FALLBACK = {"in_scope": True, "r4_reply_owed": True,
+                   "r5": "none", "r7_engineering": False}
+
+DEFAULT_STATUS_POLICY = {
+    "new":                     {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "support_reply",   "r7_engineering": False},
+    "waiting_on_you":          {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "support_reply",   "r7_engineering": False},
+    "waiting_on_customer":     {"in_scope": True,  "r4_reply_owed": False,
+                                "r5": "customer_owns",   "r7_engineering": False},
+    "waiting_on_csm":          {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "handoff:cs",      "r7_engineering": False},
+    "waiting_on_product":      {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "handoff:pt",      "r7_engineering": False},
+    "waiting_on_engg":         {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "handoff:eng",     "r7_engineering": True},
+    "waiting_on_engineering":  {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "handoff:eng",     "r7_engineering": True},
+    "waiting_on_legal":        {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "tags",            "r7_engineering": False,
+                                "tags": ["@legal-ops"]},
+    "investigating":           {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "none",            "r7_engineering": False},
+    "on_hold":                 {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "none",            "r7_engineering": False},
+    "migration":               {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "none",            "r7_engineering": False},
+    "handled_by_ai_donot_use": {"in_scope": True,  "r4_reply_owed": True,
+                                "r5": "none",            "r7_engineering": False},
+    "closed":                  {"in_scope": True,  "r4_reply_owed": False,
+                                "r5": "none",            "r7_engineering": False},
+    "archived":                {"in_scope": True,  "r4_reply_owed": False,
+                                "r5": "none",            "r7_engineering": False},
+}
+
+R5_EXPECTATIONS = ("none", "support_reply", "customer_owns",
+                   "handoff:cs", "handoff:pt", "handoff:eng", "tags")
+
+R5_EXPECTATION_LABELS = {
+    "none":          "nothing — this status carries no ownership expectation",
+    "support_reply": "support owns the next action (an assignee, or a reply)",
+    "customer_owns": "the customer owns the next action",
+    "handoff:cs":    "a CS or Implementation person tagged in the thread",
+    "handoff:pt":    "a Product person or the product group tagged",
+    "handoff:eng":   "an engineer or engineering group tagged, or a Rootly/Jira link",
+    "tags":          "one of the literal tags listed for this status",
+}
+
+
 # `waiting_on_engineering` is not a status Pylon reports — the live status list
 # is the 13 in SPEC_v5. Kept only so a historic row carrying it still matches.
 ENGG_STATES = {"waiting_on_engg", "waiting_on_engineering"}
@@ -508,7 +576,10 @@ def r3(issue: dict, account: dict | None) -> str:
 
 def r4(issue: dict, messages: list[dict]) -> str:
     state = issue.get("state", "")
-    if state in TERMINAL_STATES | WAITING_CUSTOMER:
+    # Statuses where nobody owes the customer a reply short-circuit to Pass.
+    # Seeded from TERMINAL_STATES | WAITING_CUSTOMER, so this is the same set
+    # until an admin changes it.
+    if not qc_rules.status_policy(state).get("r4_reply_owed", True):
         return "Pass"
 
     # Compare parsed instants, not raw strings. Pylon mixes offsets, and a
@@ -583,25 +654,36 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     state    = issue.get("state", "")
     assignee = issue.get("assignee")
 
-    # States where ownership check doesn't apply
-    if state in _R5_NA_STATES:
+    # What this status expects, from the configured policy. Seeded from
+    # _R5_NA_STATES / WAITING_CUSTOMER / the per-state branches below, so the
+    # dispatch is the same until an admin changes a row.
+    policy = qc_rules.status_policy(state)
+    expectation = policy.get("r5", "none")
+
+    if expectation == "none":
         return "N/A"
 
-    # Rep responded, ball is in customer's court — status is correct
-    if state in WAITING_CUSTOMER:
+    # Support replied; the ball is with the customer, so the status is correct.
+    if expectation == "customer_owns":
         return "Pass"
 
+    if expectation == "tags":
+        all_text = " ".join(_html_text(m.get("message_html")) for m in messages)
+        tags = [x for x in (policy.get("tags") or []) if x]
+        return "Pass" if any(tag in all_text for tag in tags) else "Fail"
+
     # New ticket — must have an assignee
-    if state == "new":
+    if expectation == "support_reply" and state == "new":
         return "Pass" if assignee else "Fail"
 
     # Support is yet to respond to a customer message — always flagged
-    if state == "waiting_on_you":
+    if expectation == "support_reply":
+        # Support owes the next action and has not taken it.
         return "Fail"
 
     # waiting_on_csm: pass if any CS or Implementation member is tagged in the Pylon thread
     # (individually or as a group), or if found in the oncall_slack_chat_link thread.
-    if state == "waiting_on_csm":
+    if expectation == "handoff:cs":
         mentioned = _mentioned_slack_ids(messages)
         if mentioned & qc_rules.id_set("cs_user_ids"):
             return "Pass"
@@ -631,7 +713,7 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
 
     # waiting_on_product: pass if any PT member individually tagged OR @pt group tagged
     # in Pylon thread, then check oncall_slack_chat_link thread as fallback.
-    if state == "waiting_on_product":
+    if expectation == "handoff:pt":
         if _mentioned_slack_ids(messages) & qc_rules.id_set("pt_user_ids"):
             return "Pass"
         if _mentioned_group_ids(messages) & qc_rules.id_set("pt_group_ids"):
@@ -656,7 +738,7 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     # waiting_on_engg: require evidence that an engineer or eng group was notified.
     # Check Pylon thread first (HTML mentions), then oncall_slack_chat_link thread,
     # then fall back to Rootly/Jira presence.
-    if state in ENGG_STATES:
+    if expectation == "handoff:eng":
         # 1a. Pylon thread HTML — individual engineer @-mentioned?
         if _mentioned_slack_ids(messages) & qc_rules.id_set("eng_user_ids"):
             return "Pass"
@@ -680,13 +762,8 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         # 3. Rootly/Jira as final fallback
         return "Pass" if _has_rootly_or_jira(issue, messages, external_issues) else "Fail"
 
-    # Other delegation states — require group mention in thread text
-    if state in qc_rules.group_states():
-        tags     = qc_rules.group_states()[state]
-        all_text = " ".join(_html_text(m.get("message_html")) for m in messages)
-        return "Pass" if any(tag in all_text for tag in tags) else "Fail"
-
-    # Unknown/future states — don't penalise
+    # An expectation nobody has implemented, or a status with no policy row.
+    # Never penalise for a rule that does not exist.
     return "N/A"
 
 
@@ -706,7 +783,9 @@ def r6(issue: dict) -> str:
 
 def r7(issue: dict, messages: list[dict], external_issues: list[dict] | None = None) -> str:
     state = issue.get("state", "")
-    if state not in ENGG_STATES:
+    # Seeded from ENGG_STATES. A status marked as an engineering one is where
+    # a Rootly or Jira reference is expected to exist.
+    if not qc_rules.status_policy(state).get("r7_engineering", False):
         return "N/A"
 
     cf = issue.get("custom_fields") or {}
