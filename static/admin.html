@@ -81,7 +81,46 @@
   body.readonly #test-slack, body.readonly #test-vertex,
   body.readonly #reload-projects, body.readonly #gcp-connect, body.readonly #gcp-disconnect,
   body.readonly [data-role], body.readonly [data-toggle],
-  body.readonly #coverage-form, body.readonly [data-coverage-del] { display: none !important; }
+  body.readonly #coverage-form, body.readonly [data-coverage-del],
+  body.readonly #ident-editor, body.readonly .ident-remove { display: none !important; }
+
+  /* ── Slack mentions & identity map ── */
+  .ident-list {
+    display: flex; flex-direction: column; gap: 4px;
+    max-height: 260px; overflow: auto; margin-top: 8px;
+  }
+  .ident-row {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12.5px; padding: 6px 10px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface2);
+  }
+  .ident-name { min-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ident-badge {
+    font-size: 10px; font-weight: 700; letter-spacing: .4px;
+    text-transform: uppercase; padding: 1px 8px; border-radius: 10px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .ident-badge.auto   { color: var(--pass);    border-color: var(--pass); }
+  .ident-badge.mapped { color: var(--accent2); border-color: var(--accent2); }
+  .ident-badge.none   { color: var(--review);  border-color: var(--review); }
+  .ident-id { font-size: 11px; color: var(--muted); }
+  .ident-remove {
+    background: none; border: none; color: var(--fail); cursor: pointer;
+    font-size: 12px; padding: 0 4px; margin-left: auto;
+  }
+  .ident-pick { position: relative; flex: 1; min-width: 220px; }
+  .ident-results {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; z-index: 60; max-height: 220px; overflow: auto;
+  }
+  .ident-result {
+    padding: 7px 10px; font-size: 12.5px; cursor: pointer;
+    display: flex; justify-content: space-between; gap: 10px;
+  }
+  .ident-result:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .ident-result .em { color: var(--muted); font-size: 11.5px; }
   .coverage-item {
     border: 1px solid var(--border); border-radius: var(--radius);
     padding: 12px 14px; margin-bottom: 10px; background: var(--surface2);
@@ -216,6 +255,60 @@
               <button class="ghost" id="test-slack">Send test message</button>
             </div>
             <div class="msg" id="msg-slack"></div>
+          </div>
+
+          <div class="card">
+            <h2>Mentions</h2>
+            <p class="card-sub">
+              Who gets @-tagged in the scheduled report, and how assignee names
+              map to Slack accounts. A name that cannot be resolved is posted as
+              plain text — never a guessed tag.
+            </p>
+            <div class="field">
+              <label for="slack_mention_mode">Mention mode</label>
+              <div class="hint">
+                <b>Leads only</b> tags each coverage group's lead about their team's
+                failures. <b>Everyone</b> also tags each assignee with failures —
+                in a shared channel that is a public daily callout, which is why it
+                is not the default.
+              </div>
+              <select id="slack_mention_mode">
+                <option value="off">Off — every name as plain text</option>
+                <option value="leads">Leads only (default)</option>
+                <option value="all">Everyone — leads and assignees</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button data-save="slack_mention_mode">Save mention mode</button>
+            </div>
+            <div class="msg" id="msg-mentions"></div>
+
+            <div class="field" style="margin-top:14px">
+              <label>Who can be tagged</label>
+              <div class="hint">
+                Every assignee seen in the data. <b>auto</b> matched a unique Slack
+                user by full name; <b>mapped</b> uses an override from below;
+                <b>not found</b> posts as plain text until mapped.
+              </div>
+              <div class="ident-list" id="ident-list"></div>
+            </div>
+            <div id="ident-editor">
+              <div class="field">
+                <label for="ident-name">Add or change an override</label>
+                <div class="hint">Pick the assignee, then search your Slack workspace for the right person.</div>
+                <div class="row">
+                  <select id="ident-name" style="max-width:220px"></select>
+                  <div class="ident-pick">
+                    <input type="text" id="ident-search" placeholder="Search Slack people…" autocomplete="off">
+                    <div class="ident-results" id="ident-results" hidden></div>
+                  </div>
+                </div>
+              </div>
+              <div class="actions">
+                <button id="ident-save">Save identity overrides</button>
+              </div>
+            </div>
+            <div class="msg" id="msg-ident"></div>
           </div>
         </div>
 
@@ -417,6 +510,9 @@ function fillSettings(s, sources = {}) {
                    "slack_channel","dashboard_base_url"]) {
     if ($(k)) $(k).value = s[k] || "";
   }
+  // A select falls back to its first option on "", which would misreport the
+  // effective default (leads) as Off — so default it explicitly.
+  $("slack_mention_mode").value = s.slack_mention_mode || "leads";
   fillQuotaSelect([], s.vertex_quota_project || "");
   $("slack_enabled").checked = s.slack_enabled === "1";
 
@@ -655,7 +751,8 @@ function wireSaveButtons() {
         if (v === "" && NEVER_BLANK.has(k)) return;
         body[k] = v;
       });
-      const msgId = keys[0].startsWith("vertex") ? "msg-vertex" : "msg-slack";
+      const msgId = keys[0].startsWith("vertex") ? "msg-vertex"
+        : keys[0] === "slack_mention_mode" ? "msg-mentions" : "msg-slack";
       const msg = $(msgId);
       const held = droppedBlankKeys(keys, body);
 
@@ -999,10 +1096,134 @@ async function load() {
     show($("msg-statuses"), e.message, "err");
   }
 
+  try {
+    await loadMentions();
+  } catch (e) {
+    show($("msg-ident"), e.message, "err");
+  }
+
   applyReadOnly();
   $("loading").style.display = "none";
   $("content").style.display = "block";
 }
+
+// ── Slack mentions & identity overrides ──────────────────────────────────────
+// The mode is an ordinary setting (saved via data-save above); the identity
+// map has its own endpoint because it is a structured object, not a string.
+let IDENT = null;      // last GET /api/admin/slack/identities payload
+let identStaged = {};  // working copy of the overrides, saved as a whole
+
+async function loadMentions() {
+  IDENT = await api("/api/admin/slack/identities");
+  identStaged = { ...(IDENT.mapped || {}) };
+  $("slack_mention_mode").value = IDENT.mode || "leads";
+  renderIdentities();
+}
+
+// "auto" means the directory resolved the name WITHOUT an override — computed
+// against the saved map, not the staged one, so removing an override shows the
+// row as it will actually behave only after Save reloads the truth.
+function _autoResolved(name) {
+  return !!(IDENT.resolved || {})[name] && !(IDENT.mapped || {})[name];
+}
+
+function identBadge(name) {
+  if (identStaged[name]) return `<span class="ident-badge mapped">mapped</span>`;
+  if (_autoResolved(name)) return `<span class="ident-badge auto">auto</span>`;
+  return `<span class="ident-badge none">not found</span>`;
+}
+
+function renderIdentities() {
+  const names = Object.keys(IDENT.resolved || {});
+  // Actionable rows first: unresolved, then overrides, then the fine ones.
+  const rank = n => identStaged[n] ? 1 : _autoResolved(n) ? 2 : 0;
+  names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+
+  $("ident-list").innerHTML = names.map(n => `
+    <div class="ident-row">
+      <span class="ident-name" title="${esc(n)}">${esc(n)}</span>
+      ${identBadge(n)}
+      ${identStaged[n] ? `<span class="ident-id">${esc(identStaged[n])}</span>
+        <button type="button" class="ident-remove" data-unmap="${esc(n)}"
+                title="Remove this override">✕</button>` : ""}
+    </div>`).join("")
+    || `<div class="hint">No assignees seen in the data yet.</div>`;
+
+  $("ident-name").innerHTML = names.map(n =>
+    `<option value="${esc(n)}">${esc(n)}${identStaged[n] ? " (mapped)"
+      : _autoResolved(n) ? " (auto)" : " (not found)"}</option>`).join("");
+
+  const dirty = JSON.stringify(identStaged)
+    !== JSON.stringify(IDENT.mapped || {});
+  $("ident-save").disabled = !dirty;
+  $("ident-save").textContent =
+    dirty ? "Save identity overrides" : "Identity overrides saved";
+}
+
+$("ident-list").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-unmap]");
+  if (!btn) return;
+  delete identStaged[btn.dataset.unmap];
+  renderIdentities();
+});
+
+// Type-ahead over the Slack directory (login-domain people only, server-side).
+let identSearchTimer = null;
+$("ident-search").addEventListener("input", () => {
+  clearTimeout(identSearchTimer);
+  const q = $("ident-search").value.trim();
+  if (!q) { $("ident-results").hidden = true; return; }
+  identSearchTimer = setTimeout(async () => {
+    try {
+      const d = await api(`/api/directory/reviewers?q=${encodeURIComponent(q)}`);
+      const items = (d.results || []).slice(0, 8);
+      $("ident-results").innerHTML = items.length
+        ? items.map(p => `
+            <div class="ident-result" data-sid="${esc(p.id)}" data-pname="${esc(p.name)}">
+              <span>${esc(p.name)}</span><span class="em">${esc(p.email || "")}</span>
+            </div>`).join("")
+        : `<div class="ident-result"><span class="em">${
+            esc(d.ok === false ? d.message : "No matches")}</span></div>`;
+      $("ident-results").hidden = false;
+    } catch (e) {
+      $("ident-results").innerHTML =
+        `<div class="ident-result"><span class="em">${esc(e.message)}</span></div>`;
+      $("ident-results").hidden = false;
+    }
+  }, 250);
+});
+
+$("ident-results").addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-sid]");
+  if (!row) return;
+  identStaged[$("ident-name").value] = row.dataset.sid;
+  $("ident-search").value = "";
+  $("ident-results").hidden = true;
+  renderIdentities();
+});
+
+document.addEventListener("click", (ev) => {
+  if (!ev.target.closest(".ident-pick")) $("ident-results").hidden = true;
+});
+
+$("ident-save").addEventListener("click", async () => {
+  const msg = $("msg-ident");
+  $("ident-save").disabled = true;
+  show(msg, "Saving…", "info");
+  try {
+    await api("/api/admin/slack/identities", {
+      method: "PUT", body: JSON.stringify({ mapped: identStaged }),
+    });
+    // Reload rather than patching locally: resolution (auto vs mapped vs not
+    // found) is the server's call, and the list must show what the next
+    // report will actually do.
+    await loadMentions();
+    show(msg, "Saved.", "ok");
+  } catch (e) {
+    show(msg, e.message, "err");
+    $("ident-save").disabled = false;
+  }
+});
 
 $("status-save").addEventListener("click", async () => {
   const msg = $("msg-statuses");
