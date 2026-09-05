@@ -340,6 +340,15 @@ check("garbage created_at falls back to a date, not a crash",
       len(openqc._ist_fetch_date("not-a-time")), 10)
 
 print()
+print("=== the listing names who signed a ticket off ===")
+rows_by_id = {t["ticket_id"]: t for t in openqc.list_open()["tickets"]}
+check("reviewer named on a signed-off ticket",
+      rows_by_id["o9"]["signed_off_by"], "R")
+check("and the sign-off is the grade shown",
+      rows_by_id["o9"]["overall_result"], "Pass")
+check("unsigned tickets carry no name", rows_by_id["o1"]["signed_off_by"], None)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

@@ -111,6 +111,8 @@ def list_open(start: str | None = None, end: str | None = None,
             SELECT t.id AS ticket_id, t.number, t.title, t.link, t.state,
                    t.fetch_date, t.assignee_name,
                    {EFFECTIVE_GRADE_SQL} AS overall_result,
+                   COALESCE(NULLIF(TRIM(rev.reviewer_name), ''),
+                            rev.reviewer_email) AS signed_off_by,
                    ac.checked_at
             FROM tickets t
             LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
@@ -148,6 +150,9 @@ def list_open(start: str | None = None, end: str | None = None,
             "fetch_date": r["fetch_date"],
             "assignee_name": r["assignee_name"] or "Unassigned",
             "overall_result": grade,
+            # Only meaningful when the latest sign-off IS the grade shown; a
+            # review of Pass/Fail always is, per EFFECTIVE_GRADE_SQL.
+            "signed_off_by": r["signed_off_by"],
             "checked_at": r["checked_at"],
         })
 

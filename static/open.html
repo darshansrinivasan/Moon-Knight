@@ -110,6 +110,7 @@
   tbody tr[data-id] { cursor: pointer; transition: background .12s; }
   tbody tr[data-id]:hover { background: var(--surface2); }
   .grade { font-weight: 600; }
+  .signed-by { font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
   .grade.Pass { color: var(--pass); }
   .grade.Fail { color: var(--fail); }
   .grade.NR   { color: var(--review); }
@@ -261,7 +262,8 @@ function renderRows(tickets) {
       <td class="state-cell">${esc(stateLabel(t.state))}</td>
       <td>${esc(t.assignee_name)}</td>
       <td class="muted">${esc(t.fetch_date || "—")}</td>
-      <td>${gradeCell(t.overall_result)}</td>
+      <td>${gradeCell(t.overall_result)}${t.signed_off_by
+        ? `<div class="signed-by" title="Signed off by ${esc(t.signed_off_by)}">✓ signed off · ${esc(t.signed_off_by)}</div>` : ""}</td>
       <td class="muted">${t.checked_at ? esc(QC.fmtTime(t.checked_at)) : "—"}</td>
     </tr>`;
   }).join("");

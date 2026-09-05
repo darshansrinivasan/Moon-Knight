@@ -33,7 +33,7 @@ UNTEAMED = "No team"
 # grade must use these — reading ai_checks directly is what previously made two
 # pages disagree. The underscored aliases below are kept for existing callers.
 LATEST_REVIEW_SQL = """
-    SELECT r.ticket_id, r.decision
+    SELECT r.ticket_id, r.decision, r.reviewer_name, r.reviewer_email
     FROM ticket_reviews r
     JOIN (SELECT ticket_id, MAX(id) AS max_id
           FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id

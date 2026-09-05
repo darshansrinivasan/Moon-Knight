@@ -2069,7 +2069,7 @@ function renderTickets(tickets) {
     const overallCls  = overallClass(overall);
     const overallText = overall || "Pending";
     const signed      = t.review
-      ? `<span class="review-mark" title="Signed off by ${esc(t.review.reviewer_name || t.review.reviewer_email)}">signed off</span>`
+      ? `<span class="review-mark" title="Signed off ${esc(t.review.decision)} by ${esc(t.review.reviewer_name || t.review.reviewer_email)}">signed off · ${esc(t.review.reviewer_name || t.review.reviewer_email)}</span>`
       : "";
 
     // The compact matrix replaces twelve full-width chips, which consumed the
@@ -2213,7 +2213,7 @@ async function openSheet(ticketId, trigger) {
   document.getElementById("sheet-tags").innerHTML = `
     <span class="overall-badge overall-${cls}">${esc(overall)}</span>
     <span class="meta-tag state">${esc((t.state || "").replace(/_/g, " "))}</span>
-    ${t.review ? `<span class="review-mark">signed off</span>` : ""}`;
+    ${t.review ? `<span class="review-mark" title="Signed off ${esc(t.review.decision)} by ${esc(t.review.reviewer_name || t.review.reviewer_email)}">signed off · ${esc(t.review.reviewer_name || t.review.reviewer_email)}</span>` : ""}`;
 
   // The facts a reviewer asks for before judging a grade.
   const fact = (label, value) => value
