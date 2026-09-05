@@ -298,6 +298,16 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
+/* Body links. There was no rule for a bare <a> anywhere, so every link outside
+   the nav fell through to the browser's default dark blue — which on this
+   ground is very nearly invisible. Underlined as well as tinted, because a
+   colour difference alone is not a reliable affordance and the accent is
+   already carrying meaning elsewhere. */
+a { color: var(--accent2); text-decoration: underline;
+    text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { color: var(--color-text); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
 .hint { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; line-height: 1.5; }
 .field { margin-bottom: 16px; }
 .row { display: flex; gap: 8px; align-items: flex-start; }
