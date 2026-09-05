@@ -131,6 +131,15 @@
     border: 1px solid color-mix(in srgb, var(--color-text) 14%, transparent);
     color: color-mix(in srgb, var(--color-text) 30%, transparent);
   }
+  /* Switched off in Rules: the stored verdict is kept but does not count, so it
+     must not read as a verdict. Struck through rather than merely grey, which
+     is already taken by "not applicable". */
+  .c-off {
+    background: color-mix(in srgb, var(--color-text) 5%, transparent);
+    border: 1px dashed color-mix(in srgb, var(--color-text) 22%, transparent);
+    color: color-mix(in srgb, var(--color-text) 34%, transparent);
+  }
+
   /* Not evaluated: dashed, so "no result yet" is distinct from "not applicable"
      by shape and not only by shade. */
   .c-none {
@@ -1871,23 +1880,40 @@ function cellState(key, value) {
   return "pass";
 }
 
-const CELL_GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "", none: "" };
+const CELL_GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "", none: "", off: "–" };
 const CELL_WORD  = {
   pass: "passed", fail: "failed", warn: "needs attention",
   na: "not applicable", none: "not evaluated",
+  off: "switched off in Rules",
 };
 
 // One row of twelve cells. Each carries a glyph AND a title AND an aria-label:
 // this grid is the primary signal on the page, so it can never rely on colour
 // alone.
+// Checks an admin has switched off. Their stored verdicts are kept — that is
+// what makes switching one off reversible — so the grid would otherwise show a
+// red Fail beside a Pass overall with nothing to explain the contradiction.
+let DISABLED_CHECKS = new Set();
+
+async function loadDisabledChecks() {
+  try {
+    const d = await QC.api("/api/rules");
+    DISABLED_CHECKS = new Set((d.checks || [])
+      .filter(c => !c.enabled).map(c => c.key));
+  } catch { /* the grid is still readable without it */ }
+}
+
 function matrixHtml(t) {
   const cells = MATRIX.map(([key, short]) => {
     const raw = t[key];
-    const st = cellState(key, raw);
+    const off = DISABLED_CHECKS.has(key);
+    const st = off ? "off" : cellState(key, raw);
     const label = (CHECKS[key] || {}).label || key.toUpperCase();
     const shown = raw === null || raw === undefined || raw === ""
       ? "not evaluated" : raw;
-    const tip = `${label}: ${shown}`;
+    const tip = off
+      ? `${label}: switched off in Rules — the stored verdict (${shown}) is kept but no longer counts`
+      : `${label}: ${shown}`;
     return `<span class="mx-cell c-${st}" title="${esc(tip)}"
                   aria-label="${esc(`${label} ${CELL_WORD[st]}`)}"
             >${CELL_GLYPH[st]}</span>`;
@@ -3478,6 +3504,7 @@ document.getElementById("next-month").addEventListener("click", () => {
 // ── init ──────────────────────────────────────────────────────────────────────
 (async () => {
   await (window.QC && QC.ready);
+  await loadDisabledChecks();
   try {
     const d = await QC.api("/api/review/coverages");
     coverages = d.coverages || [];

@@ -219,16 +219,22 @@ def _drivers(row: dict) -> list[str]:
     deliberate: when R3 and R4 both failed a ticket a reviewer passed, either
     could be the one that is wrong, and suppressing one would hide it.
     """
+    # Only checks that are switched on. A disabled check keeps its stored
+    # verdict, so without this the panel would propose tuning a rule that is not
+    # running — advice that cannot be acted on and reads as a bug.
+    import rules as qc_rules
+    live = qc_rules.enabled_rule_keys(tuple(R_KEYS))
+
     verdict = row.get("ai_result")
     if verdict == "Fail":
-        drivers = [k for k in R_KEYS if row.get(k) == "Fail"]
+        drivers = [k for k in live if row.get(k) == "Fail"]
         if row.get("a3") == "Poor":
             drivers.append("a3")
         if row.get("a5") == "Fail":
             drivers.append("a5")
         return drivers
     if verdict == "Needs Review":
-        return ([k for k in R_KEYS if row.get(k) == "Needs Review"]
+        return ([k for k in live if row.get(k) == "Needs Review"]
                 + [k for k in _A_HEDGE_KEYS if row.get(k) == "Needs Review"])
     return []
 

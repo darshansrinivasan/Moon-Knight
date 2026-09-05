@@ -252,6 +252,19 @@ check("the section nav is left alone",
       '#admin-nav' in ADMIN and 'id="admin-nav"' in ADMIN)
 
 print()
+print("=== a switched-off check reads as off, not as a verdict ===")
+# Its stored verdict is kept — that is what makes switching it off reversible —
+# so without a distinct state the grid shows a red Fail beside a Pass overall
+# with nothing to explain the contradiction.
+check("the dashboard learns which checks are off", "DISABLED_CHECKS" in INDEX)
+check("and reads it from the served list", "loadDisabledChecks" in INDEX)
+check("the cell has its own state", ".c-off" in INDEX)
+check("with its own glyph", 'off: "–"' in INDEX)
+check("and its own screen-reader word", "switched off in Rules" in INDEX)
+check("the tooltip still shows the kept verdict",
+      "is kept but no longer counts" in INDEX)
+
+print()
 print("=== the removed chrome toggles left nothing behind ===")
 for gone in ("rail-toggle", "cal-toggle", "CHROME_KEY", "saveChrome",
              "loadChrome", "setRailCollapsed", "setCalCollapsed",
