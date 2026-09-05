@@ -182,8 +182,11 @@ check("a Jira reference alone passes by default",
 rules.save({"r5_eng_sources": ["pylon_thread"]}, "test@x")
 check("with only a thread mention accepted, it fails",
       scorer.r5(ENG, JIRA_MSG, JIRA_EXT), "Fail")
-ok("and the Slack call is not made either",
-   True, "oncall_slack_thread is unticked, so no live fetch is attempted")
+calls = []
+scorer.r5({"state": "waiting_on_engg", "assignee": {"id": "u1"},
+           "custom_fields": {"oncall_slack_chat_link": {"value": "https://slack/x"}}},
+          [], [], fetch_thread=lambda url: calls.append(url) or "")
+check("with that source unticked the thread is never read", calls, [])
 
 rules.save({"r5_eng_sources": list(scorer.R5_ENG_SOURCES)}, "test@x")
 check("restoring the default restores the verdict",
@@ -198,6 +201,103 @@ ok("an unknown source is refused",
 ok("every source explains itself",
    all(len(scorer.R5_ENG_SOURCE_LABELS.get(s, "")) > 20
        for s in scorer.R5_ENG_SOURCES))
+
+print()
+print("=== a customised legacy r5_group_states survives the matrix ===")
+# Before the matrix, r5_group_states was the one status behaviour an admin could
+# change. The matrix seeds tags from the shipped constant, so without a fold a
+# workspace that had customised it would lose that silently on deploy — the
+# state reverting to the default tags and failing tickets at the next fetch,
+# with no save, no audit row and nothing on screen to explain it.
+import json as _json
+import vault as _vault
+
+with db.get_conn() as c:
+    c.execute("DELETE FROM app_settings WHERE key IN (?, ?)",
+              (rules.RULES_KEY, rules.PREV_KEY))
+_vault.set_raw_setting(rules.RULES_KEY, _json.dumps({
+    "r5_group_states": {"waiting_on_legal": ["@legal-eu", "@contracts"]}}), "legacy")
+rules.invalidate()
+check("the customised tags are carried over",
+      rules.status_policy("waiting_on_legal")["tags"], ["@legal-eu", "@contracts"])
+check("as a tags expectation",
+      rules.status_policy("waiting_on_legal")["r5"], "tags")
+check("and scoring uses them",
+      scorer.r5({"state": "waiting_on_legal", "assignee": {"id": "u"},
+                 "custom_fields": {}},
+                [{"message_html": "<p>ping @legal-eu</p>", "is_customer": 0,
+                  "is_private": 0, "timestamp": "2026-09-01T09:00:00Z"}], []),
+      "Pass")
+check("the default tag no longer passes on its own",
+      scorer.r5({"state": "waiting_on_legal", "assignee": {"id": "u"},
+                 "custom_fields": {}},
+                [{"message_html": "<p>ping @legal-ops</p>", "is_customer": 0,
+                  "is_private": 0, "timestamp": "2026-09-01T09:00:00Z"}], []),
+      "Fail")
+
+# An explicit matrix row is the newer statement of intent and must win.
+_vault.set_raw_setting(rules.RULES_KEY, _json.dumps({
+    "r5_group_states": {"waiting_on_legal": ["@legal-eu"]},
+    "status_policy": {"waiting_on_legal": {"r5": "tags", "tags": ["@newer"]}}}),
+    "legacy")
+rules.invalidate()
+check("an explicit row beats the legacy key",
+      rules.status_policy("waiting_on_legal")["tags"], ["@newer"])
+
+with db.get_conn() as c:
+    c.execute("DELETE FROM app_settings WHERE key = ?", (rules.RULES_KEY,))
+rules.invalidate()
+
+print()
+print("=== in_scope actually governs scope ===")
+# It was rendered, collected, validated and stored — and read by nothing. A
+# checkbox that looks like it does something is worse than no checkbox.
+check("nothing excluded by default", rules.excluded_states(), [])
+rules.save({"excluded_states": ["archived"]}, "test@x")
+check("the Admin list still works", rules.excluded_states(), ["archived"])
+pol = {k: dict(v) for k, v in scorer.DEFAULT_STATUS_POLICY.items()}
+pol["handled_by_ai_donot_use"]["in_scope"] = False
+rules.save({"status_policy": pol}, "test@x")
+check("unticking a matrix row excludes it too",
+      rules.excluded_states(), ["archived", "handled_by_ai_donot_use"])
+check("and it reaches the SQL every count uses",
+      rules.excluded_state_clause()[1],
+      ["archived", "handled_by_ai_donot_use"])
+rules.save({"excluded_states": [],
+            "status_policy": {k: dict(v)
+                              for k, v in scorer.DEFAULT_STATUS_POLICY.items()}},
+           "test@x")
+
+print()
+print("=== a partial save cannot wipe the statuses it omits ===")
+# PUT {"status_policy": {"closed": {...}}} validates — each row is fine alone —
+# and top-level merging would have replaced the whole map, dropping the other
+# thirteen statuses to the lenient fallback: waiting_on_customer starts owing R4
+# replies, waiting_on_engg stops requiring any handoff.
+before_cust = rules.status_policy("waiting_on_customer")
+before_engg = rules.status_policy("waiting_on_engg")
+check("a one-status save is accepted",
+      rules.save({"status_policy": {"closed": {"r5": "none"}}}, "test@x"), [])
+check("waiting_on_customer is untouched",
+      rules.status_policy("waiting_on_customer"), before_cust)
+check("waiting_on_engg still requires a handoff",
+      rules.status_policy("waiting_on_engg"), before_engg)
+check("and the named status took the edit",
+      rules.status_policy("closed")["r5"], "none")
+
+print()
+print("=== a status shipped in a later deploy still appears ===")
+scorer.DEFAULT_STATUS_POLICY["waiting_on_finance"] = dict(scorer.STATUS_FALLBACK)
+rules.invalidate()
+try:
+    ok("a newly shipped status shows up in the table",
+       "waiting_on_finance" in rules.all_status_policies(),
+       "reading only stored policy would freeze the list at the first save")
+    check("while saved edits still win",
+          rules.all_status_policies()["closed"]["r5"], "none")
+finally:
+    del scorer.DEFAULT_STATUS_POLICY["waiting_on_finance"]
+    rules.invalidate()
 
 print()
 if fails:

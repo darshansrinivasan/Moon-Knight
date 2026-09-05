@@ -552,10 +552,11 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
             missing.append(f"set '{rootly_field}' to Yes")
         if not (cf.get(qc_rules.field("rootly_reference")) or {}).get("value"):
             missing.append("fill in the Rootly incident reference (e.g. ROOT-1234)")
-        req_cat = ((cf.get("request_category") or {}).get("value") or "").lower()
+        cat_field = qc_rules.field("request_category")
+        req_cat = ((cf.get(cat_field) or {}).get("value") or "").lower()
         if req_cat not in qc_rules.oncall_categories():
             missing.append(
-                f"change request_category from '{req_cat}' to an oncall category"
+                f"change {cat_field} from '{req_cat}' to an oncall category"
             )
         # The Jira half of R8 is checked in scorer._has_jira, which has the
         # external_issues this function is not given. So when every field we can
@@ -647,6 +648,8 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
 
 
 def _build_ticket_block(t: dict, idx: int) -> str:
+    import rules as qc_rules
+
     cf = json.loads(t.get("custom_fields") or "{}")
     cpv = t.get("customer_portal_visible")
     src = t.get("source") or ""
@@ -659,8 +662,14 @@ def _build_ticket_block(t: dict, idx: int) -> str:
         f"Account    : {t.get('account_name') or '—'} ({t.get('account_type') or '—'})",
         f"Source     : {src or '—'}",
         f"Internal ticket: {'Yes — requester is a colleague; Pylon thread = Slack thread' if is_internal else 'No — external customer'}",
-        f"Functionality : {_cf_val(cf.get('functionalities')) or '—'}",
-        f"Category      : {_cf_val(cf.get('request_category')) or '—'}",
+        # Through the mapping, like the fingerprint and the R-checks. Left on
+        # literals these two lines would have made a field remap the worst of
+        # both: every fingerprint moves, so whole months are marked stale and
+        # rebilled, while the model keeps reading the OLD field and returns the
+        # same grades — paying for identical output, and grading a different
+        # field from the one R1 checks.
+        f"Functionality : {_cf_val(cf.get(qc_rules.field('functionality'))) or '—'}",
+        f"Category      : {_cf_val(cf.get(qc_rules.field('request_category'))) or '—'}",
         f"R-checks   : R1={t.get('r1')} R2={t.get('r2')} R3={t.get('r3')} "
         f"R4={t.get('r4')} R5={t.get('r5')} R7={t.get('r7')}",
         "",

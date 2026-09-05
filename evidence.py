@@ -216,11 +216,11 @@ def _filled_field(ctx: _Context, name: str) -> tuple[str | None, str]:
 
 
 def _r1(ctx: _Context, stored: str) -> tuple[str | None, str]:
-    return _filled_field(ctx, "functionalities")
+    return _filled_field(ctx, qc_rules.field("functionality"))
 
 
 def _r2(ctx: _Context, stored: str) -> tuple[str | None, str]:
-    return _filled_field(ctx, "request_category")
+    return _filled_field(ctx, qc_rules.field("request_category"))
 
 
 # ── R3: the ticket belongs to a real external customer ───────────────────────
@@ -257,7 +257,10 @@ def _r3(ctx: _Context, stored: str) -> tuple[str | None, str]:
 # ── R4: the customer's last message was answered inside the SLA ──────────────
 
 def _r4(ctx: _Context, stored: str) -> tuple[str | None, str]:
-    if ctx.state in scorer.TERMINAL_STATES | scorer.WAITING_CUSTOMER:
+    # Through the configured policy, not the seed constants: this module's whole
+    # job is explaining the verdict a reader is looking at, so reading a
+    # different source from the scorer makes it explain a rule that is not live.
+    if not qc_rules.status_policy(ctx.state).get("r4_reply_owed", True):
         return "Pass", f"state {_quote(ctx.state)} leaves no reply owed by support"
 
     dated = [
@@ -293,11 +296,11 @@ def _rootly_or_jira(ctx: _Context) -> str | None:
     The ladder mirrors scorer's: the two custom fields, then `external_issues`,
     then the body and thread text.
     """
-    field = ctx.field("does_rootly_exist")
+    field = ctx.field(qc_rules.field("rootly_exists"))
     if field and field.get("value") == "Yes":
         return "does_rootly_exist = 'Yes'"
 
-    ref = ctx.field("rootly.incident_reference")
+    ref = ctx.field(qc_rules.field("rootly_reference"))
     if ref and ref.get("value"):
         return f"rootly.incident_reference = {_quote(ref['value'])}"
 
@@ -396,12 +399,14 @@ def _r5(ctx: _Context, stored: str) -> tuple[str | None, str]:
     state = ctx.state
     quoted = _quote(state)
 
-    if state in scorer._R5_NA_STATES:
+    expectation = qc_rules.status_policy(state).get("r5", "none")
+
+    if expectation == "none":
         return "N/A", (
             f"state {quoted} is exempt from the ownership check, "
             "so the rule does not apply"
         )
-    if state in scorer.WAITING_CUSTOMER:
+    if expectation == "customer_owns":
         return "Pass", f"state {quoted} — support replied and the ball is with the customer"
     if state == "new":
         owner = ctx.ticket.get("assignee_name") or ctx.ticket.get("assignee_id")
@@ -414,7 +419,7 @@ def _r5(ctx: _Context, stored: str) -> tuple[str | None, str]:
         return _r5_csm(ctx, stored)
     if state == "waiting_on_product":
         return _r5_product(ctx, stored)
-    if state in scorer.ENGG_STATES:
+    if expectation == "handoff:eng":
         return _r5_engg(ctx, stored)
 
     group_states = qc_rules.group_states()
@@ -432,7 +437,7 @@ def _r5(ctx: _Context, stored: str) -> tuple[str | None, str]:
 # ── R7: an engineering ticket carries a Rootly or Jira reference ─────────────
 
 def _r7(ctx: _Context, stored: str) -> tuple[str | None, str]:
-    if ctx.state not in scorer.ENGG_STATES:
+    if not qc_rules.status_policy(ctx.state).get("r7_engineering", False):
         return "N/A", (
             f"state {_quote(ctx.state)} is not an engineering state, "
             "so the rule does not apply"
@@ -440,7 +445,7 @@ def _r7(ctx: _Context, stored: str) -> tuple[str | None, str]:
     if not ctx.fields_ok:
         return None, _CF_UNREADABLE
 
-    field = ctx.field("does_rootly_exist")
+    field = ctx.field(qc_rules.field("rootly_exists"))
     if field and field.get("value") == "No":
         return "Fail", "does_rootly_exist = 'No'"
 
@@ -456,8 +461,8 @@ def _r8(ctx: _Context, stored: str) -> tuple[str | None, str]:
     if not ctx.fields_ok:
         return None, _CF_UNREADABLE
 
-    resolution = (scorer._cf_val(ctx.field("resolution_category")) or "").strip()
-    ref_field = ctx.field("rootly.incident_reference")
+    resolution = (scorer._cf_val(ctx.field(qc_rules.field("resolution_category"))) or "").strip()
+    ref_field = ctx.field(qc_rules.field("rootly_reference"))
     ref = (ref_field or {}).get("value") or ""
 
     escalated = resolution.lower() == "escalated to oncall"
@@ -468,23 +473,31 @@ def _r8(ctx: _Context, stored: str) -> tuple[str | None, str]:
         f"resolution_category = {_quote(resolution)}" if escalated
         else f"rootly.incident_reference = {_quote(ref)}"
     )
-    rootly_yes = (ctx.field("does_rootly_exist") or {}).get("value") == "Yes"
+    rootly_yes = (ctx.field(qc_rules.field("rootly_exists")) or {}).get("value") == "Yes"
     has_jira = scorer._has_jira(
         {"body_html": ctx.ticket.get("body_html")}, ctx.messages, ctx.external
     )
-    category = (scorer._cf_val(ctx.field("request_category")) or "").strip()
+    category = (scorer._cf_val(ctx.field(qc_rules.field("request_category"))) or "").strip()
+
+    # Only the conditions R8 still requires. Listing a dropped one as "missing"
+    # tells a reviewer to go and fix something the check no longer asks for —
+    # which is how the panel would come to contradict the verdict beside it.
+    required = qc_rules.r8_conditions()
+    rootly_field = qc_rules.field("rootly_exists")
+    ref_name     = qc_rules.field("rootly_reference")
+    cat_name     = qc_rules.field("request_category")
 
     missing = []
-    if not rootly_yes:
-        missing.append("does_rootly_exist is not 'Yes'")
-    if not ref:
-        missing.append("rootly.incident_reference is empty")
-    if not has_jira:
+    if "rootly_yes" in required and not rootly_yes:
+        missing.append(f"{rootly_field} is not 'Yes'")
+    if "rootly_ref" in required and not ref:
+        missing.append(f"{ref_name} is empty")
+    if "jira_link" in required and not has_jira:
         missing.append("no Jira link on the ticket or in the thread")
-    if category.lower() not in qc_rules.oncall_categories():
+    if "oncall_category" in required and category.lower() not in qc_rules.oncall_categories():
         missing.append(
-            "request_category is empty" if not category
-            else f"request_category {_quote(category)} is not an oncall category"
+            f"{cat_name} is empty" if not category
+            else f"{cat_name} {_quote(category)} is not an oncall category"
         )
 
     if missing:

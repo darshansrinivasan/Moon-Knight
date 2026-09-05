@@ -337,8 +337,12 @@
             <div id="pick-pt_group_ids"></div>
           </div>
           <h3>Other delegation states</h3>
-          <div class="hint">One per line, as <b>state: @tag1, @tag2</b> — the state passes R5 when any tag appears in the thread.</div>
-          <textarea id="r5_group_states" rows="2" spellcheck="false"></textarea>
+          <div class="hint">
+            Moved to <a href="#" data-jump="statuses">Ticket statuses</a>. Set a status's
+            expectation to <b>one of the literal tags listed for this status</b> and put the
+            tags in that row. Editing it here as well would have meant two controls for one
+            fact, and whichever saved last would win silently.
+          </div>
         </div>
       </div>
 
@@ -669,8 +673,7 @@ function fillForm(r, labels) {
     // section key, so a missing one means the server dropped it.
     if (el) { el.value = r[s.key] ?? s.default ?? ""; syncSection(s.key); }
   }
-  $("r5_group_states").value = Object.entries(r.r5_group_states || {})
-    .map(([st, tags]) => `${st}: ${(tags || []).join(", ")}`).join("\n");
+
   renderStates(r.excluded_states || []);
 }
 
@@ -723,12 +726,6 @@ function collect() {
   if (conds.length) {
     rules.r8_conditions = conds.filter(b => b.checked).map(b => b.dataset.cond);
   }
-  const gs = {};
-  for (const line of $("r5_group_states").value.split("\n")) {
-    const [st, tags] = line.split(":");
-    if (st && st.trim()) gs[st.trim()] = (tags || "").split(",").map(t => t.trim()).filter(Boolean);
-  }
-  rules.r5_group_states = gs;
   return rules;
 }
 
@@ -1459,9 +1456,14 @@ $("sug-days").addEventListener("click", ev => {
   loadSuggestions();
 });
 
-$("sug-list").addEventListener("click", ev => {
-  const btn = ev.target.closest("button[data-jump]");
-  if (btn) selectSection(btn.dataset.jump);
+// Delegated on the page, not one panel: `data-jump` is now used from prose as
+// well as from suggestion cards, and scoping it to #sug-list left the links in
+// copy dead with no error to notice.
+document.addEventListener("click", ev => {
+  const el = ev.target.closest("[data-jump]");
+  if (!el) return;
+  ev.preventDefault();
+  selectSection(el.dataset.jump);
 });
 
 /* ── Prompt dry-run ─────────────────────────────────────────────────────────

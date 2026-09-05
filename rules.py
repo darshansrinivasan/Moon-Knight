@@ -146,9 +146,43 @@ def _load() -> dict:
             for k in base:
                 if k in stored:
                     base[k] = stored[k]
+            _fold_legacy_group_states(stored, base)
         except json.JSONDecodeError:
             pass          # a corrupt document must never break scoring
     return base
+
+
+def _fold_legacy_group_states(stored: dict, base: dict) -> None:
+    """Carry a customised `r5_group_states` into the status matrix.
+
+    Before the matrix, `r5_group_states` was the one status behaviour an admin
+    could change — a map of state to the literal tags that satisfy a handoff.
+    The matrix seeds its `tags` from the shipped constant, so without this fold
+    a workspace that had customised that key would silently lose it on deploy:
+    the state would revert to the default tag list and start failing tickets at
+    the next fetch, with no save, no audit row and nothing on screen to explain
+    it.
+
+    Read-time and idempotent, so it needs no migration step, and it stops as
+    soon as the matrix itself carries a row for that state.
+    """
+    legacy = stored.get("r5_group_states")
+    if not isinstance(legacy, dict):
+        return
+    policy = base.get("status_policy")
+    if not isinstance(policy, dict):
+        return
+    stored_policy = stored.get("status_policy")
+    for state, tags in legacy.items():
+        clean = [str(x) for x in (tags or []) if str(x).strip()]
+        if not clean:
+            continue
+        # An explicit matrix row wins: it is the newer statement of intent.
+        if isinstance(stored_policy, dict) and state in stored_policy:
+            continue
+        row = dict(policy.get(state) or {})
+        row.update({"r5": "tags", "tags": clean})
+        policy[state] = {**__import__("scorer").STATUS_FALLBACK, **row}
 
 
 def current() -> dict:
@@ -230,7 +264,24 @@ def sla_hours() -> float:
 
 
 def excluded_states() -> list:
-    return [s for s in current().get("excluded_states", []) if s]
+    """Statuses out of scope everywhere: unscored, uncounted, unbilled.
+
+    Derived from the status matrix's `in_scope` column, unioned with the older
+    `excluded_states` list. Two controls for one fact would mean whichever saved
+    last wins silently, and the matrix column was previously read by nothing at
+    all — a checkbox that looked like it did something.
+
+    The union rather than a replacement, because the older key is what Admin →
+    Ticket statuses writes and what production is configured through today.
+    Unchecking a row in the matrix is additive to that, and t_status pins both
+    directions.
+    """
+    doc = current()
+    out = {s for s in (doc.get("excluded_states") or []) if s}
+    for state, row in (doc.get("status_policy") or {}).items():
+        if isinstance(row, dict) and row.get("in_scope") is False:
+            out.add(state)
+    return sorted(out)
 
 
 def disabled_checks() -> set:
@@ -299,10 +350,23 @@ def status_policy(state: str) -> dict:
 
 
 def all_status_policies() -> dict:
+    """Every status with a policy: the shipped set, overlaid with saved edits.
+
+    Overlaid rather than read from storage alone. A save persists the whole
+    document, so reading only what is stored would freeze the list at whatever
+    the shipped set was on the day of the first save — and a status added to
+    `DEFAULT_STATUS_POLICY` in a later deploy would never appear in the table,
+    defeating the seed's whole point of giving a new Pylon status a row to
+    decide about.
+    """
     import scorer
     stored = current().get("status_policy") or {}
-    return {k: {**scorer.STATUS_FALLBACK, **v}
-            for k, v in stored.items() if isinstance(v, dict)}
+    out = {k: {**scorer.STATUS_FALLBACK, **v}
+           for k, v in scorer.DEFAULT_STATUS_POLICY.items()}
+    for state, row in stored.items():
+        if isinstance(row, dict):
+            out[state] = {**scorer.STATUS_FALLBACK, **row}
+    return out
 
 
 def r5_eng_sources() -> set:
@@ -551,6 +615,20 @@ def save(candidate: dict, updated_by: str) -> list:
 
     merged = _load()
     merged.update(cleaned)
+
+    # `status_policy` merges per status, not wholesale. Top-level merging alone
+    # would let `PUT {"status_policy": {"closed": {...}}}` validate — each row is
+    # fine on its own — and replace the entire map, dropping the other thirteen
+    # statuses to the lenient fallback: waiting_on_customer would start owing R4
+    # replies, and waiting_on_engg would stop requiring any handoff at all. The
+    # page always sends the whole table, so only an API caller could do it, but
+    # the endpoint is the contract.
+    if "status_policy" in cleaned and isinstance(cleaned["status_policy"], dict):
+        base_policy = dict((_load().get("status_policy") or {}))
+        for state, row in cleaned["status_policy"].items():
+            if isinstance(row, dict):
+                base_policy[state] = {**(base_policy.get(state) or {}), **row}
+        merged["status_policy"] = base_policy
 
     # Validate the whole merged document rather than the fragment: what gets
     # stored is what has to be coherent.

@@ -283,10 +283,20 @@ tk = {"number": 1, "state": "new", "title": "x",
       "custom_fields": json.dumps({"functionalities": {"value": "a"},
                                    "feature": {"value": "b"}})}
 base = qc_runner.qc_fingerprint(tk, [], {})
+base_block = qc_runner._build_ticket_block({**tk, "r1": "Pass"}, 0)
 set_rules(field_functionality="feature")
 ok("remapping a printed field moves the fingerprint",
-   qc_runner.qc_fingerprint(tk, [], {}) != base,
-   "the model sees a different value, so the grade may differ")
+   qc_runner.qc_fingerprint(tk, [], {}) != base)
+# The fingerprint may only move when the prompt does. These two lines read the
+# same mapping for exactly this reason: while the block was on literals, a remap
+# moved every fingerprint — marking whole months stale and rebilling them —
+# while the model kept reading the OLD field and returned identical grades.
+ok("and the prompt moves with it",
+   qc_runner._build_ticket_block({**tk, "r1": "Pass"}, 0) != base_block,
+   "a fingerprint that moves without the prompt is a bill for identical output")
+ok("the model now reads the remapped field",
+   "Functionality : b" in qc_runner._build_ticket_block({**tk, "r1": "Pass"}, 0),
+   "the fixture's 'feature' field holds 'b'")
 set_rules(field_functionality="functionalities")
 check("and returns when it is put back",
       qc_runner.qc_fingerprint(tk, [], {}), base)
