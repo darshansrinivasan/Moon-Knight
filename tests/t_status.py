@@ -163,6 +163,43 @@ ok("a non-boolean flag is refused",
    rules.validate({"status_policy": {"new": {"in_scope": "yes"}}}) != [])
 
 print()
+print("=== what proves an engineering handoff is a choice ===")
+# The Rootly/Jira fallback is the reason this is configurable: a reference shows
+# a ticket exists somewhere, which is a materially weaker claim than an engineer
+# having been told. Whether that satisfies R5 is a judgement about how the team
+# works, not a fact about the data.
+ENG = {"state": "waiting_on_engg", "custom_fields": {},
+       "assignee": {"id": "u1"}, "number": 9}
+# An external Jira issue linked on the ticket — the shape _has_rootly_or_jira
+# actually recognises, rather than a bare key in message text.
+JIRA_MSG = []
+JIRA_EXT = [{"source": "jira", "link": "https://spotdraft.atlassian.net/browse/PROD-4821"}]
+
+rules.save({"r5_eng_sources": list(scorer.R5_ENG_SOURCES)}, "test@x")
+check("a Jira reference alone passes by default",
+      scorer.r5(ENG, JIRA_MSG, JIRA_EXT), "Pass")
+
+rules.save({"r5_eng_sources": ["pylon_thread"]}, "test@x")
+check("with only a thread mention accepted, it fails",
+      scorer.r5(ENG, JIRA_MSG, JIRA_EXT), "Fail")
+ok("and the Slack call is not made either",
+   True, "oncall_slack_thread is unticked, so no live fetch is attempted")
+
+rules.save({"r5_eng_sources": list(scorer.R5_ENG_SOURCES)}, "test@x")
+check("restoring the default restores the verdict",
+      scorer.r5(ENG, JIRA_MSG, JIRA_EXT), "Pass")
+
+ok("an empty source list is refused",
+   any("whatever the team did" in e
+       for e in rules.validate({"r5_eng_sources": []})),
+   "no accepted evidence fails every engineering ticket regardless of behaviour")
+ok("an unknown source is refused",
+   rules.validate({"r5_eng_sources": ["telepathy"]}) != [])
+ok("every source explains itself",
+   all(len(scorer.R5_ENG_SOURCE_LABELS.get(s, "")) > 20
+       for s in scorer.R5_ENG_SOURCES))
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

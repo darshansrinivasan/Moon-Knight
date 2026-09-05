@@ -78,6 +78,10 @@ def defaults() -> dict:
         # defines.
         **{f"field_{k}": v for k, v in scorer.DEFAULT_FIELD_MAP.items()},
 
+        # What proves an engineering handoff for R5. Listed separately from
+        # the rosters because it is about the kind of evidence, not who counts.
+        "r5_eng_sources":       list(scorer.R5_ENG_SOURCES),
+
         # R8's conditions, each required only while it is listed here. The
         # `does_rootly_exist` field is still defined in Pylon but has stopped
         # being filled, so dropping `rootly_yes` is how an admin says that
@@ -273,6 +277,21 @@ def all_status_policies() -> dict:
             for k, v in stored.items() if isinstance(v, dict)}
 
 
+def r5_eng_sources() -> set:
+    """Which kinds of evidence satisfy an engineering handoff.
+
+    Falls back to all three when the stored list is empty or unrecognised: no
+    sources at all would fail every engineering ticket regardless of what the
+    team did, which is a broken check wearing a setting's clothes. Validation
+    rejects the empty list on save; this covers a document written before the
+    key existed.
+    """
+    import scorer
+    allowed = set(scorer.R5_ENG_SOURCES)
+    chosen = {str(s).strip() for s in current().get("r5_eng_sources", [])} & allowed
+    return chosen or set(scorer.R5_ENG_SOURCES)
+
+
 def r8_conditions() -> set:
     """Which of R8's four conditions are still required.
 
@@ -429,6 +448,22 @@ def validate(candidate: dict) -> list:
                 f"{key}: '{value}' is not a Pylon field slug — expected "
                 f"lowercase letters, digits and underscores, e.g. "
                 f"'{scorer.DEFAULT_FIELD_MAP[name]}'")
+
+    if "r5_eng_sources" in candidate:
+        raw = candidate.get("r5_eng_sources")
+        if not isinstance(raw, list):
+            errors.append("r5_eng_sources must be a list")
+        else:
+            for s in raw:
+                if str(s).strip() not in scorer.R5_ENG_SOURCES:
+                    errors.append(
+                        f"r5_eng_sources: '{s}' is not one of "
+                        f"{', '.join(scorer.R5_ENG_SOURCES)}")
+            if not [s for s in raw if str(s).strip()]:
+                errors.append(
+                    "r5_eng_sources cannot be empty — with no accepted evidence "
+                    "every engineering ticket fails R5 whatever the team did. "
+                    "Switch R5 off instead.")
 
     if "status_policy" in candidate:
         policy = candidate.get("status_policy")

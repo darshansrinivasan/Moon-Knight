@@ -286,6 +286,16 @@
       <div class="section" id="sec-r5">
         <div class="card">
           <h2 id="t-r5"></h2><p class="what" id="d-r5"></p>
+          <h3>What proves an engineering handoff</h3>
+          <div class="hint">
+            Any ticked source is enough on its own. The third is the one worth a
+            decision: a Rootly or Jira reference proves a ticket exists somewhere, which
+            is a weaker claim than an engineer having actually been told. All three
+            unticked is refused — every engineering ticket would fail R5 whatever the
+            team did.
+          </div>
+          <div class="cond-list" id="r5-sources"></div>
+          <h3>Rosters</h3>
           <div class="hint">Search people and groups by name. A ticket in that team’s waiting state passes when someone on the roster is @-mentioned.</div>
           <div class="roster-block">
             <h3>Customer Success <span class="count" id="c-cs"></span></h3>
@@ -672,6 +682,10 @@ function collect() {
   if (document.querySelector("[data-status-row]")) {
     rules.status_policy = collectStatuses();
   }
+  const srcs = [...document.querySelectorAll("[data-src]")];
+  if (srcs.length) {
+    rules.r5_eng_sources = srcs.filter(b => b.checked).map(b => b.dataset.src);
+  }
   const conds = [...document.querySelectorAll("[data-cond]")];
   if (conds.length) {
     rules.r8_conditions = conds.filter(b => b.checked).map(b => b.dataset.cond);
@@ -723,6 +737,16 @@ function renderCheckToggles() {
       markNavOff(c.key, !box.checked);
     });
     markNavOff(c.key, !c.enabled);
+  }
+
+  const sources = $("r5-sources");
+  if (sources) {
+    sources.innerHTML = (DATA.r5_eng_sources || []).map(s => `
+      <label class="cond">
+        <input type="checkbox" data-src="${esc(s.key)}" ${s.accepted ? "checked" : ""}
+               ${DATA.can_edit ? "" : "disabled"}>
+        ${esc(s.label)}
+      </label>`).join("");
   }
 
   const conds = $("r8-conds");

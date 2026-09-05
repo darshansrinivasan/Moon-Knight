@@ -959,6 +959,12 @@ async def get_rules(user: dict = Depends(auth.require_user)):
             }
             for key in __import__("scorer").TOGGLEABLE_CHECKS
         ],
+        "r5_eng_sources": [
+            {"key": s,
+             "label": __import__("scorer").R5_ENG_SOURCE_LABELS[s],
+             "accepted": s in qc_rules.r5_eng_sources()}
+            for s in __import__("scorer").R5_ENG_SOURCES
+        ],
         "r8_conditions": [
             {
                 "key":      c,

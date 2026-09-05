@@ -148,6 +148,20 @@ DEFAULT_STATUS_POLICY = {
                                 "r5": "none",            "r7_engineering": False},
 }
 
+# What counts as proof that engineering was actually handed the ticket. The
+# third one is the reason this is configurable: a Rootly or Jira reference shows
+# a ticket exists somewhere, which is a materially weaker claim than an engineer
+# having been tagged, and whether it should satisfy R5 is a judgement about how
+# this team works rather than a fact about the data.
+R5_ENG_SOURCES = ("pylon_thread", "oncall_slack_thread", "rootly_jira")
+
+R5_ENG_SOURCE_LABELS = {
+    "pylon_thread":       "an engineer or engineering group @-mentioned in the Pylon thread",
+    "oncall_slack_thread": "an engineer tagged in the linked oncall Slack thread",
+    "rootly_jira":        "a Rootly incident or Jira issue exists (weaker: proves a "
+                          "ticket exists, not that anyone was told)",
+}
+
 R5_EXPECTATIONS = ("none", "support_reply", "customer_owns",
                    "handoff:cs", "handoff:pt", "handoff:eng", "tags")
 
@@ -739,28 +753,37 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     # Check Pylon thread first (HTML mentions), then oncall_slack_chat_link thread,
     # then fall back to Rootly/Jira presence.
     if expectation == "handoff:eng":
-        # 1a. Pylon thread HTML — individual engineer @-mentioned?
-        if _mentioned_slack_ids(messages) & qc_rules.id_set("eng_user_ids"):
-            return "Pass"
-        # 1b. Pylon thread HTML — engineering group @-mentioned?
-        if _mentioned_group_ids(messages) & qc_rules.id_set("eng_group_ids"):
-            return "Pass"
+        sources = qc_rules.r5_eng_sources()
 
-        # 2. oncall_slack_chat_link — fetch thread, check for eng user/group tags
-        cf = issue.get("custom_fields") or {}
-        link_field  = qc_rules.field("oncall_slack_link")
-        oncall_link = (_cf_val(cf.get(link_field)) or
-                       (cf.get(link_field) or {}).get("value") or "")
-        if oncall_link:
-            thread_text = _fetch_slack_thread(oncall_link)
-            if thread_text:
-                if _slack_text_user_ids(thread_text) & qc_rules.id_set("eng_user_ids"):
-                    return "Pass"
-                if _thread_has_eng_group(thread_text):
-                    return "Pass"
+        # 1. Pylon thread HTML — an engineer, or an engineering group, @-mentioned.
+        if "pylon_thread" in sources:
+            if _mentioned_slack_ids(messages) & qc_rules.id_set("eng_user_ids"):
+                return "Pass"
+            if _mentioned_group_ids(messages) & qc_rules.id_set("eng_group_ids"):
+                return "Pass"
 
-        # 3. Rootly/Jira as final fallback
-        return "Pass" if _has_rootly_or_jira(issue, messages, external_issues) else "Fail"
+        # 2. The linked oncall Slack thread. Costs a live Slack call, which is
+        #    why it is skippable and why the dry-run never runs it.
+        if "oncall_slack_thread" in sources:
+            cf = issue.get("custom_fields") or {}
+            link_field  = qc_rules.field("oncall_slack_link")
+            oncall_link = (_cf_val(cf.get(link_field)) or
+                           (cf.get(link_field) or {}).get("value") or "")
+            if oncall_link:
+                thread_text = _fetch_slack_thread(oncall_link)
+                if thread_text:
+                    if _slack_text_user_ids(thread_text) & qc_rules.id_set("eng_user_ids"):
+                        return "Pass"
+                    if _thread_has_eng_group(thread_text):
+                        return "Pass"
+
+        # 3. A Rootly or Jira reference. The weakest of the three, and the one
+        #    teams disagree about, so it is the one most likely to be switched off.
+        if "rootly_jira" in sources:
+            if _has_rootly_or_jira(issue, messages, external_issues):
+                return "Pass"
+
+        return "Fail"
 
     # An expectation nobody has implemented, or a status with no policy row.
     # Never penalise for a rule that does not exist.
