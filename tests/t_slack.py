@@ -176,6 +176,66 @@ finally:
     slack._post = real_post
 
 print()
+print("=== the daily report warns when a check's field has gone ===")
+# A check whose field has been retired does not fail loudly: an absent custom
+# field reads exactly like an empty one, so the check fails every ticket until
+# someone notices the counts. That is how does_rootly_exist surfaced.
+import pylon as _pylon
+import rules as _rules
+import scorer as _scorer
+
+_real_fetch = _pylon.fetch_custom_fields
+
+
+async def _fields_missing_rootly():
+    return [{"slug": s, "label": s} for s in
+            ("functionalities", "request_category", "oncall_slack_chat_link",
+             "resolution_category", "rootly.incident_reference")]
+
+
+async def _fields_all_present():
+    return [{"slug": s, "label": s} for s in _rules.field_map().values()]
+
+
+try:
+    with db.get_conn() as c:
+        c.execute("DELETE FROM app_settings WHERE key = ?", (slack._DRIFT_KEY,))
+
+    _pylon.fetch_custom_fields = _fields_missing_rootly
+    blocks = str(asyncio.run(slack._field_drift_blocks()))
+    check("the missing field is named", "does_rootly_exist" in blocks, True)
+    check("and the checks that read it", "R7, R8" in blocks, True)
+    check("with what it means", "empty value on every ticket" in blocks, True)
+
+    # Once, not every morning: a daily repeat trains people to ignore it.
+    repeat = asyncio.run(slack._field_drift_blocks())
+    check("the same drift is not re-reported", repeat, [])
+
+    # A newly missing field is new information and must get through.
+    async def _worse():
+        return [{"slug": "request_category", "label": "x"}]
+    _pylon.fetch_custom_fields = _worse
+    more = str(asyncio.run(slack._field_drift_blocks()))
+    check("a newly missing field still alarms", "functionalities" in more, True)
+
+    # Recovery clears the memory, so a future regression alarms again.
+    _pylon.fetch_custom_fields = _fields_all_present
+    check("nothing to say once every field is back",
+          asyncio.run(slack._field_drift_blocks()), [])
+    _pylon.fetch_custom_fields = _worse
+    check("and a later regression alarms again",
+          "functionalities" in str(asyncio.run(slack._field_drift_blocks())), True)
+
+    # Pylon being unreachable must never cost the report the team needs.
+    async def _boom():
+        raise RuntimeError("Pylon down")
+    _pylon.fetch_custom_fields = _boom
+    check("an unreachable Pylon is skipped, not fatal",
+          asyncio.run(slack._field_drift_blocks()), [])
+finally:
+    _pylon.fetch_custom_fields = _real_fetch
+
+print()
 print("=== a non-deployed copy must not write into the workspace ===")
 # A local copy holding the same bot token reaches the same channel as
 # production. On 28 August that put a "No Google Cloud project configured"

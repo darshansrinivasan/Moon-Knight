@@ -50,6 +50,11 @@ def ok(name, cond, detail=""):
         fails.append(name)
 
 
+def prompts_default(key: str) -> str:
+    import prompts
+    return prompts.DEFAULT_SECTIONS[key]
+
+
 def set_rules(**kw):
     doc = {k: v for k, v in kw.items()}
     errs = rules.save(doc, "test@x")
@@ -334,6 +339,40 @@ ok("after the very first save, undo is offered", rules.has_previous(),
    "the previous state is 'all defaults', not 'no state'")
 ok("and it restores", rules.restore_previous("test@x"))
 check("back to defaults", sorted(rules.disabled_checks()), [])
+
+print()
+print("=== a verdict can be traced to the rules that produced it ===")
+# The existing hash lands in qc_runs.config_json at AI-run time, but R-verdicts
+# are written at fetch and overalls are rewritten by resync with no run record
+# at all — so a stored verdict could not be tied to the rules version that
+# graded it.
+import resync_overall
+with db.get_conn() as c:
+    cols = [r["name"] for r in c.execute("PRAGMA table_info(rule_checks)")]
+ok("rule_checks records the rules hash", "rules_hash" in cols)
+res = resync_overall.run()
+ok("and a resync reports which document it applied",
+   res.get("rules_hash") == rules.rules_hash(),
+   "a resync rewrites grades with no run record of its own")
+
+print()
+print("=== a saved rubric edit marks grades stale; an unedited one does not ===")
+# qc_fingerprint embedded prompts.fingerprint() with no argument — the hash of
+# the shipped default, a constant — so it contributed nothing and a saved rubric
+# edit never invalidated anything, despite the comment beside it saying so.
+tkt = {"number": 2, "state": "new", "title": "y", "custom_fields": "{}"}
+set_rules(a3_rubric=prompts_default("a3_rubric"))
+base_fp = qc_runner.qc_fingerprint(tkt, [], {})
+ok("an unedited rubric leaves the fingerprint alone",
+   qc_runner.qc_fingerprint(tkt, [], {}) == base_fp,
+   "so fixing this invalidates nothing for a workspace that never edited it")
+set_rules(a3_rubric="HOUSE RULE: only complete sentences count as Good.")
+ok("a saved edit moves it",
+   qc_runner.qc_fingerprint(tkt, [], {}) != base_fp,
+   "the model genuinely sees different text, so the grade may differ")
+set_rules(a3_rubric=prompts_default("a3_rubric"))
+check("and putting it back restores the fingerprint",
+      qc_runner.qc_fingerprint(tkt, [], {}), base_fp)
 
 print()
 print("=== descriptions never contradict the controls ===")

@@ -19,6 +19,15 @@ from qc_runner import _compute_overall, _r_check_notes, _strip_r_notes
 
 logger = logging.getLogger(__name__)
 
+
+def _rules_hash() -> str:
+    """Deferred: `rules` imports `db`, and this module is imported by `app`."""
+    try:
+        import rules as qc_rules
+        return qc_rules.rules_hash()
+    except Exception:      # never let bookkeeping break a resync
+        return ""
+
 R_KEYS = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9"]
 
 
@@ -94,8 +103,9 @@ def run(date_str: str | None = None) -> dict:
 
     if overall_updates or notes_updates:
         logger.info(
-            "Resynced %s: %d overall, %d notes (%s)",
-            date_str or "all dates", len(overall_updates), len(notes_updates),
+            "Resynced %s under rules %s: %d overall, %d notes (%s)",
+            date_str or "all dates", _rules_hash(),
+            len(overall_updates), len(notes_updates),
             ", ".join(f"{k} ×{v}" for k, v in sorted(overall_changes.items())) or "-",
         )
 
@@ -104,6 +114,10 @@ def run(date_str: str | None = None) -> dict:
         "overall_updated": len(overall_updates),
         "notes_updated": len(notes_updates),
         "changes": dict(overall_changes),
+        # Which rules document produced this pass. A resync rewrites stored
+        # grades with no run record of its own, so without this the only trace
+        # of "these grades changed, and under what" would be a log line.
+        "rules_hash": _rules_hash(),
     }
 
 

@@ -327,6 +327,61 @@ def _chunk(blocks: list, size: int = MAX_BLOCKS_PER_MESSAGE) -> list:
     return out
 
 
+# One alarm per drifted field, not one per morning. A daily repeat of the same
+# warning is a daily reminder to ignore it — the alarm-once-per-date pattern the
+# scheduler already uses, keyed on the set of missing slugs so a NEW one still
+# gets through immediately.
+_DRIFT_KEY = "slack_field_drift_reported"
+
+
+async def _field_drift_blocks() -> list:
+    """Warn once when a check reads a Pylon field that no longer exists.
+
+    A check whose field has been retired does not fail loudly: an absent custom
+    field reads exactly like an empty one, so the check simply fails every
+    ticket until somebody notices the failure counts. That is how
+    `does_rootly_exist` surfaced — as a report about "quite a few QC failures"
+    rather than a broken setting. The morning report is where the people who
+    would notice are already looking.
+    """
+    import pylon
+    import rules as qc_rules
+    import scorer
+
+    try:
+        fields = await pylon.fetch_custom_fields()
+    except Exception as e:
+        # Never let this stop the report the team actually needs.
+        logger.info("Skipping field-drift check: %s", str(e)[:120])
+        return []
+
+    known = {f.get("slug") for f in fields if f.get("slug")}
+    missing = sorted(
+        (name, slug) for name, slug in qc_rules.field_map().items()
+        if slug and slug not in known
+    )
+
+    signature = ",".join(slug for _, slug in missing)
+    if vault.get_raw_setting(_DRIFT_KEY) == signature:
+        return []
+    vault.set_raw_setting(_DRIFT_KEY, signature, "slack")
+    if not missing:
+        return []
+
+    lines = []
+    for name, slug in missing:
+        checks = ", ".join(scorer.FIELD_USED_BY.get(name, ())) or "A check"
+        lines.append(f"• {checks} reads `{slug}`, which Pylon no longer defines")
+    return [{
+        "type": "section",
+        "text": {"type": "mrkdwn",
+                 "text": ("*⚠️ A check is reading a field Pylon no longer has*\n"
+                          + "\n".join(lines)
+                          + "\nUntil it is repointed in Rules → Pylon fields, "
+                            "those checks read an empty value on every ticket.")},
+    }]
+
+
 async def post_day_report(date_str: str, channel: str | None = None) -> dict:
     """Post the day's QC report: a summary, then per-person detail in a thread."""
     channel = channel or vault.get_setting("slack_channel").strip()
@@ -352,12 +407,13 @@ async def post_day_report(date_str: str, channel: str | None = None) -> dict:
             )
 
     lead_blocks = await _lead_mention_blocks(summary) if mode != MENTION_OFF else []
+    drift_blocks = await _field_drift_blocks()
 
     parent = await _post("chat.postMessage", {
         "channel": channel,
         "text": (f"Support QC {date_str}: {summary['total']} tickets, "
                  f"{summary['pass']} pass / {summary['fail']} fail ({rate})"),
-        "blocks": _summary_blocks(summary, base_url) + lead_blocks,
+        "blocks": _summary_blocks(summary, base_url) + drift_blocks + lead_blocks,
     })
 
     # Detail lives in the thread so the channel stays readable, split across as

@@ -36,6 +36,7 @@ def get_conn():
 # fresh database the table did not exist yet and the ALTER was silently
 # swallowed, leaving the column missing until the next boot.
 _ADDED_COLUMNS = [
+    "ALTER TABLE rule_checks ADD COLUMN rules_hash TEXT",
     "ALTER TABLE tickets ADD COLUMN external_issues TEXT",
     "ALTER TABLE rule_checks ADD COLUMN r8 TEXT",
     "ALTER TABLE rule_checks ADD COLUMN r9 TEXT",
@@ -117,7 +118,13 @@ def init_db():
             fetch_date TEXT,
             r1 TEXT, r2 TEXT, r3 TEXT, r4 TEXT,
             r5 TEXT, r6 TEXT, r7 TEXT, r8 TEXT, r9 TEXT,
-            checked_at TEXT
+            checked_at TEXT,
+            -- Which rules document produced these verdicts. The existing hash
+            -- is recorded in qc_runs.config_json at AI-run time, but R-verdicts
+            -- are written at fetch and overalls are rewritten by resync with no
+            -- run record at all — so without this a stored verdict cannot be
+            -- tied to the rules version that graded it.
+            rules_hash TEXT
         );
 
         CREATE TABLE IF NOT EXISTS ai_checks (

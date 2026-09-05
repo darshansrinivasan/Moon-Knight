@@ -636,7 +636,13 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
         # old grades straight back from the skip path — the edit would look like
         # it did nothing. Editing the rubric therefore marks every grade stale,
         # but nothing is re-billed until someone re-runs a specific date.
-        "prompt":    prompts.fingerprint(),
+        # The SAVED rubric, not the shipped default. Called with no argument
+        # this hashed the default prompt — a constant — so it contributed
+        # nothing and a saved rubric edit never marked a grade stale, despite
+        # the comment above saying it did. Passing the live document is a no-op
+        # for a workspace that has not edited the rubric, and correctly
+        # invalidates for one that has: the model genuinely sees different text.
+        "prompt":    prompts.fingerprint(qc_rules.current()),
         # Message order matters to the model, so preserve it rather than sorting.
         "msgs":      [
             [m.get("is_customer"), m.get("is_private"), m.get("message_html")]

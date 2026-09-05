@@ -372,6 +372,14 @@ async def fetch_and_store(target: date) -> FetchResult:
     scoring_failures: list = []
 
     def store() -> int:
+        # The rules document these verdicts were produced under, stamped on
+        # every row so a grade can be traced to the version that graded it.
+        # Read once per fetch rather than per ticket — it is one document for
+        # the whole batch, and reading it per ticket would let a save halfway
+        # through a fetch stamp two different hashes on the same day.
+        import rules as qc_rules
+        rules_hash = qc_rules.rules_hash()
+
         # build user cache from message authors
         user_cache: dict[str, tuple[str, str]] = {}  # id -> (name, email)
         for msgs in messages_by_id.values():
@@ -496,14 +504,15 @@ async def fetch_and_store(target: date) -> FetchResult:
 
                 conn.execute("""
                     INSERT OR REPLACE INTO rule_checks
-                        (ticket_id, fetch_date, r1, r2, r3, r4, r5, r7, r8, r9, checked_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (ticket_id, fetch_date, r1, r2, r3, r4, r5, r7, r8, r9,
+                         checked_at, rules_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     issue["id"], date_str,
                     scores["r1"], scores["r2"], scores["r3"],
                     scores["r4"], scores["r5"], scores["r7"],
                     scores["r8"], scores["r9"],
-                    now,
+                    now, rules_hash,
                 ))
 
             active_count = sum(1 for i in issues if i.get("state") != "archived")
