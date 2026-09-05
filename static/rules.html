@@ -54,6 +54,20 @@
   }
   .nav-off { font-size: 10px; color: var(--review); margin-left: 6px; }
   .cond-list { display: flex; flex-direction: column; gap: 7px; margin: 10px 0 0; }
+  .fmap { display: flex; flex-direction: column; gap: 12px; margin: 14px 0; }
+  .fmap-row {
+    display: grid; grid-template-columns: 190px 1fr; gap: 12px;
+    align-items: start; padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .fmap-row:last-child { border-bottom: none; }
+  .fmap-name { font-size: 12.5px; font-weight: 500; }
+  .fmap-used { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+  .fmap-row select { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  /* A mapping Pylon no longer defines is the case this panel exists for, so it
+     is marked on the row as well as summarised at the top. */
+  .fmap-row.gone select { border-color: var(--fail); }
+  .fmap-gone { font-size: 11px; color: var(--fail); margin-top: 4px; }
   .cond {
     display: flex; align-items: center; gap: 9px; font-size: 12.5px;
     font-family: ui-monospace, Menlo, monospace;
@@ -359,6 +373,21 @@
         </div>
       </div>
 
+      <div class="section" id="sec-fields">
+        <div class="card">
+          <h2>Pylon fields</h2>
+          <p class="what">
+            Which Pylon custom field each check reads. These were fixed in code, so
+            following a field Pylon renamed or retired meant a deploy — and until that
+            deploy the check fails every ticket, because a field that is not there
+            reads the same as one left blank.
+          </p>
+          <div id="field-drift"></div>
+          <div id="field-rows"></div>
+          <div class="hint" id="field-source"></div>
+        </div>
+      </div>
+
       <div class="section" id="sec-suggest">
         <div class="card">
           <h2>Learned suggestions</h2>
@@ -416,6 +445,7 @@ const NAV = [
   ["r7", "R7 Rootly/Jira"],
   ["r8", "R8 Oncall"],
   ["a",  "A1–A5 AI grading"],
+  ["fields", "Pylon fields"],
   ["suggest", "Learned suggestions"],
 ];
 
@@ -587,6 +617,11 @@ function collect() {
     rules.disabled_checks = boxes.filter(b => !b.checked)
                                  .map(b => b.dataset.check);
   }
+  // Only send mappings when the picker actually rendered; otherwise a page that
+  // failed to reach Pylon would save whatever it managed to show.
+  for (const el of document.querySelectorAll("[data-field]")) {
+    if (el.value) rules[`field_${el.dataset.field}`] = el.value;
+  }
   const conds = [...document.querySelectorAll("[data-cond]")];
   if (conds.length) {
     rules.r8_conditions = conds.filter(b => b.checked).map(b => b.dataset.cond);
@@ -709,6 +744,9 @@ function selectSection(id) {
   sec.classList.add("on");
   document.querySelector(".content-pane").scrollTop = 0;
   if (id === "suggest") ensureSuggestions();
+  // Fetched on first open, not on page load: it is a live call to Pylon, and
+  // most visits to this page never look at the mapping.
+  if (id === "fields") ensureFields();
   return true;
 }
 
@@ -929,6 +967,82 @@ function draftPrompt() {
     if (el) draft[s.key] = el.value;
   }
   return draft;
+}
+
+/* ── Pylon field mapping ─────────────────────────────────────────────────────
+ * The picker is populated from Pylon's live field list rather than a text box,
+ * so a mapping cannot be a typo. The drift banner is the real reason this panel
+ * exists: a check whose field has been retired keeps running and fails every
+ * ticket, because an absent custom field reads exactly like an empty one.
+ */
+let PYLON_FIELDS = null;
+let fieldsLoading = false;
+
+async function ensureFields() {
+  if (PYLON_FIELDS || fieldsLoading) { renderFieldRows(); return; }
+  fieldsLoading = true;
+  $("field-source").textContent = "Reading the field list from Pylon…";
+  try {
+    await loadFields();
+    renderFieldRows();
+  } finally {
+    fieldsLoading = false;
+  }
+}
+
+async function loadFields() {
+  if (PYLON_FIELDS) return PYLON_FIELDS;
+  try {
+    const r = await fetch("/api/pylon/fields");
+    PYLON_FIELDS = await r.json();
+  } catch (e) {
+    PYLON_FIELDS = {ok: false, message: e.message, fields: [], drift: []};
+  }
+  return PYLON_FIELDS;
+}
+
+function renderFieldRows() {
+  const live = PYLON_FIELDS || {};
+  const options = live.fields || [];
+  const goneFor = new Set((live.drift || []).map(d => d.name));
+
+  $("field-rows").innerHTML = `<div class="fmap">` + (DATA.fields || []).map(f => {
+    const known = options.some(o => o.slug === f.slug);
+    // A slug Pylon no longer lists still has to be selectable, or opening the
+    // page would silently repoint the check to whatever sorts first.
+    const opts = [
+      ...(known ? [] : [{slug: f.slug, label: `${f.slug} — not in Pylon`}]),
+      ...options.map(o => ({slug: o.slug, label: `${o.label} — ${o.slug}`})),
+    ].map(o => `<option value="${esc(o.slug)}" ${o.slug === f.slug ? "selected" : ""}>
+                  ${esc(o.label)}</option>`).join("");
+    return `<div class="fmap-row ${goneFor.has(f.name) ? "gone" : ""}">
+      <div>
+        <div class="fmap-name">${esc(f.name.replace(/_/g, " "))}</div>
+        <div class="fmap-used">${f.used_by.length ? esc(f.used_by.join(", ")) : "—"}</div>
+      </div>
+      <div>
+        ${options.length
+          ? `<select data-field="${esc(f.name)}" ${DATA.can_edit ? "" : "disabled"}>${opts}</select>`
+          : `<input type="text" data-field="${esc(f.name)}" value="${esc(f.slug)}"
+                    spellcheck="false" ${DATA.can_edit ? "" : "disabled"}>`}
+        ${goneFor.has(f.name)
+          ? `<div class="fmap-gone">Pylon no longer defines this field.</div>` : ""}
+        ${f.slug !== f.default
+          ? `<div class="fmap-used">default: <code>${esc(f.default)}</code></div>` : ""}
+      </div>
+    </div>`;
+  }).join("") + `</div>`;
+
+  $("field-drift").innerHTML = (live.drift || []).length
+    ? `<div class="banner bad"><b>${esc(live.drift.length)} mapped field${
+        live.drift.length === 1 ? " is" : "s are"} no longer defined in Pylon.</b><ul>${
+        live.drift.map(d => `<li>${esc(d.message)}</li>`).join("")}</ul></div>`
+    : "";
+
+  $("field-source").textContent = live.ok
+    ? `${(live.fields || []).length} fields read from Pylon just now.`
+    : `Could not reach Pylon (${live.message || "unknown"}) — showing the stored
+       mapping, and offering a text box instead of a picker.`;
 }
 
 /* ── Learned suggestions ────────────────────────────────────────────────────

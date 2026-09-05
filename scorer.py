@@ -50,6 +50,31 @@ _BOT_ACK_FILLER = {
 # How many NON-filler words may remain around the id before we call it human.
 BOT_ACK_MAX_CONTENT_WORDS = 1
 
+# The Pylon custom fields the checks read, by the role each plays. These were
+# literals spread across scorer, qc_runner and evidence, so following a field
+# Pylon renamed or retired meant a deploy — and until that deploy the check
+# fails every ticket, because an absent field reads as an empty one. That is
+# what happened to `does_rootly_exist`.
+DEFAULT_FIELD_MAP = {
+    "functionality":       "functionalities",
+    "request_category":    "request_category",
+    "rootly_exists":       "does_rootly_exist",
+    "rootly_reference":    "rootly.incident_reference",
+    "oncall_slack_link":   "oncall_slack_chat_link",
+    "resolution_category": "resolution_category",
+}
+
+# Which check reads which field, for the "this slug is gone" warning — naming
+# the affected check is what makes the warning actionable.
+FIELD_USED_BY = {
+    "functionality":       ("R1", "A1"),
+    "request_category":    ("R2", "R8", "A1"),
+    "rootly_exists":       ("R7", "R8"),
+    "rootly_reference":    ("R7", "R8"),
+    "oncall_slack_link":   ("R5",),
+    "resolution_category": ("R8",),
+}
+
 # Checks an admin may switch off. r6 is never computed by `score_all` and r9
 # always returns N/A, so offering a toggle for either would be a control that
 # does nothing — see t_rulecfg for the assertion that keeps this in step with
@@ -458,11 +483,13 @@ def _parse_ts(ts: str | None) -> datetime | None:
 # ── individual checks ─────────────────────────────────────────────────────────
 
 def r1(custom_fields: dict) -> str:
-    return "Pass" if _cf_filled(custom_fields.get("functionalities")) else "Fail"
+    return "Pass" if _cf_filled(
+        custom_fields.get(qc_rules.field("functionality"))) else "Fail"
 
 
 def r2(custom_fields: dict) -> str:
-    return "Pass" if _cf_filled(custom_fields.get("request_category")) else "Fail"
+    return "Pass" if _cf_filled(
+        custom_fields.get(qc_rules.field("request_category"))) else "Fail"
 
 
 def r3(issue: dict, account: dict | None) -> str:
@@ -524,7 +551,7 @@ def _has_jira(
 def _has_rootly_ref(issue: dict) -> bool:
     """True if rootly.incident_reference custom field has a value (e.g. ROOT-1234)."""
     cf = issue.get("custom_fields") or {}
-    return bool((cf.get("rootly.incident_reference") or {}).get("value"))
+    return bool((cf.get(qc_rules.field("rootly_reference")) or {}).get("value"))
 
 
 def _has_rootly_or_jira(
@@ -535,7 +562,7 @@ def _has_rootly_or_jira(
     """True if any Rootly or Jira evidence is found on the ticket."""
     cf = issue.get("custom_fields") or {}
 
-    if (cf.get("does_rootly_exist") or {}).get("value") == "Yes":
+    if (cf.get(qc_rules.field("rootly_exists")) or {}).get("value") == "Yes":
         return True
     if _has_rootly_ref(issue):
         return True
@@ -586,8 +613,9 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         if "@cs" in all_text or "@implementation" in all_text:
             return "Pass"
         cf = issue.get("custom_fields") or {}
-        oncall_link = (_cf_val(cf.get("oncall_slack_chat_link")) or
-                       (cf.get("oncall_slack_chat_link") or {}).get("value") or "")
+        link_field  = qc_rules.field("oncall_slack_link")
+        oncall_link = (_cf_val(cf.get(link_field)) or
+                       (cf.get(link_field) or {}).get("value") or "")
         if oncall_link:
             thread_text = _fetch_slack_thread(oncall_link)
             if thread_text:
@@ -612,8 +640,9 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         if "@pt" in all_text:
             return "Pass"
         cf = issue.get("custom_fields") or {}
-        oncall_link = (_cf_val(cf.get("oncall_slack_chat_link")) or
-                       (cf.get("oncall_slack_chat_link") or {}).get("value") or "")
+        link_field  = qc_rules.field("oncall_slack_link")
+        oncall_link = (_cf_val(cf.get(link_field)) or
+                       (cf.get(link_field) or {}).get("value") or "")
         if oncall_link:
             thread_text = _fetch_slack_thread(oncall_link)
             if thread_text:
@@ -637,8 +666,9 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
 
         # 2. oncall_slack_chat_link — fetch thread, check for eng user/group tags
         cf = issue.get("custom_fields") or {}
-        oncall_link = (_cf_val(cf.get("oncall_slack_chat_link")) or
-                       (cf.get("oncall_slack_chat_link") or {}).get("value") or "")
+        link_field  = qc_rules.field("oncall_slack_link")
+        oncall_link = (_cf_val(cf.get(link_field)) or
+                       (cf.get(link_field) or {}).get("value") or "")
         if oncall_link:
             thread_text = _fetch_slack_thread(oncall_link)
             if thread_text:
@@ -681,13 +711,13 @@ def r7(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
 
     cf = issue.get("custom_fields") or {}
 
-    rootly_exists = (cf.get("does_rootly_exist") or {}).get("value", "")
+    rootly_exists = (cf.get(qc_rules.field("rootly_exists")) or {}).get("value", "")
     if rootly_exists == "Yes":
         return "Pass"
     if rootly_exists == "No":
         return "Fail"
 
-    if (cf.get("rootly.incident_reference") or {}).get("value"):
+    if (cf.get(qc_rules.field("rootly_reference")) or {}).get("value"):
         return "Pass"
 
     # check external_issues array (primary place Jira links live)
@@ -716,7 +746,7 @@ def r8(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     N/A when no oncall evidence exists.
     """
     cf = issue.get("custom_fields") or {}
-    res_cat = (_cf_val(cf.get("resolution_category")) or "").strip().lower()
+    res_cat = (_cf_val(cf.get(qc_rules.field("resolution_category"))) or "").strip().lower()
     has_ref = _has_rootly_ref(issue)
 
     if res_cat != "escalated to oncall" and not has_ref:
@@ -727,11 +757,12 @@ def r8(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     # so `required` always holds at least one entry here.
     required = qc_rules.r8_conditions()
     checks = {
-        "rootly_yes": lambda: (cf.get("does_rootly_exist") or {}).get("value") == "Yes",
+        "rootly_yes": lambda: (
+            cf.get(qc_rules.field("rootly_exists")) or {}).get("value") == "Yes",
         "rootly_ref": lambda: has_ref,
         "jira_link":  lambda: _has_jira(issue, messages, external_issues),
         "oncall_category": lambda: (
-            (_cf_val(cf.get("request_category")) or "").strip().lower()
+            (_cf_val(cf.get(qc_rules.field("request_category"))) or "").strip().lower()
             in qc_rules.oncall_categories()
         ),
     }

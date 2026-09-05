@@ -957,6 +957,17 @@ async def get_rules(user: dict = Depends(auth.require_user)):
             for c in __import__("scorer").R8_CONDITIONS
         ],
         "can_undo": qc_rules.has_previous(),
+        # Which Pylon field each check reads, and what it is called, so the
+        # editor can offer a picker rather than a slug to type from memory.
+        "fields": [
+            {
+                "name":    name,
+                "slug":    qc_rules.field(name),
+                "default": default,
+                "used_by": list(__import__("scorer").FIELD_USED_BY.get(name, ())),
+            }
+            for name, default in __import__("scorer").DEFAULT_FIELD_MAP.items()
+        ],
         "states_seen":  await asyncio.to_thread(states_seen),
         "meta":         vault.get_setting_meta(qc_rules.RULES_KEY),
         "can_edit":     user["role"] == "admin",
@@ -1068,6 +1079,56 @@ async def rules_dry_run(request: Request,
         raise HTTPException(502, f"Dry-run could not complete: {str(e)[:300]}")
 
     return {"ok": True, **result}
+
+
+@app.get("/api/pylon/fields")
+async def pylon_fields(user: dict = Depends(auth.require_user)):
+    """Pylon's live issue custom fields, plus which mappings no longer match one.
+
+    The drift list is the point. A check whose field has been retired does not
+    fail loudly — an absent custom field reads as an empty one, so the check
+    simply fails every ticket, quietly, until somebody notices the failure
+    counts. That is exactly what happened with `does_rootly_exist`.
+    """
+    import rules as qc_rules
+    import scorer
+
+    mapped = qc_rules.field_map()
+    try:
+        fields = await pylon.fetch_custom_fields()
+    except pylon.PylonNotConfigured as e:
+        return {"ok": False, "message": str(e), "fields": [], "drift": []}
+    except Exception as e:
+        logger.warning("Could not list Pylon custom fields: %s", e)
+        return {"ok": False, "message": str(e)[:300], "fields": [], "drift": []}
+
+    known = {f.get("slug"): f for f in fields if f.get("slug")}
+    drift = [
+        {
+            "name":  name,
+            "slug":  slug,
+            "used_by": list(scorer.FIELD_USED_BY.get(name, ())),
+            "message": (
+                f"{' and '.join(scorer.FIELD_USED_BY.get(name, ())) or 'A check'} "
+                f"reads '{slug}', which Pylon no longer defines. Until it is "
+                f"repointed those checks read an empty value on every ticket."
+            ),
+        }
+        for name, slug in sorted(mapped.items())
+        if slug and slug not in known
+    ]
+
+    return {
+        "ok": True,
+        "fields": sorted(
+            ({"slug": f["slug"], "label": f.get("label") or f["slug"],
+              "type": f.get("type"), "read_only": bool(f.get("is_read_only"))}
+             for f in fields if f.get("slug")),
+            key=lambda f: f["label"].lower(),
+        ),
+        "mapped": mapped,
+        "drift":  drift,
+    }
 
 
 @app.get("/api/directory/slack")

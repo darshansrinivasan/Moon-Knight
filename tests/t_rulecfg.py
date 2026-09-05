@@ -246,6 +246,56 @@ ok("and follows it when it changes",
 set_rules(r4_sla_hours=24)
 
 print()
+print("=== a check reads the field it is mapped to, not a literal ===")
+# The slugs were literals in five files, so following a field Pylon renamed
+# meant a deploy — and until that deploy the check fails every ticket, because
+# an absent custom field reads exactly like an empty one. That is what happened
+# to does_rootly_exist.
+set_rules(**{f"field_{k}": v for k, v in scorer.DEFAULT_FIELD_MAP.items()})
+check("R1 passes on the default slug",
+      scorer.r1({"functionalities": {"value": "billing"}}), "Pass")
+check("and fails when that field is empty",
+      scorer.r1({"functionalities": {"value": ""}}), "Fail")
+
+# Repoint R1 at a different Pylon field and it follows, with no code change.
+set_rules(field_functionality="feature")
+check("R1 now reads the remapped field",
+      scorer.r1({"feature": {"value": "sdc"}}), "Pass")
+check("and ignores the old one",
+      scorer.r1({"functionalities": {"value": "billing"}}), "Fail")
+ok("the map reports the change", rules.field("functionality") == "feature")
+set_rules(field_functionality="functionalities")
+
+# Blank means "use the shipped default", never "read a field called nothing" —
+# which would fail every ticket silently.
+set_rules(field_rootly_exists="")
+check("a cleared mapping falls back to the default",
+      rules.field("rootly_exists"), scorer.DEFAULT_FIELD_MAP["rootly_exists"])
+
+ok("a bad slug is refused",
+   rules.validate({"field_functionality": "Not A Slug!"}) != [])
+check("a namespaced slug is accepted",
+      rules.validate({"field_rootly_reference": "rootly.incident_reference"}), [])
+
+# The fingerprint prints these two fields into the prompt, so a remap has to
+# reach it or a repointed field would not mark grades stale.
+tk = {"number": 1, "state": "new", "title": "x",
+      "custom_fields": json.dumps({"functionalities": {"value": "a"},
+                                   "feature": {"value": "b"}})}
+base = qc_runner.qc_fingerprint(tk, [], {})
+set_rules(field_functionality="feature")
+ok("remapping a printed field moves the fingerprint",
+   qc_runner.qc_fingerprint(tk, [], {}) != base,
+   "the model sees a different value, so the grade may differ")
+set_rules(field_functionality="functionalities")
+check("and returns when it is put back",
+      qc_runner.qc_fingerprint(tk, [], {}), base)
+
+ok("every mapped field names the checks that read it",
+   all(scorer.FIELD_USED_BY.get(n) for n in scorer.DEFAULT_FIELD_MAP),
+   "the drift warning is only actionable if it says what breaks")
+
+print()
 print("=== one-step undo ===")
 set_rules(disabled_checks=[])
 set_rules(disabled_checks=["r8", "r7"])

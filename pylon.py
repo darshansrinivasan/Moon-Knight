@@ -209,6 +209,26 @@ async def fetch_account(
 
 # ── fetch everything for one day ────────────────────────────────────────────
 
+async def fetch_custom_fields() -> list[dict]:
+    """Every custom field Pylon currently defines on issues.
+
+    Used to populate the field-mapping pickers and, more usefully, to notice
+    when a field a check reads has stopped existing. A check whose field is
+    gone does not error — an absent field reads as an empty one, so R1 would
+    simply fail every ticket, quietly and forever. Being told is the difference
+    between a setting to change and a week of wrong grades.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{BASE_URL}/custom_fields", headers=_headers(),
+                             params={"object_type": "issue"})
+        r.raise_for_status()
+        body = r.json()
+    if "data" not in body:
+        raise RuntimeError(
+            f"Pylon returned no custom-field list: {str(body)[:200]}")
+    return body["data"]
+
+
 async def fetch_day(target: date) -> FetchedDay:
     """Fetch one day's issues with their messages and accounts.
 

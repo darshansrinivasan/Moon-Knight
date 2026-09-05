@@ -63,6 +63,14 @@ def defaults() -> dict:
         # was rejected (it moves qc_fingerprint and rebills identical prompts).
         "disabled_checks":      [],
 
+        # Which Pylon custom field each check reads. Slugs were literals in
+        # five files, so a field Pylon renames or retires could only be
+        # followed with a deploy — and the check meanwhile fails every ticket,
+        # because an absent field reads as an empty one. Editable here, and
+        # the Rules page warns when a mapped slug is no longer one Pylon
+        # defines.
+        **{f"field_{k}": v for k, v in scorer.DEFAULT_FIELD_MAP.items()},
+
         # R8's conditions, each required only while it is listed here. The
         # `does_rootly_exist` field is still defined in Pylon but has stopped
         # being filled, so dropping `rootly_yes` is how an admin says that
@@ -216,6 +224,25 @@ def check_enabled(key: str) -> bool:
     return str(key).strip().lower() not in disabled_checks()
 
 
+def field(name: str) -> str:
+    """The Pylon slug this check should read for `name`.
+
+    Falls back to the shipped default rather than returning empty: a blank
+    mapping would make the check read a field called "", which fails every
+    ticket silently. A mapping an admin has actually cleared is treated as
+    "use the default", the same convention the prompt sections use.
+    """
+    import scorer
+    stored = str(current().get(f"field_{name}") or "").strip()
+    return stored or scorer.DEFAULT_FIELD_MAP.get(name, "")
+
+
+def field_map() -> dict:
+    """Every logical field name to the slug currently configured for it."""
+    import scorer
+    return {name: field(name) for name in scorer.DEFAULT_FIELD_MAP}
+
+
 def r8_conditions() -> set:
     """Which of R8's four conditions are still required.
 
@@ -358,6 +385,20 @@ def validate(candidate: dict) -> list:
                 errors.append(
                     "r8_conditions cannot be empty — an R8 with no conditions "
                     "would pass every oncall ticket. Switch R8 off instead.")
+
+    # A slug is Pylon's own identifier shape: lowercase, digits, underscore,
+    # and a dot for namespaced fields like rootly.incident_reference.
+    _SLUG = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
+    for name in scorer.DEFAULT_FIELD_MAP:
+        key = f"field_{name}"
+        if key not in candidate:
+            continue
+        value = str(candidate.get(key) or "").strip()
+        if value and not _SLUG.match(value):
+            errors.append(
+                f"{key}: '{value}' is not a Pylon field slug — expected "
+                f"lowercase letters, digits and underscores, e.g. "
+                f"'{scorer.DEFAULT_FIELD_MAP[name]}'")
 
     if len(str(candidate.get("a_guidance", ""))) > 4000:
         errors.append("a_guidance must be 4000 characters or fewer")

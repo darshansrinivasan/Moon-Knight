@@ -547,9 +547,10 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
     if r_checks.get("r8") == "Fail":
         import rules as qc_rules
         missing = []
-        if (cf.get("does_rootly_exist") or {}).get("value") != "Yes":
-            missing.append("set 'does_rootly_exist' to Yes")
-        if not (cf.get("rootly.incident_reference") or {}).get("value"):
+        rootly_field = qc_rules.field("rootly_exists")
+        if (cf.get(rootly_field) or {}).get("value") != "Yes":
+            missing.append(f"set '{rootly_field}' to Yes")
+        if not (cf.get(qc_rules.field("rootly_reference")) or {}).get("value"):
             missing.append("fill in the Rootly incident reference (e.g. ROOT-1234)")
         req_cat = ((cf.get("request_category") or {}).get("value") or "").lower()
         if req_cat not in qc_rules.oncall_categories():
@@ -606,6 +607,8 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
     Keep this in step with `_build_ticket_block`: a new prompt line that is not
     represented here will not trigger a regrade.
     """
+    import rules as qc_rules
+
     cf = ticket.get("custom_fields")
     if isinstance(cf, str):
         try:
@@ -622,8 +625,8 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
         "source":    ticket.get("source"),
         "cpv":       ticket.get("customer_portal_visible"),
         "title":     ticket.get("title"),
-        "func":      _cf_val(cf.get("functionalities")),
-        "cat":       _cf_val(cf.get("request_category")),
+        "func":      _cf_val(cf.get(qc_rules.field("functionality"))),
+        "cat":       _cf_val(cf.get(qc_rules.field("request_category"))),
         # R-checks are printed into the prompt, so a changed rule verdict is a
         # changed prompt even when the ticket itself is untouched.
         "r":         {k: r_checks.get(k) for k in R_CHECK_KEYS},
