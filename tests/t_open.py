@@ -340,13 +340,25 @@ check("garbage created_at falls back to a date, not a crash",
       len(openqc._ist_fetch_date("not-a-time")), 10)
 
 print()
-print("=== the listing names who signed a ticket off ===")
+print("=== the listing names who signed a ticket off, and their note ===")
 rows_by_id = {t["ticket_id"]: t for t in openqc.list_open()["tickets"]}
 check("reviewer named on a signed-off ticket",
       rows_by_id["o9"]["signed_off_by"], "R")
 check("and the sign-off is the grade shown",
       rows_by_id["o9"]["overall_result"], "Pass")
+check("a blank note comes back as None, not empty string",
+      rows_by_id["o9"]["review_note"], None)
 check("unsigned tickets carry no name", rows_by_id["o1"]["signed_off_by"], None)
+with db.get_conn() as c:
+    c.execute("INSERT INTO ticket_reviews (ticket_id,decision,kept_ai,"
+              "reviewer_email,reviewer_name,note,reviewed_at)"
+              " VALUES ('o9','Fail',0,'r2@x.com','R2','customer was misread',?)",
+              (T0,))
+rows_by_id = {t["ticket_id"]: t for t in openqc.list_open()["tickets"]}
+check("the LATEST review's note and reviewer are the ones shown",
+      (rows_by_id["o9"]["signed_off_by"], rows_by_id["o9"]["review_note"],
+       rows_by_id["o9"]["overall_result"]),
+      ("R2", "customer was misread", "Fail"))
 
 print()
 if fails:

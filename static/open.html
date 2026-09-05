@@ -263,7 +263,7 @@ function renderRows(tickets) {
       <td>${esc(t.assignee_name)}</td>
       <td class="muted">${esc(t.fetch_date || "—")}</td>
       <td>${gradeCell(t.overall_result)}${t.signed_off_by
-        ? `<div class="signed-by" title="Signed off by ${esc(t.signed_off_by)}">✓ signed off · ${esc(t.signed_off_by)}</div>` : ""}</td>
+        ? `<div class="signed-by" title="Signed off by ${esc(t.signed_off_by)}${t.review_note ? ` — “${esc(t.review_note)}”` : ""}">✓ signed off · ${esc(t.signed_off_by)}${t.review_note ? " 💬" : ""}</div>` : ""}</td>
       <td class="muted">${t.checked_at ? esc(QC.fmtTime(t.checked_at)) : "—"}</td>
     </tr>`;
   }).join("");

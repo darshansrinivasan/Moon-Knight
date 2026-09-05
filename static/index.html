@@ -721,6 +721,11 @@
     border-radius: var(--radius); font-size: 12px;
   }
   .review-bar .review-who { color: var(--muted); flex: 1; min-width: 180px; }
+  .review-bar .review-note {
+    flex-basis: 100%; color: var(--text); font-style: italic;
+    border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px;
+    overflow-wrap: anywhere;
+  }
   .review-bar button {
     font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
     border: 1px solid var(--border); background: var(--surface); color: var(--text);
@@ -1984,7 +1989,11 @@ function reviewBarHtml(t) {
       <button type="button" class="change" data-open-modal="${esc(rev.decision)}">Change overall</button>
       <button type="button" class="revert" data-review="revert">Revert</button>`;
   }
-  return `<div class="review-bar">${btns}<span class="review-who">${esc(who)}</span></div>`;
+  // The note lands where the sign-off is read, not only in the facts grid up
+  // top — a reviewer who just confirmed looks here and saw nothing.
+  const note = rev && rev.note
+    ? `<div class="review-note">“${esc(rev.note)}”</div>` : "";
+  return `<div class="review-bar">${btns}<span class="review-who">${esc(who)}</span>${note}</div>`;
 }
 
 async function submitReview(ticketId, decision, note, btn) {
@@ -2069,7 +2078,7 @@ function renderTickets(tickets) {
     const overallCls  = overallClass(overall);
     const overallText = overall || "Pending";
     const signed      = t.review
-      ? `<span class="review-mark" title="Signed off ${esc(t.review.decision)} by ${esc(t.review.reviewer_name || t.review.reviewer_email)}">signed off · ${esc(t.review.reviewer_name || t.review.reviewer_email)}</span>`
+      ? `<span class="review-mark" title="Signed off ${esc(t.review.decision)} by ${esc(t.review.reviewer_name || t.review.reviewer_email)}${t.review.note ? ` — “${esc(t.review.note)}”` : ""}">signed off · ${esc(t.review.reviewer_name || t.review.reviewer_email)}</span>`
       : "";
 
     // The compact matrix replaces twelve full-width chips, which consumed the
