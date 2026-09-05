@@ -392,6 +392,14 @@ $("rows").addEventListener("click", (ev) => {
                 + `&ticket=${encodeURIComponent(tr.dataset.id)}`;
 });
 
+// The natural loop here is: click a row → sign the ticket off on the
+// dashboard sheet → press Back. A back/forward-cache restore replays the old
+// DOM without re-fetching, so the sign-off that JUST happened was invisible
+// until a manual reload. Re-fetch on restore; a normal load is unaffected.
+window.addEventListener("pageshow", (ev) => {
+  if (ev.persisted) load();
+});
+
 (async () => {
   await QC.ready;
   // The buttons that spend money follow the same role gate as the dashboard's.
