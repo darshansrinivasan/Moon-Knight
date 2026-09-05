@@ -150,5 +150,26 @@ print("PASS: one setting moves every surface together")
 # Restore, so the file leaves the DB as it found it.
 vault.set_raw_setting("qc_rules_json", '{"excluded_states": ["archived"]}', "test")
 qc_rules.invalidate()
+
+print()
+print("=== a sign-off requires a note; a revert does not ===")
+# Enforced server-side, not just by the modal: the Accept button used to
+# submit with an empty note, and any client could.
+_admin = {"email": "a@x.com", "name": "A", "role": "admin"}
+for decision in ("Pass", "Fail", "accept"):
+    for bare in ("", "   ", None):
+        try:
+            review.accept_ticket("t30", _admin, decision, bare)
+            raise AssertionError(f"{decision!r} with note {bare!r} was accepted")
+        except review.ReviewInvalid as e:
+            assert "note is required" in str(e).lower(), str(e)
+print("PASS: bare Pass/Fail/accept all refused")
+
+rec = review.accept_ticket("t30", _admin, "Fail", "premature closure")
+assert rec["note"] == "premature closure"
+rec = review.accept_ticket("t30", _admin, "revert", "")
+assert rec["decision"] == "Revert"
+print("PASS: noted sign-off recorded; bare revert still allowed")
+
 print()
 print("ALL GRADE ASSERTIONS PASSED")

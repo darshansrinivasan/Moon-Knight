@@ -248,6 +248,12 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> 
             raise ReviewInvalid("This ticket is not signed off")
         decision = "Revert"
     else:
+        # A sign-off is a decision someone else will rely on; the note is the
+        # why. Enforced here, not just in the modal, so no client — including
+        # the Accept path, which used to submit silently — can record a bare
+        # verdict. Reverts stay note-free: they remove a decision, not add one.
+        if not (note or "").strip():
+            raise ReviewInvalid("A note is required to sign off — say why.")
         ai = ticket.get("ai_result")
         if not ai:
             raise ReviewInvalid("Run QC on this ticket before accepting it")

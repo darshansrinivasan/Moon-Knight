@@ -760,6 +760,9 @@
   .review-modal-ticket { font-size: 13px; color: var(--text); margin: 0 0 8px; font-weight: 500; }
   .review-modal-ai { font-size: 12px; color: var(--muted); margin: 0 0 14px; }
   .review-modal-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  /* display:grid outranks the hidden attribute's UA rule; Accept mode hides
+     the Pass/Fail choice because accepting keeps the AI's verdict. */
+  .review-modal-choices[hidden] { display: none; }
   .review-choice {
     font-size: 15px; font-weight: 700; padding: 16px 12px; border-radius: 10px;
     cursor: pointer; border: 1px solid var(--border); background: var(--surface2); color: var(--muted);
@@ -1354,8 +1357,8 @@
       <button type="button" class="review-choice" data-choice="Pass">Pass</button>
       <button type="button" class="review-choice" data-choice="Fail">Fail</button>
     </div>
-    <label for="review-modal-note">Note (optional)</label>
-    <textarea id="review-modal-note" placeholder="Why this overall?"></textarea>
+    <label for="review-modal-note">Note (required)</label>
+    <textarea id="review-modal-note" placeholder="Why this overall? A sign-off needs a reason."></textarea>
     <div class="review-modal-actions">
       <button type="button" id="review-modal-cancel">Cancel</button>
       <button type="button" id="review-modal-confirm">Confirm Pass</button>
@@ -2028,28 +2031,44 @@ async function submitReview(ticketId, decision, note, btn) {
 let reviewModalTicket = null;
 let reviewModalChoice = "Pass";
 
+// Confirm is armed only once the note says why — the backend enforces the
+// same rule, this just keeps the button honest about it.
+function _syncReviewConfirm() {
+  const confirm = document.getElementById("review-modal-confirm");
+  const note = document.getElementById("review-modal-note").value.trim();
+  confirm.disabled = !note;
+  confirm.title = note ? "" : "Write a note first — a sign-off needs a reason";
+}
+
 function openReviewModal(ticket, preset) {
   reviewModalTicket = ticket;
-  reviewModalChoice = preset === "Fail" ? "Fail" : "Pass";
+  const accepting = preset === "accept";
+  reviewModalChoice = accepting ? "accept" : (preset === "Fail" ? "Fail" : "Pass");
   const modal = document.getElementById("review-modal");
-  document.getElementById("review-modal-title").textContent = ticket.review
-    ? "Change overall result" : "Set overall result";
+  const ai = ticket.ai_result || "not scored";
+  document.getElementById("review-modal-title").textContent = accepting
+    ? "Accept QC result"
+    : (ticket.review ? "Change overall result" : "Set overall result");
   document.getElementById("review-modal-ticket").textContent =
     `#${ticket.number} ${ticket.title || ""}`.trim();
-  const ai = ticket.ai_result || "not scored";
-  document.getElementById("review-modal-ai").textContent = ticket.review
-    ? `Currently signed off as ${ticket.review.decision}. AI overall is ${ai}.`
-    : `This sets the ticket's overall QC result. AI overall is ${ai}.`;
+  document.getElementById("review-modal-ai").textContent = accepting
+    ? `Keeps the AI overall (${ai}) and records who signed off.`
+    : (ticket.review
+        ? `Currently signed off as ${ticket.review.decision}. AI overall is ${ai}.`
+        : `This sets the ticket's overall QC result. AI overall is ${ai}.`);
   document.getElementById("review-modal-note").value = "";
+  // Accepting keeps the AI's verdict, so there is no Pass/Fail to choose.
+  modal.querySelector(".review-modal-choices").hidden = accepting;
   modal.querySelectorAll(".review-choice").forEach(btn => {
     btn.classList.toggle("on", btn.dataset.choice === reviewModalChoice);
   });
   const confirm = document.getElementById("review-modal-confirm");
-  confirm.textContent = `Confirm ${reviewModalChoice}`;
+  confirm.textContent = accepting ? `Confirm Accept (${ai})` : `Confirm ${reviewModalChoice}`;
   confirm.classList.toggle("fail", reviewModalChoice === "Fail");
-  confirm.disabled = false;
+  _syncReviewConfirm();
   modal.hidden = false;
   modal.classList.add("open");
+  document.getElementById("review-modal-note").focus();
 }
 
 function closeReviewModal() {
@@ -2195,6 +2214,13 @@ function bindSheetReviewActions(t) {
   if (!foot) return;
   foot.querySelectorAll("[data-review]").forEach(btn => {
     btn.addEventListener("click", () => {
+      // Accept goes through the modal now: a sign-off requires a note, and
+      // Accept used to submit silently with none. Revert stays direct — it
+      // removes a decision rather than recording one.
+      if (btn.dataset.review === "accept") {
+        openReviewModal(t, "accept");
+        return;
+      }
       submitReview(t.id, btn.dataset.review, "", btn).catch(() => {});
     });
   });
@@ -3469,8 +3495,11 @@ document.getElementById('lb-body').addEventListener('click', (ev) => {
       const confirm = document.getElementById("review-modal-confirm");
       confirm.textContent = `Confirm ${reviewModalChoice}`;
       confirm.classList.toggle("fail", reviewModalChoice === "Fail");
+      _syncReviewConfirm();
     });
   });
+  document.getElementById("review-modal-note")
+    .addEventListener("input", _syncReviewConfirm);
   document.getElementById("review-modal-cancel").addEventListener("click", closeReviewModal);
   document.getElementById("review-modal-backdrop").addEventListener("click", closeReviewModal);
   document.getElementById("review-modal-confirm").addEventListener("click", async () => {
