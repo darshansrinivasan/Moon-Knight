@@ -3546,7 +3546,12 @@ document.getElementById("next-month").addEventListener("click", () => {
       curYear = y; curMonth = m;
       await renderCalendar();
     }
-    selectDay(wanted);
+    await selectDay(wanted);
+    // Deep link from the Open Tickets tab: /?date=…&ticket=… opens the
+    // ticket's detail sheet once the day's list is in memory — openSheet
+    // reads the ticket from allTickets, so it must run after selectDay.
+    const tid = params.get("ticket");
+    if (tid) openSheet(tid);
   }
 })();
 loadStats();

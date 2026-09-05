@@ -65,9 +65,18 @@
   }
 
   .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  /* The chips are the QC-result filter, not just counters: click one to see
+     only those tickets, click it again (or the total) for everything. */
   .chip {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px 16px; min-width: 96px;
+    cursor: pointer; font-family: inherit; text-align: left;
+    transition: border-color .15s, background .15s;
+  }
+  .chip:hover { border-color: var(--color-accent); }
+  .chip.active {
+    border-color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
   }
   .chip b { display: block; font-size: 20px; font-weight: 700; color: var(--text); }
   .chip span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
@@ -98,6 +107,8 @@
   tr:last-child td { border-bottom: 0; }
   td a { color: var(--accent2); text-decoration: none; }
   td a:hover { text-decoration: underline; }
+  tbody tr[data-id] { cursor: pointer; transition: background .12s; }
+  tbody tr[data-id]:hover { background: var(--surface2); }
   .grade { font-weight: 600; }
   .grade.Pass { color: var(--pass); }
   .grade.Fail { color: var(--fail); }
@@ -162,6 +173,9 @@ const $ = id => document.getElementById(id);
 const esc = s => QC.esc(s);
 
 let selStates = new Set();   // lowercase status values; empty = all open
+let gradeFilter = "";        // "" = all; "Pass" / "Fail" / "Needs Review" / "pending"
+let lastTickets = [];        // the fetched list; the grade filter subsets it client-side
+let lastSummary = { total: 0, pass: 0, fail: 0, review: 0, pending: 0 };
 let loadToken = 0;
 let running   = false;
 
@@ -205,13 +219,27 @@ function renderPills(counts) {
   host.hidden = !counts.length;
 }
 
-function renderChips(s) {
-  $("chips").innerHTML = `
-    <div class="chip"><b>${s.total}</b><span>Open in scope</span></div>
-    <div class="chip c-pass"><b>${s.pass}</b><span>Pass</span></div>
-    <div class="chip c-fail"><b>${s.fail}</b><span>Fail</span></div>
-    <div class="chip c-review"><b>${s.review}</b><span>Needs review</span></div>
-    <div class="chip"><b>${s.pending}</b><span>Pending QC</span></div>`;
+function gradeOf(t) { return t.overall_result || "pending"; }
+
+function visibleTickets() {
+  return gradeFilter ? lastTickets.filter(t => gradeOf(t) === gradeFilter)
+                     : lastTickets;
+}
+
+function renderChips() {
+  const s = lastSummary;
+  const chip = (grade, n, label, cls = "") => `
+    <button type="button" class="chip ${cls}${gradeFilter === grade ? " active" : ""}"
+            data-grade="${esc(grade)}"
+            title="${grade ? `Show only ${label} tickets` : "Show every open ticket"}">
+      <b>${n}</b><span>${label}</span>
+    </button>`;
+  $("chips").innerHTML =
+    chip("", s.total, "Open in scope")
+    + chip("Pass", s.pass, "Pass", "c-pass")
+    + chip("Fail", s.fail, "Fail", "c-fail")
+    + chip("Needs Review", s.review, "Needs review", "c-review")
+    + chip("pending", s.pending, "Pending QC");
 }
 
 function renderRows(tickets) {
@@ -223,7 +251,8 @@ function renderRows(tickets) {
     const num = t.link
       ? `<a href="${esc(t.link)}" target="_blank" rel="noopener noreferrer">#${esc(t.number ?? "—")}</a>`
       : `#${esc(t.number ?? "—")}`;
-    return `<tr>
+    return `<tr data-id="${esc(t.ticket_id)}" data-date="${esc(t.fetch_date || "")}"
+                title="Open QC detail — which checks passed and failed">
       <td>${num}</td>
       <td>${esc(t.title || "(no title)")}</td>
       <td class="state-cell">${esc(stateLabel(t.state))}</td>
@@ -244,9 +273,11 @@ async function load() {
       QC.api(`/api/open/preview${rangeQS()}`),
     ]);
     if (token !== loadToken) return;   // a newer filter already landed
+    lastTickets = list.tickets;
+    lastSummary = list.summary;
     renderPills(list.state_counts);
-    renderChips(list.summary);
-    renderRows(list.tickets);
+    renderChips();
+    renderRows(visibleTickets());
     const spent = prev.spend && prev.spend.runs
       ? ` Backlog runs so far: ${prev.spend.runs} (~$${Number(prev.spend.total_cost_usd).toFixed(4)}).`
       : "";
@@ -339,6 +370,27 @@ $("all-time").addEventListener("click", () => {
 });
 $("run-btn").addEventListener("click", runQC);
 $("refetch-btn").addEventListener("click", refetchOpen);
+
+// QC-result filter: the chips are toggles, client-side over the loaded list.
+$("chips").addEventListener("click", (ev) => {
+  const chip = ev.target.closest(".chip[data-grade]");
+  if (!chip) return;
+  const grade = chip.dataset.grade;
+  gradeFilter = (grade === gradeFilter) ? "" : grade;
+  renderChips();
+  renderRows(visibleTickets());
+});
+
+// A row opens the ticket's QC detail — the dashboard's slide-over, which
+// already knows how to show which checks failed and why. The Pylon link in
+// the first cell keeps its own meaning.
+$("rows").addEventListener("click", (ev) => {
+  if (ev.target.closest("a")) return;
+  const tr = ev.target.closest("tr[data-id]");
+  if (!tr || !tr.dataset.date) return;
+  location.href = `/?date=${encodeURIComponent(tr.dataset.date)}`
+                + `&ticket=${encodeURIComponent(tr.dataset.id)}`;
+});
 
 (async () => {
   await QC.ready;
