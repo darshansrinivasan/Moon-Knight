@@ -88,6 +88,22 @@ check("ambiguous name now mapped", r.get("Twin Name"), "U0DDDD")
 check("map overrides a directory match", r.get("Ann Unique"), "U0ZZZZ")
 
 print()
+print("=== a DO_NOT_MENTION mark mutes a name the directory COULD resolve ===")
+# The map could previously only add tags; this pins the opt-out for people who
+# appear as assignees but must never be @-mentioned (non-support reps).
+vault.set_raw_setting(slack.IDENTITY_MAP_KEY,
+                      json.dumps({"Ann Unique": slack.DO_NOT_MENTION}), "test")
+r = run(slack.resolve_assignee_ids(["Ann Unique", "Deepak Kayala"]))
+check("muted despite a unique directory match", r.get("Ann Unique"), None)
+check("rendered as plain text, not a tag",
+      slack.mention_or_name("Ann Unique", r), "Ann Unique")
+check("the mute is per-name — others still resolve",
+      r.get("Deepak Kayala"), "U0AAAA")
+check("the mark survives identity_map()",
+      slack.identity_map(), {"Ann Unique": slack.DO_NOT_MENTION})
+check("the sentinel is not a plausible Slack id", slack.DO_NOT_MENTION, "-")
+
+print()
 print("=== a corrupt map is ignored, not fatal ===")
 vault.set_raw_setting(slack.IDENTITY_MAP_KEY, "{not json", "test")
 check("corrupt map -> empty", slack.identity_map(), {})

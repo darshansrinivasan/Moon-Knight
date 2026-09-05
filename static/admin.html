@@ -82,7 +82,8 @@
   body.readonly #reload-projects, body.readonly #gcp-connect, body.readonly #gcp-disconnect,
   body.readonly [data-role], body.readonly [data-toggle],
   body.readonly #coverage-form, body.readonly [data-coverage-del],
-  body.readonly #ident-editor, body.readonly .ident-remove { display: none !important; }
+  body.readonly #ident-editor, body.readonly .ident-remove,
+  body.readonly .ident-mute { display: none !important; }
 
   /* ── Slack mentions & identity map ── */
   .ident-list {
@@ -109,6 +110,12 @@
     background: none; border: none; color: var(--fail); cursor: pointer;
     font-size: 12px; padding: 0 4px; margin-left: auto;
   }
+  .ident-mute {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    cursor: pointer; font-size: 10.5px; padding: 1px 8px; border-radius: 10px;
+    margin-left: auto; white-space: nowrap;
+  }
+  .ident-mute:hover { border-color: var(--review); color: var(--review); }
   .ident-pick { position: relative; flex: 1; min-width: 220px; }
   .ident-results {
     position: absolute; top: calc(100% + 4px); left: 0; right: 0;
@@ -288,7 +295,9 @@
               <div class="hint">
                 Every assignee seen in the data. <b>auto</b> matched a unique Slack
                 user by full name; <b>mapped</b> uses an override from below;
-                <b>not found</b> posts as plain text until mapped.
+                <b>not found</b> posts as plain text until mapped. <b>Don't tag</b>
+                mutes a name for good — it is never @-mentioned even when it
+                resolves, for people like non-support reps.
               </div>
               <div class="ident-list" id="ident-list"></div>
             </div>
@@ -1127,31 +1136,52 @@ function _autoResolved(name) {
   return !!(IDENT.resolved || {})[name] && !(IDENT.mapped || {})[name];
 }
 
+// "-" in the map means "never tag this name" — slack.DO_NOT_MENTION.
+const DO_NOT_MENTION = "-";
+const identMuted = n => identStaged[n] === DO_NOT_MENTION;
+
 function identBadge(name) {
+  if (identMuted(name)) return `<span class="ident-badge">never tagged</span>`;
   if (identStaged[name]) return `<span class="ident-badge mapped">mapped</span>`;
   if (_autoResolved(name)) return `<span class="ident-badge auto">auto</span>`;
   return `<span class="ident-badge none">not found</span>`;
 }
 
+function identWord(name) {
+  return identMuted(name) ? " (never tagged)"
+    : identStaged[name] ? " (mapped)"
+    : _autoResolved(name) ? " (auto)" : " (not found)";
+}
+
 function renderIdentities() {
   const names = Object.keys(IDENT.resolved || {});
-  // Actionable rows first: unresolved, then overrides, then the fine ones.
+  // Actionable rows first: unresolved, then overrides/mutes, then the fine ones.
   const rank = n => identStaged[n] ? 1 : _autoResolved(n) ? 2 : 0;
   names.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 
-  $("ident-list").innerHTML = names.map(n => `
-    <div class="ident-row">
+  $("ident-list").innerHTML = names.map(n => {
+    // Every row that is not already muted can be muted — including "not
+    // found": a mute placed now also guards against the person becoming
+    // uniquely matchable later (a Slack rename, a new joiner leaving).
+    const controls = identMuted(n)
+      ? `<button type="button" class="ident-remove" data-unmap="${esc(n)}"
+                 title="Allow tagging again">✕</button>`
+      : (identStaged[n]
+          ? `<span class="ident-id">${esc(identStaged[n])}</span>
+             <button type="button" class="ident-remove" data-unmap="${esc(n)}"
+                     title="Remove this override">✕</button>`
+          : `<button type="button" class="ident-mute" data-mute="${esc(n)}"
+                     title="Never @-tag this name, even when it resolves">Don't tag</button>`);
+    return `<div class="ident-row">
       <span class="ident-name" title="${esc(n)}">${esc(n)}</span>
       ${identBadge(n)}
-      ${identStaged[n] ? `<span class="ident-id">${esc(identStaged[n])}</span>
-        <button type="button" class="ident-remove" data-unmap="${esc(n)}"
-                title="Remove this override">✕</button>` : ""}
-    </div>`).join("")
+      ${controls}
+    </div>`;
+  }).join("")
     || `<div class="hint">No assignees seen in the data yet.</div>`;
 
   $("ident-name").innerHTML = names.map(n =>
-    `<option value="${esc(n)}">${esc(n)}${identStaged[n] ? " (mapped)"
-      : _autoResolved(n) ? " (auto)" : " (not found)"}</option>`).join("");
+    `<option value="${esc(n)}">${esc(n)}${identWord(n)}</option>`).join("");
 
   const dirty = JSON.stringify(identStaged)
     !== JSON.stringify(IDENT.mapped || {});
@@ -1161,10 +1191,17 @@ function renderIdentities() {
 }
 
 $("ident-list").addEventListener("click", (ev) => {
-  const btn = ev.target.closest("[data-unmap]");
-  if (!btn) return;
-  delete identStaged[btn.dataset.unmap];
-  renderIdentities();
+  const unmap = ev.target.closest("[data-unmap]");
+  if (unmap) {
+    delete identStaged[unmap.dataset.unmap];
+    renderIdentities();
+    return;
+  }
+  const mute = ev.target.closest("[data-mute]");
+  if (mute) {
+    identStaged[mute.dataset.mute] = DO_NOT_MENTION;
+    renderIdentities();
+  }
 });
 
 // Type-ahead over the Slack directory (login-domain people only, server-side).

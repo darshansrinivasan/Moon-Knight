@@ -1912,7 +1912,9 @@ async def put_slack_identities(request: Request,
         name, sid = str(name).strip(), str(sid).strip()
         if not name or not sid:
             continue
-        if not re.fullmatch(r"[UW][A-Z0-9]{4,}", sid):
+        # DO_NOT_MENTION is the one non-ID value with a meaning: never tag
+        # this name, even when the directory could resolve it.
+        if sid != slack.DO_NOT_MENTION and not re.fullmatch(r"[UW][A-Z0-9]{4,}", sid):
             raise HTTPException(400, f"{sid!r} is not a Slack user ID")
         cleaned[name] = sid
 

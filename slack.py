@@ -639,6 +639,11 @@ async def search_directory(q: str, kind: str = "user", limit: int = 25) -> list[
 
 IDENTITY_MAP_KEY = "qc_slack_identity_map"
 
+# An identity-map value meaning "never @-mention this name". Without it the map
+# could only ADD tags: a non-support rep whose full name matches uniquely in
+# the directory would always auto-resolve, with no way to opt them out.
+DO_NOT_MENTION = "-"
+
 MENTION_OFF, MENTION_LEADS, MENTION_ALL = "off", "leads", "all"
 MENTION_MODES = (MENTION_OFF, MENTION_LEADS, MENTION_ALL)
 
@@ -681,7 +686,8 @@ async def resolve_assignee_ids(names) -> dict:
     """Map assignee display names to Slack user IDs, or None when unsure.
 
     Resolution order, stopping at the first hit:
-      1. the admin identity map
+      1. the admin identity map — a DO_NOT_MENTION mark resolves to None and
+         stops here, so a muted name never falls through to the directory
       2. a case-insensitive full-name match that is UNIQUE in the directory
       3. None — the caller must render plain text rather than guess
     """
@@ -690,8 +696,9 @@ async def resolve_assignee_ids(names) -> dict:
         return {}
 
     overrides = identity_map()
-    out = {n: overrides.get(n) for n in wanted}
-    unresolved = [n for n, v in out.items() if not v]
+    muted = {n for n in wanted if overrides.get(n) == DO_NOT_MENTION}
+    out = {n: (None if n in muted else overrides.get(n)) for n in wanted}
+    unresolved = [n for n, v in out.items() if not v and n not in muted]
     if not unresolved:
         return out
 
