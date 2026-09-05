@@ -135,49 +135,38 @@ NOTHING_TO_COMPARE = (
 
 _local = threading.local()
 
-_live_current             = qc_rules.current
-_live_fetch_slack_thread  = scorer._fetch_slack_thread
 
-
-def _drafted_current() -> dict:
-    """`rules.current`, answering with the draft on a thread inside a dry-run."""
-    doc = getattr(_local, "doc", None)
-    return dict(doc) if doc is not None else _live_current()
-
-
-def _refused_slack_fetch(url: str) -> str:
-    """`scorer._fetch_slack_thread`, refused and recorded inside a dry-run.
+def _refusing_reader(session: dict):
+    """A stand-in for the live Slack read, which records that it was wanted.
 
     Returning "" is what makes r5 fall through; the recorded flag is what stops
-    that fall-through being reported as a verdict.
+    that fall-through being reported as a verdict. Passed into `scorer.r5` as
+    its `fetch_thread`, so nothing global changes — an earlier version rebound
+    `scorer._fetch_slack_thread` at import, which meant importing this module
+    quietly altered how the real scorer behaved for every caller.
     """
-    session = getattr(_local, "session", None)
-    if session is None:
-        return _live_fetch_slack_thread(url)
-    session["slack_consulted"] = True
-    return ""
-
-
-qc_rules.current         = _drafted_current
-scorer._fetch_slack_thread = _refused_slack_fetch
+    def read(url: str) -> str:
+        session["slack_consulted"] = True
+        return ""
+    return read
 
 
 @contextmanager
 def _under_rules(doc: dict):
-    """Bind `doc` as the rules document, on this thread only, for the block.
+    """Answer rules reads from `doc`, on this thread, for the block.
 
-    Nested and restored rather than assigned, so the two passes over a ticket
-    cannot leak into each other and an exception cannot leave a draft installed.
+    Delegates to `rules.scoped`, which owns the thread-local. Keeping it there
+    rather than here means `rules.py` documents its own seam, and importing this
+    module has no effect on anything else.
     """
-    previous_doc     = getattr(_local, "doc", None)
-    previous_session = getattr(_local, "session", None)
-    _local.doc     = doc
-    _local.session = {"slack_consulted": False}
+    session = {"slack_consulted": False}
+    previous = getattr(_local, "session", None)
+    _local.session = session
     try:
-        yield _local.session
+        with qc_rules.scoped(doc):
+            yield session
     finally:
-        _local.doc     = previous_doc
-        _local.session = previous_session
+        _local.session = previous
 
 
 # ── stored row → the shapes `scorer` expects ─────────────────────────────────
@@ -313,7 +302,7 @@ def _recheck(t: _StoredTicket) -> tuple[dict, dict]:
         verdicts["r4"] = scorer.r4(issue, t.messages_at_scoring_time)
 
     session["slack_consulted"] = False
-    r5 = scorer.r5(issue, msgs, ext)
+    r5 = scorer.r5(issue, msgs, ext, fetch_thread=_refusing_reader(session))
     if session["slack_consulted"] and r5 == "Fail":
         # The thread was the deciding input and we refused to read it. It could
         # only have said "Pass", so the Fail is a guess, not a verdict.

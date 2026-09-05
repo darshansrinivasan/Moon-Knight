@@ -181,11 +181,14 @@ before_doc = rules.current()
 with rdry._under_rules({**before_doc, "r4_sla_hours": 999}):
     check("inside the scope the draft answers", rules.sla_hours(), 999.0)
 ok("outside the scope the saved rules answer", rules.current() == before_doc)
-saved_fetch = rdry._live_fetch_slack_thread
-rdry._live_fetch_slack_thread = lambda url: f"delegated:{url}"
-check("outside a dry-run the Slack fetch still reaches Slack",
-      scorer._fetch_slack_thread("u"), "delegated:u")
-rdry._live_fetch_slack_thread = saved_fetch
+# Importing the dry-run must not change how the real scorer behaves. An earlier
+# version rebound scorer._fetch_slack_thread at import, so merely importing this
+# module altered every caller's R5 — the same action-at-a-distance the os.chdir
+# bug had. The reader is now passed in at the call site instead.
+ok("importing the dry-run leaves the live Slack fetch alone",
+   scorer._fetch_slack_thread.__module__ == "scorer",
+   "no global was rebound")
+ok("and leaves rules.current alone", rules.current.__module__ == "rules")
 
 
 # ── NOTHING IS WRITTEN ───────────────────────────────────────────────────────
@@ -195,7 +198,7 @@ print("=== NOTHING IS WRITTEN ===")
 reset()
 add("t1", r={"r3": "Pass"})
 add("t2", r={"r3": "Pass"})
-rdry._live_fetch_slack_thread = explode
+scorer._fetch_slack_thread = explode
 before = snapshot()
 res = rdry.run({"r3_internal_account_ids": [f"{ACCOUNT_ID}  Acme Ltd"]})
 after = snapshot()
@@ -254,7 +257,7 @@ add("slow", state="investigating", r={"r4": "Fail"}, overall="Fail",
     scored_at="2026-06-02T16:00:00Z",
     messages=[{"html": "<p>still broken</p>", "at": "2026-06-01T10:00:00Z",
                "customer": True}])
-rdry._live_fetch_slack_thread = explode
+scorer._fetch_slack_thread = explode
 
 res = rdry.run(None)
 check("the stored Fail is reproduced under the saved 24h SLA",
@@ -312,7 +315,7 @@ add("csm", state="waiting_on_csm", r={"r5": "Pass"}, overall="Pass",
         "value": "https://slack.com/archives/C0123/p1782126385033799"}},
     messages=[{"html": "<p>can someone look at this</p>",
                "at": "2026-06-01T09:00:00Z"}])
-rdry._live_fetch_slack_thread = explode
+scorer._fetch_slack_thread = explode
 res = rdry.run(None)          # would raise if the live API were reached
 check("R5 is counted as unknown", res["checks"]["r5"]["unknown"], 1)
 check("it is not counted as moved", res["checks"]["r5"]["moved"], 0)

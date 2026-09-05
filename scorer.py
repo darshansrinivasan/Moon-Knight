@@ -664,7 +664,16 @@ def _has_rootly_or_jira(
     return bool(ROOTLY_RE.search(all_text) or JIRA_RE.search(all_text))
 
 
-def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = None) -> str:
+def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = None,
+       fetch_thread=None) -> str:
+    """`fetch_thread` overrides how the linked oncall Slack thread is read.
+
+    A seam, not a hook: the dry-run needs to re-run R5 over thousands of stored
+    tickets without making a live Slack call per ticket, and monkeypatching the
+    module to achieve that would have meant an import silently changing how the
+    real scorer behaves. Passing the reader in keeps that decision at the call
+    site, where it can be seen.
+    """
     state    = issue.get("state", "")
     assignee = issue.get("assignee")
 
@@ -713,7 +722,8 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         oncall_link = (_cf_val(cf.get(link_field)) or
                        (cf.get(link_field) or {}).get("value") or "")
         if oncall_link:
-            thread_text = _fetch_slack_thread(oncall_link)
+            reader = fetch_thread or _fetch_slack_thread
+            thread_text = reader(oncall_link)
             if thread_text:
                 thread_ids = _slack_text_user_ids(thread_text)
                 if thread_ids & qc_rules.id_set("cs_user_ids"):
@@ -740,7 +750,8 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
         oncall_link = (_cf_val(cf.get(link_field)) or
                        (cf.get(link_field) or {}).get("value") or "")
         if oncall_link:
-            thread_text = _fetch_slack_thread(oncall_link)
+            reader = fetch_thread or _fetch_slack_thread
+            thread_text = reader(oncall_link)
             if thread_text:
                 if _slack_text_user_ids(thread_text) & qc_rules.id_set("pt_user_ids"):
                     return "Pass"
@@ -770,7 +781,8 @@ def r5(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
             oncall_link = (_cf_val(cf.get(link_field)) or
                            (cf.get(link_field) or {}).get("value") or "")
             if oncall_link:
-                thread_text = _fetch_slack_thread(oncall_link)
+                reader = fetch_thread or _fetch_slack_thread
+                thread_text = reader(oncall_link)
                 if thread_text:
                     if _slack_text_user_ids(thread_text) & qc_rules.id_set("eng_user_ids"):
                         return "Pass"

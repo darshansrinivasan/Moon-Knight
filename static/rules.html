@@ -54,6 +54,23 @@
   }
   .nav-off { font-size: 10px; color: var(--review); margin-left: 6px; }
   .cond-list { display: flex; flex-direction: column; gap: 7px; margin: 10px 0 0; }
+  .pv-head { display: flex; flex-wrap: wrap; gap: 18px; margin: 16px 0 6px; }
+  .pv-fig { display: flex; flex-direction: column; }
+  .pv-n { font-size: 26px; font-variant-numeric: tabular-nums; }
+  .pv-n.moved { color: var(--accent2); }
+  .pv-lab { font-size: 11px; color: var(--muted); }
+  .pv-row {
+    display: flex; align-items: baseline; gap: 10px; padding: 7px 0;
+    border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .pv-row:last-child { border-bottom: none; }
+  .pv-key { font-family: ui-monospace, Menlo, monospace; width: 34px; flex: none; }
+  .pv-t { color: var(--muted); font-size: 12px; }
+  .pv-t b { color: var(--text); font-variant-numeric: tabular-nums; }
+  /* Unknown is its own state, never folded into "unchanged": it means the
+     verdict depends on a Slack thread the preview refuses to fetch. */
+  .pv-unknown { color: var(--review); }
+
   .scroll-x { overflow-x: auto; margin: 14px 0; }
   table.statuses { border-collapse: collapse; width: 100%; font-size: 12.5px; }
   table.statuses th {
@@ -406,6 +423,19 @@
         </div>
       </div>
 
+      <div class="section" id="sec-preview">
+        <div class="card">
+          <h2>Preview</h2>
+          <p class="what">
+            What the form as it stands would do to the checks, measured against re-running
+            the <em>saved</em> rules over the same tickets on the same clock — so the only
+            difference reported is the one you are making. Nothing is written, no AI is
+            called, and no Slack thread is read.
+          </p>
+          <div id="preview-out"><p class="hint">Press <b>Preview changes</b> in the bar below.</p></div>
+        </div>
+      </div>
+
       <div class="section" id="sec-statuses">
         <div class="card">
           <h2>Ticket statuses</h2>
@@ -466,6 +496,8 @@
 
       <div class="savebar" id="savebar">
         <span class="meta" id="meta"></span>
+        <button class="ghost" id="preview"
+                title="Re-score stored tickets with the form as it stands. Nothing is saved.">Preview changes</button>
         <button class="ghost" id="undo" style="display:none"
                 title="Restore the rules as they were before the last save">Undo last save</button>
         <button class="ghost" id="load-defaults">Load defaults into form</button>
@@ -499,6 +531,7 @@ const NAV = [
   ["r7", "R7 Rootly/Jira"],
   ["r8", "R8 Oncall"],
   ["a",  "A1–A5 AI grading"],
+  ["preview", "Preview"],
   ["statuses", "Ticket statuses"],
   ["fields", "Pylon fields"],
   ["suggest", "Learned suggestions"],
@@ -856,6 +889,30 @@ async function load() {
   }
 }
 
+$("preview").addEventListener("click", async () => {
+  const btn = $("preview");
+  btn.disabled = true;
+  selectSection("preview");
+  $("preview-out").innerHTML = `<p class="hint">Re-scoring stored tickets…</p>`;
+  try {
+    const r = await fetch("/api/rules/preview", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rules: collect()}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      $("preview-out").innerHTML =
+        `<div class="banner bad">${esc(d.detail || `HTTP ${r.status}`)}</div>`;
+      return;
+    }
+    renderPreview(d);
+  } catch (e) {
+    $("preview-out").innerHTML = `<div class="banner bad">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 $("undo").addEventListener("click", async () => {
   const btn = $("undo");
   btn.disabled = true;
@@ -1042,6 +1099,62 @@ function draftPrompt() {
     if (el) draft[s.key] = el.value;
   }
   return draft;
+}
+
+/* ── preview ────────────────────────────────────────────────────────────────
+ * Two different numbers, and conflating them would be the whole feature's
+ * failure mode. `overall` is counterfactual — the verdicts these tickets would
+ * have got under the draft. `applied` is what a save actually rewrites, because
+ * resync recomputes stored overalls from stored verdicts under the new mask.
+ * Telling someone "41 tickets move" and then saving to no visible effect is
+ * exactly the confusion this is meant to end, so both are shown and labelled.
+ */
+function transitionText(map) {
+  const parts = Object.entries(map || {});
+  if (!parts.length) return "no movement";
+  return parts.map(([k, v]) => `<b>${esc(v)}</b> ${esc(k)}`).join(" · ");
+}
+
+function renderPreview(d) {
+  const checks = d.checks || {};
+  const rows = Object.entries(checks).map(([key, c]) => `
+    <div class="pv-row">
+      <span class="pv-key">${esc(key)}</span>
+      <span class="pv-t">${c.enabled ? transitionText(c.transitions)
+                                     : "switched off in this draft"}</span>
+      ${c.unknown ? `<span class="pv-t pv-unknown">${esc(c.unknown)} unknown —
+        ${esc(c.unknown_reason || "depends on a Slack thread, not fetched here")}</span>` : ""}
+      ${c.drift ? `<span class="pv-t">${esc(c.drift)} already differ from the stored
+        verdict, unrelated to this change</span>` : ""}
+    </div>`).join("");
+
+  const ap = d.applied || {}, ov = d.overall || {};
+  $("preview-out").innerHTML = `
+    <div class="pv-head">
+      <div class="pv-fig"><span class="pv-n moved">${esc(ap.moved || 0)}</span>
+        <span class="pv-lab">grades this save would rewrite</span></div>
+      <div class="pv-fig"><span class="pv-n">${esc(ov.moved || 0)}</span>
+        <span class="pv-lab">verdicts that would differ if re-fetched</span></div>
+      <div class="pv-fig"><span class="pv-n">${esc(d.scanned || 0)}</span>
+        <span class="pv-lab">tickets examined</span></div>
+    </div>
+    <p class="hint">
+      ${ap.moved
+        ? `Saving rewrites <b>${esc(ap.moved)}</b> stored grade${ap.moved === 1 ? "" : "s"}
+           (${transitionText(ap.transitions)}) — that happens immediately and costs nothing.`
+        : `Saving rewrites no stored grade.`}
+      ${ov.moved !== ap.moved
+        ? ` The other figure — <b>${esc(ov.moved || 0)}</b> — is what these tickets would
+            score if they were re-fetched, which needs a refetch and, for the AI checks,
+            spend. The two differ because a save recomputes grades from the verdicts
+            already stored, while a refetch re-runs the checks against the ticket as it
+            is today.` : ""}
+      ${ov.unknown ? ` <span class="pv-unknown">${esc(ov.unknown)} could not be decided
+        without reading a Slack thread, which a preview will not do.</span>` : ""}
+    </p>
+    ${rows}
+    ${(d.errors || []).length
+      ? `<p class="hint">${esc(d.errors.length)} ticket(s) could not be re-scored.</p>` : ""}`;
 }
 
 /* ── the status matrix ──────────────────────────────────────────────────────

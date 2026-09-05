@@ -225,6 +225,23 @@ check("the off-marker targets a real selector", 'data-jump-nav' not in RULES)
 check("using data-section", '[data-section="${key}"]' in RULES)
 
 print()
+print("=== the preview keeps its two numbers apart ===")
+# `overall` is counterfactual — what these tickets would score if re-fetched.
+# `applied` is what a save actually rewrites, because resync recomputes stored
+# overalls from stored verdicts. Reporting the first as though it were the
+# second means promising movement a save does not deliver.
+check("the preview reads the applied count", "d.applied" in RULES)
+check("and the counterfactual separately", "d.overall" in RULES)
+check("it labels what a save rewrites",
+      "grades this save would rewrite" in RULES)
+check("and what only a refetch would change",
+      "if they were re-fetched" in RULES)
+check("no direction is assumed between them",
+      "The larger figure" not in RULES)
+check("unknown verdicts are surfaced, not folded into unchanged",
+      "could not be decided" in RULES)
+
+print()
 print("=== the read-only sweep covers buttons, not just fields ===")
 # It swept input/select/textarea only, so every action button in every section
 # stayed live for a member. The endpoints are admin-gated, so pressing one gave

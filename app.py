@@ -1115,6 +1115,45 @@ async def rules_dry_run(request: Request,
     return {"ok": True, **result}
 
 
+@app.post("/api/rules/preview")
+async def rules_preview(request: Request,
+                        user: dict = Depends(auth.require_admin)):
+    """What a draft rules change would do to the R-checks. Writes nothing.
+
+    Deterministic and local — no AI call and no Slack call — so unlike the
+    A-rubric dry-run this costs nothing but CPU and can cover a whole range
+    rather than a sample.
+    """
+    import rcheck_dryrun
+
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+
+    draft = body.get("rules")
+    if draft is not None and not isinstance(draft, dict):
+        raise HTTPException(400, "rules must be an object")
+
+    start, end = body.get("start"), body.get("end")
+    if bool(start) != bool(end):
+        raise HTTPException(400, "Provide both start and end, or neither")
+    if start and end:
+        if _require_date(start) > _require_date(end):
+            raise HTTPException(400, "start must not be after end")
+
+    try:
+        result = await asyncio.to_thread(
+            rcheck_dryrun.run, draft,
+            body.get("limit", rcheck_dryrun.DEFAULT_LIMIT), start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("rules preview failed")
+        raise HTTPException(502, f"Preview could not complete: {str(e)[:300]}")
+
+    return {"ok": True, **result}
+
+
 @app.get("/api/pylon/fields")
 async def pylon_fields(user: dict = Depends(auth.require_user)):
     """Pylon's live issue custom fields, plus which mappings no longer match one.

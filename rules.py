@@ -13,6 +13,7 @@ app_settings and validated before they are accepted. Each run's config snapshot
 records the rules hash, so a grade change is attributable to a rules change.
 """
 
+import contextlib
 import hashlib
 import json
 import re
@@ -23,6 +24,15 @@ import vault
 
 _lock = threading.Lock()
 _cache: dict | None = None
+
+# A draft document that applies to the calling thread only. `current()` consults
+# it, so anything that reads the rules — including `enabled_rule_keys`, which
+# `_compute_overall` uses — answers for the draft without being told about it.
+#
+# Thread-local rather than a swapped cache because this runs inside a live
+# server: the fetch loop scores tickets and *writes* the result, so a global
+# override would grade production tickets against an admin's unsaved draft.
+_scope = threading.local()
 
 RULES_KEY = "qc_rules_json"
 
@@ -142,11 +152,29 @@ def _load() -> dict:
 
 
 def current() -> dict:
+    draft = getattr(_scope, "doc", None)
+    if draft is not None:
+        return dict(draft)
     global _cache
     with _lock:
         if _cache is None:
             _cache = _load()
         return dict(_cache)
+
+
+@contextlib.contextmanager
+def scoped(doc: dict):
+    """Answer every rules read from `doc`, on this thread, for this block.
+
+    For asking "what would these rules produce?" without saving them. Restores
+    the previous value rather than clearing, so nesting behaves.
+    """
+    previous = getattr(_scope, "doc", None)
+    _scope.doc = dict(doc)
+    try:
+        yield
+    finally:
+        _scope.doc = previous
 
 
 def invalidate() -> None:
