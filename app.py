@@ -2046,4 +2046,20 @@ async def invite_user(request: Request, user: dict = Depends(auth.require_admin)
     return {"ok": True, "users": auth.list_users()}
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+class RevalidatedStaticFiles(StaticFiles):
+    """StaticFiles that forbids heuristic caching.
+
+    Starlette sends ETag/Last-Modified but no Cache-Control, which lets a
+    browser reuse a cached shell.js for days without asking — so every deploy
+    left signed-in users on the old UI until a hard refresh. `no-cache` does
+    not mean "don't cache": it means "revalidate before use", and the ETag
+    makes that revalidation a cheap 304 rather than a re-download.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", RevalidatedStaticFiles(directory=STATIC_DIR), name="static")

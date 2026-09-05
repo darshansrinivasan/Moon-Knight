@@ -59,6 +59,19 @@ for path in ["/api/fetch/not-a-date", "/api/qc/2026-99-99"]:
     check(f"{path} -> not 500", r.status_code != 500, str(r.status_code))
 
 print()
+print("=== static assets must revalidate, not heuristically cache ===")
+# Without Cache-Control, browsers reused a cached shell.js for days after a
+# deploy — the UI looked unchanged in production until a hard refresh.
+r = client.get("/static/shell.js")
+check("/static served", r.status_code == 200, str(r.status_code))
+check("Cache-Control forces revalidation",
+      r.headers.get("cache-control") == "no-cache",
+      r.headers.get("cache-control", "<missing>"))
+check("ETag kept, so revalidation is a cheap 304", "etag" in r.headers)
+r = client.get("/static/shell.js", headers={"If-None-Match": r.headers["etag"]})
+check("conditional request answers 304", r.status_code == 304, str(r.status_code))
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)
