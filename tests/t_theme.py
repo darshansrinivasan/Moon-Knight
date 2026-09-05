@@ -204,6 +204,27 @@ check("Rules renders it as chips, not controls",
       'data-state=' not in RULES)
 
 print()
+print("=== the Rules page acts on what a save reports back ===")
+# Two edits were lost when a batch script aborted on an ambiguous anchor, and
+# the page shipped with the old banner: it did not re-render the descriptions
+# after a save, so the prose kept listing a condition the admin had just
+# unticked — the exact contradiction the derived descriptions exist to prevent.
+check("the save reads the resync count", "resync" in RULES)
+check("and reports what moved", "changed grade as a result" in RULES)
+check("and says nothing moved when nothing did",
+      "No stored grade changed as a result" in RULES)
+check("it re-reads the served checks", "fresh.checks" in RULES)
+check("and the served conditions", "fresh.r8_conditions" in RULES)
+check("and the served descriptions", "fresh.descriptions" in RULES)
+check("then re-renders the toggles", RULES.count("renderCheckToggles()") >= 2)
+check("and the descriptions", RULES.count("renderDescriptions()") >= 2)
+check("the stale-banner copy is gone",
+      "the Runs page will show any grade movement it causes" not in RULES)
+# The nav marker has to query the attribute the nav actually renders.
+check("the off-marker targets a real selector", 'data-jump-nav' not in RULES)
+check("using data-section", '[data-section="${key}"]' in RULES)
+
+print()
 print("=== the read-only sweep covers buttons, not just fields ===")
 # It swept input/select/textarea only, so every action button in every section
 # stayed live for a member. The endpoints are admin-gated, so pressing one gave

@@ -653,7 +653,7 @@ function renderCheckToggles() {
 
 // A check that is off should be visible from the nav, not only once you open it.
 function markNavOff(key, off) {
-  const btn = document.querySelector(`#rule-nav [data-jump-nav="${key}"]`);
+  const btn = document.querySelector(`#rule-nav [data-section="${key}"]`);
   if (!btn) return;
   btn.querySelector(".nav-off")?.remove();
   if (off) {
@@ -794,12 +794,34 @@ $("save").addEventListener("click", async () => {
       show("err", esc(d.detail || `HTTP ${r.status}`));
     } else {
       DATA.rules = d.rules; DATA.rules_hash = d.rules_hash; DATA.meta = d.meta;
+      DATA.can_undo = d.can_undo;
       const fresh = await (await fetch("/api/rules")).json();
-      DATA.labels = fresh.labels || DATA.labels;
+      DATA.labels        = fresh.labels || DATA.labels;
+      // Re-read the served state, not the boxes the user just ticked: the
+      // descriptions are derived from the saved document, so leaving them stale
+      // makes the prose contradict the controls right after a save — which is
+      // exactly the confusion this was meant to remove.
+      DATA.checks        = fresh.checks || DATA.checks;
+      DATA.r8_conditions = fresh.r8_conditions || DATA.r8_conditions;
+      DATA.descriptions  = fresh.descriptions || DATA.descriptions;
       fillForm(DATA.rules, DATA.labels);
+      renderCheckToggles();
+      renderDescriptions();
       renderMeta();
-      show("ok", `<b>Accepted and saved.</b> Rules hash is now ${esc(d.rules_hash)} —
-        the next run will record it, and the Runs page will show any grade movement it causes.`);
+      renderUndo();
+      // What the save actually moved, from the resync it already ran. Stored
+      // verdicts are never rewritten — only the overalls derived from them —
+      // which is why this needs no AI call and is reversible.
+      const r = d.resync || {};
+      const detail = (r.changes && Object.keys(r.changes).length)
+        ? ` (${esc(Object.entries(r.changes).map(([k, v]) => `${k} ×${v}`).join(", "))})`
+        : "";
+      const moved = r.overall_updated
+        ? ` <b>${esc(r.overall_updated)}</b> ticket${r.overall_updated === 1 ? "" : "s"}
+            changed grade as a result${detail}.`
+        : " No stored grade changed as a result.";
+      show("ok", `<b>Accepted and saved.</b> Rules hash is now ${esc(d.rules_hash)}.${moved}
+        Stored check verdicts are untouched, so this is reversible.`);
     }
   } catch (e) {
     show("err", esc(e.message));
