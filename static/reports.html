@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Product Report · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .gen-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 22px; margin-bottom: 22px;
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  }
+  .gen-card label { font-size: 12.5px; color: var(--muted); }
+  .gen-card input[type="month"] {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 6px 10px;
+    font-size: 13px; font-family: inherit; color-scheme: dark;
+  }
+  #gen-btn {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+    border-radius: 8px; padding: 7px 18px; font-size: 12.5px;
+    font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  #gen-btn:disabled { opacity: .5; cursor: default; }
+  .gen-hint { font-size: 12px; color: var(--muted); flex-basis: 100%; }
+  .msg-line {
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+    padding: 10px 13px; font-size: 12.5px; margin-bottom: 18px; display: none;
+  }
+  .msg-line.err { border-color: var(--fail); }
+  .msg-line.show { display: block; }
+
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  th {
+    text-align: left; padding: 9px 14px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: 0; }
+  td a { color: var(--accent2); text-decoration: none; font-weight: 600; }
+  td a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 22px; text-align: center; font-size: 13px; }
+  .regen {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; padding: 3px 12px; font-size: 11.5px; cursor: pointer;
+    font-family: inherit;
+  }
+  .regen:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  body.member .regen, body.member #gen-btn { display: none; }
+</style>
+</head>
+<body class="shell" data-page="reports">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Product Report</h1>
+    <span class="muted">Monthly Product Signals — support-desk evidence for the roadmap, stored per month.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+
+      <div class="gen-card">
+        <label for="gen-month">Month</label>
+        <input type="month" id="gen-month">
+        <button id="gen-btn">Generate report</button>
+        <span class="gen-hint">Numbers, trails and clusters are computed from the
+        database; the short scenario paragraphs are AI-written from that evidence
+        (the report still generates without AI if Vertex is unavailable).
+        Regenerating replaces the stored month.</span>
+      </div>
+
+      <div class="msg-line" id="msg"></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>Month</th><th>Tickets</th><th>Case files</th>
+          <th>Generated</th><th>By</th><th></th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+let busy = false;
+
+function monthName(m) {
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(y, mo - 1, 1).toLocaleString("en", { month: "long", year: "numeric" });
+}
+
+async function load() {
+  try {
+    const d = await QC.api("/api/reports");
+    if (!d.reports.length) {
+      $("rows").innerHTML = `<tr><td colspan="6" class="empty">
+        No reports yet — pick a month above and generate the first one.</td></tr>`;
+      return;
+    }
+    $("rows").innerHTML = d.reports.map(r => `<tr>
+      <td><a href="/reports/${esc(r.month)}" target="_blank" rel="noopener">${esc(monthName(r.month))}</a></td>
+      <td>${r.tickets}</td>
+      <td>${r.cases}</td>
+      <td class="muted">${esc(QC.fmtTime(r.generated_at))}</td>
+      <td class="muted">${esc(r.generated_by || "—")}</td>
+      <td style="white-space:nowrap">
+        <a href="/api/reports/${esc(r.month)}/evidence.csv" title="Every ticket behind the report, as CSV">CSV</a>
+        &nbsp;·&nbsp;<a href="/reports/${esc(r.month)}?download=1" title="Standalone HTML file">HTML</a>
+        &nbsp;<button class="regen" data-month="${esc(r.month)}">Regenerate</button>
+      </td>
+    </tr>`).join("");
+  } catch (e) {
+    $("rows").innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function generate(month, btn) {
+  if (busy || !month) return;
+  busy = true;
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Generating…";
+  const msg = $("msg");
+  msg.className = "msg-line";
+  try {
+    const r = await QC.api(`/api/reports/generate?month=${month}`, { method: "POST" });
+    msg.textContent = `${monthName(r.month)} generated — ${r.tickets} tickets, `
+      + `${r.cases} case files`
+      + (r.ai_narrative ? ` · AI narratives ~$${Number(r.cost_usd).toFixed(4)}`
+                        : " · AI narrative unavailable, factual lines used")
+      + ". Opens from the list below.";
+    msg.classList.add("show");
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg-line err show";
+  } finally {
+    busy = false;
+    btn.disabled = false;
+    btn.textContent = prev;
+    load();
+  }
+}
+
+$("gen-btn").addEventListener("click", () => generate($("gen-month").value, $("gen-btn")));
+$("rows").addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".regen");
+  if (btn) generate(btn.dataset.month, btn);
+});
+
+(async () => {
+  await QC.ready;
+  const now = new Date();
+  $("gen-month").value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  if (!(QC.me && QC.me.can_run_qc)) document.body.classList.add("member");
+  await load();
+})();
+</script>
+</body>
+</html>

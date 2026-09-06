@@ -252,6 +252,49 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_sched_trigger     ON scheduled_runs(trigger_date);
         CREATE INDEX IF NOT EXISTS idx_qcruns_date       ON qc_runs(date);
 
+        -- Functionality-tagging review: is the ticket's functionality /
+        -- request-category dropdown what the conversation says it should be?
+        -- Not part of QC grades — this feeds product analysis, so it lives in
+        -- its own table rather than leaking into ai_checks.
+        CREATE TABLE IF NOT EXISTS func_checks (
+            ticket_id            TEXT PRIMARY KEY,
+            fetch_date           TEXT,
+            tagged_functionality TEXT,
+            tagged_category      TEXT,
+            func_ok              INTEGER,   -- 1 correct / 0 wrong or missing
+            cat_ok               INTEGER,
+            note                 TEXT,      -- one line: why it looks wrong
+            suggested_functionality TEXT,
+            suggested_category      TEXT,
+            func_suggestion_new  INTEGER,   -- 1 = not an existing option
+            cat_suggestion_new   INTEGER,
+            fingerprint          TEXT,      -- content hash; unchanged = skip
+            checked_at           TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_func_fetch_date ON func_checks(fetch_date);
+
+        -- One-line AI ticket summaries for the product-report evidence CSV.
+        -- Fingerprinted on content so a regeneration only re-bills changes.
+        CREATE TABLE IF NOT EXISTS ticket_summaries (
+            ticket_id     TEXT PRIMARY KEY,
+            fetch_date    TEXT,
+            summary       TEXT,
+            fingerprint   TEXT,
+            summarized_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_summaries_date ON ticket_summaries(fetch_date);
+
+        -- Monthly Product Signals reports: one stored, regenerable HTML page
+        -- per month, so the product team can revisit past months verbatim.
+        CREATE TABLE IF NOT EXISTS product_reports (
+            month        TEXT PRIMARY KEY,   -- YYYY-MM
+            html         TEXT NOT NULL,
+            generated_at TEXT,
+            generated_by TEXT,
+            tickets      INTEGER,
+            cases        INTEGER
+        );
+
         -- Human sign-off of a ticket's QC. Append-only; latest row wins.
         -- AI grades in ai_checks are never overwritten.
         CREATE TABLE IF NOT EXISTS ticket_reviews (

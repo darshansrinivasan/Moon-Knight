@@ -717,19 +717,28 @@ def _system_prompt(overrides: dict | None = None) -> str:
 
 def _generate_once(client, model_name: str, prompt: str,
                    stats: "RunStats | None",
-                   overrides: dict | None = None) -> str:
-    """One pinned generation call. Raises on an empty or blocked response."""
+                   overrides: dict | None = None,
+                   system: str | None = None,
+                   schema: dict | None = None) -> str:
+    """One pinned generation call. Raises on an empty or blocked response.
+
+    `system` and `schema` default to the QC rubric; another caller (the
+    functionality check) passes its own and inherits everything else — the
+    pinned generation settings, retries and the model cascade — rather than
+    growing a second copy of them.
+    """
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
         config=types.GenerateContentConfig(
-            system_instruction=_system_prompt(overrides),
+            system_instruction=system if system is not None
+                               else _system_prompt(overrides),
             temperature=GEN_TEMPERATURE,
             seed=GEN_SEED,
             candidate_count=1,
             max_output_tokens=MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",
-            response_schema=RESPONSE_SCHEMA,
+            response_schema=schema if schema is not None else RESPONSE_SCHEMA,
         ),
     )
     usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
@@ -750,7 +759,9 @@ def _generate_once(client, model_name: str, prompt: str,
 
 
 def _call_gemini(prompt: str, stats: "RunStats | None" = None,
-                 overrides: dict | None = None) -> str:
+                 overrides: dict | None = None,
+                 system: str | None = None,
+                 schema: dict | None = None) -> str:
     """Call Gemini on Vertex, retrying transient errors and then cascading.
 
     Two distinct failure modes need different handling, and conflating them is
@@ -769,7 +780,7 @@ def _call_gemini(prompt: str, stats: "RunStats | None" = None,
         for attempt in range(1, MAX_ATTEMPTS_PER_MODEL + 1):
             try:
                 return _generate_once(client, model_name, prompt, stats,
-                                      overrides)
+                                      overrides, system=system, schema=schema)
             except Exception as e:
                 last_err = e
                 retryable = _is_retryable_error(e)

@@ -25,11 +25,13 @@ import db
 import drilldown
 import dryrun
 import evidence
+import funcheck
 import gcp
 import leaderboard
 import openqc
 import prompts
 import pylon
+import report
 import qc_runner
 import resync_overall
 import review
@@ -813,6 +815,120 @@ async def run_open_qc(refresh: bool = True,
            if (s or e or st) else " (all time)"),
     )
     return {"refresh": refresh_res, **result}
+
+
+# ── functionality-tagging check ───────────────────────────────────────────────
+
+@app.get("/funcheck", response_class=HTMLResponse)
+async def funcheck_page(user: dict = Depends(auth.require_user)):
+    return _page("funcheck.html")
+
+
+@app.get("/api/funcheck")
+async def get_funcheck(month: str, user: dict = Depends(auth.require_user)):
+    _require_month(month)
+    return await asyncio.to_thread(funcheck.results, month)
+
+
+@app.get("/api/funcheck/preview")
+async def funcheck_preview(month: str, user: dict = Depends(auth.require_user)):
+    _require_month(month)
+    return await asyncio.to_thread(funcheck.preview, month)
+
+
+@app.post("/api/funcheck/run")
+async def run_funcheck(month: str, user: dict = Depends(auth.require_operator)):
+    """Check the month's tagging. Operator-gated: it bills Vertex like QC."""
+    _require_month(month)
+    try:
+        with db.advisory_lock(f"funcheck:{month}", user["email"],
+                              ttl_seconds=3600):
+            result = await asyncio.to_thread(funcheck.run, month, user["email"])
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except qc_runner.VertexNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
+    vault.audit(user["email"], "funcheck.run",
+                f"{month} checked={result.get('checked')}")
+    return result
+
+
+# ── monthly Product Signals reports ───────────────────────────────────────────
+
+@app.get("/reports", response_class=HTMLResponse)
+async def reports_page(user: dict = Depends(auth.require_user)):
+    return _page("reports.html")
+
+
+@app.get("/api/reports")
+async def get_reports(user: dict = Depends(auth.require_user)):
+    return {"reports": await asyncio.to_thread(report.list_reports)}
+
+
+@app.get("/reports/{month}", response_class=HTMLResponse)
+async def view_report(month: str, download: bool = False,
+                      user: dict = Depends(auth.require_user)):
+    """The stored page, verbatim — regeneration is the only way it changes.
+
+    `download=1` serves the same bytes as a file, for sharing the report
+    outside the app; “Save as PDF” is the page's own print button.
+    """
+    _require_month(month)
+    page = await asyncio.to_thread(report.get_html, month)
+    if page is None:
+        raise HTTPException(404, "No report generated for this month yet")
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        headers["Content-Disposition"] = \
+            f'attachment; filename="product-signals-{month}.html"'
+    return HTMLResponse(page, headers=headers)
+
+
+@app.get("/api/reports/{month}/evidence.csv")
+async def report_evidence_csv(month: str,
+                              user: dict = Depends(auth.require_user)):
+    """Every ticket behind the month's report, one row each — the answer to
+    “where is the evidence?”. Tags and resolution fields are Pylon's values
+    verbatim; the AI summary is the stored one-liner from generation."""
+    _require_month(month)
+    rows = await asyncio.to_thread(report.evidence_rows, month)
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    cols = ["ticket_id", "title", "account", "assignee", "status", "date",
+            "functionality", "request_category", "ai_summary",
+            "resolution_details", "resolution_category", "link"]
+    writer.writerow(cols)
+    for r in rows:
+        writer.writerow([r[c] for c in cols])
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="product-signals-evidence-{month}.csv"'})
+
+
+@app.post("/api/reports/generate")
+async def generate_report(month: str,
+                          user: dict = Depends(auth.require_operator)):
+    """Generate or regenerate one month's report. Operator-gated: the
+    narrative layer bills Vertex (the report still generates without it)."""
+    _require_month(month)
+    try:
+        with db.advisory_lock(f"report:{month}", user["email"],
+                              ttl_seconds=1800):
+            result = await asyncio.to_thread(report.generate, month, user["email"])
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
+    vault.audit(user["email"], "report.generate",
+                f"{month} tickets={result['tickets']} cases={result['cases']}"
+                + ("" if result["ai_narrative"] else " (no AI narrative)"))
+    return result
 
 
 # ── manual Slack reports ──────────────────────────────────────────────────────

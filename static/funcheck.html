@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Functionality Check · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin-bottom: 14px;
+  }
+  .month-nav { display: flex; align-items: center; gap: 6px; }
+  .month-nav button {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 8px; padding: 4px 11px;
+    font-size: 14px; cursor: pointer; font-family: inherit;
+  }
+  .month-nav button:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .month-nav h2 { font-size: 14px; font-weight: 600; min-width: 130px; text-align: center; }
+  .controls label.only {
+    display: flex; gap: 6px; align-items: center; font-size: 12px;
+    color: var(--text); cursor: pointer;
+  }
+  .controls select {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 5px 8px;
+    font-size: 12px; font-family: inherit; max-width: 190px;
+  }
+  #export-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 8px; padding: 5px 13px;
+    font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+  }
+  #export-btn:hover { border-color: var(--pass); color: var(--pass); }
+  .controls input[type="checkbox"] { accent-color: var(--color-accent); cursor: pointer; }
+  .run-side { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .run-side .hint { font-size: 11.5px; color: var(--muted); max-width: 420px; }
+  #run-btn {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+    border-radius: 8px; padding: 6px 16px; font-size: 12.5px;
+    font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  #run-btn:disabled { opacity: .5; cursor: default; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 16px; min-width: 96px;
+  }
+  .chip b { display: block; font-size: 20px; font-weight: 700; color: var(--text); }
+  .chip span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+  .chip.c-ok b     { color: var(--pass); }
+  .chip.c-issue b  { color: var(--fail); }
+  .chip.c-new b    { color: var(--review); }
+
+  .result-line {
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); padding: 10px 13px; font-size: 12.5px;
+    color: var(--text); margin-bottom: 14px; display: none;
+  }
+  .result-line.err { border-color: var(--fail); }
+  .result-line.show { display: block; }
+
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 860px; }
+  th {
+    text-align: left; padding: 9px 12px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .6px; color: var(--muted);
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+    white-space: nowrap;
+  }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--text); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td a { color: var(--accent2); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+  .tag { white-space: nowrap; }
+  .tag.bad {
+    color: var(--fail);
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+  }
+  .tag.empty { color: var(--muted); font-style: italic; }
+  .finding { max-width: 420px; }
+  .finding .why { color: var(--text); }
+  .finding .sug { color: var(--muted); margin-top: 3px; }
+  .finding .sug b { color: var(--accent2); font-weight: 600; }
+  .badge-new {
+    font-size: 9.5px; font-weight: 700; letter-spacing: .4px;
+    text-transform: uppercase; padding: 0 6px; border-radius: 8px;
+    border: 1px solid var(--review); color: var(--review); margin-left: 5px;
+    white-space: nowrap;
+  }
+  .okmark { color: var(--pass); font-weight: 600; }
+  .unchecked { color: var(--muted); font-style: italic; }
+  .muted { color: var(--muted); }
+  .empty { color: var(--muted); padding: 22px; text-align: center; font-size: 13px; }
+</style>
+</head>
+<body class="shell" data-page="funcheck">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Functionality Check</h1>
+    <span class="muted">Are tickets tagged with the right functionality and request category? Feeds the product analysis — not QC.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+
+      <div class="controls">
+        <div class="month-nav">
+          <button id="prev-month">&#8249;</button>
+          <h2 id="month-title"></h2>
+          <button id="next-month">&#8250;</button>
+        </div>
+        <select id="f-assignee" title="Filter by assignee"><option value="">All assignees</option></select>
+        <select id="f-state" title="Filter by ticket status"><option value="">All statuses</option></select>
+        <label class="only"><input type="checkbox" id="only-issues"> Only issues</label>
+        <button id="export-btn" title="Download the rows currently shown as CSV">↓ CSV</button>
+        <div class="run-side">
+          <span class="hint" id="preview-hint"></span>
+          <button id="run-btn" hidden>Check this month</button>
+        </div>
+      </div>
+
+      <div class="result-line" id="result-line"></div>
+
+      <div class="chips" id="chips"></div>
+
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>#</th><th>Title</th><th>Assignee</th><th>Status</th>
+          <th>Functionality</th><th>Category</th><th>Finding</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+
+const now = new Date();
+let curYear = now.getFullYear(), curMonth = now.getMonth() + 1;
+let lastRows = [];
+let loadToken = 0;
+let running = false;
+
+const MONTHS = ["January","February","March","April","May","June",
+                "July","August","September","October","November","December"];
+
+function monthStr() { return `${curYear}-${String(curMonth).padStart(2, "0")}`; }
+
+function tagCell(value, ok, checked) {
+  if (!value) return `<span class="tag empty ${checked && ok === false ? "bad" : ""}">(empty)</span>`;
+  const cls = checked && ok === false ? " bad" : "";
+  return `<span class="tag${cls}" title="${esc(value)}">${esc(value)}</span>`;
+}
+
+function findingCell(t) {
+  if (!t.checked) return `<span class="unchecked">not checked yet</span>`;
+  if (t.func_ok && t.cat_ok) return `<span class="okmark">✓ tagged right</span>`;
+  const sug = [];
+  if (!t.func_ok && t.suggested_functionality) {
+    sug.push(`functionality → <b>${esc(t.suggested_functionality)}</b>`
+      + (t.func_suggestion_new ? `<span class="badge-new" title="Not an existing option — a proposal to create one">new option</span>` : ""));
+  }
+  if (!t.cat_ok && t.suggested_category) {
+    sug.push(`category → <b>${esc(t.suggested_category)}</b>`
+      + (t.cat_suggestion_new ? `<span class="badge-new" title="Not an existing option — a proposal to create one">new option</span>` : ""));
+  }
+  return `<div class="finding">
+    <div class="why">${esc(t.note || "Tag does not match the conversation.")}</div>
+    ${sug.length ? `<div class="sug">${sug.join(" · ")}</div>` : ""}
+  </div>`;
+}
+
+function stateLabel(s) {
+  const t = (s || "—").replace(/_/g, " ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function visibleRows() {
+  let rows = lastRows;
+  const who = $("f-assignee").value;
+  const st  = $("f-state").value;
+  if (who) rows = rows.filter(t => t.assignee_name === who);
+  if (st)  rows = rows.filter(t => (t.state || "—") === st);
+  if ($("only-issues").checked) {
+    rows = rows.filter(t => t.checked && !(t.func_ok && t.cat_ok));
+  }
+  return rows;
+}
+
+function populateFilters() {
+  // Options with counts, computed over the month; a selection that vanished
+  // with a month change falls back to All rather than filtering invisibly.
+  const fill = (id, key, label, fmt) => {
+    const sel = $(id);
+    const prev = sel.value;
+    const counts = new Map();
+    lastRows.forEach(t => {
+      const v = t[key] || "—";
+      counts.set(v, (counts.get(v) || 0) + 1);
+    });
+    const opts = [...counts.keys()].sort();
+    sel.innerHTML = `<option value="">${label}</option>` + opts.map(v =>
+      `<option value="${esc(v)}">${esc(fmt(v))} (${counts.get(v)})</option>`).join("");
+    sel.value = opts.includes(prev) ? prev : "";
+  };
+  fill("f-assignee", "assignee_name", "All assignees", v => v);
+  fill("f-state", "state", "All statuses", stateLabel);
+}
+
+function renderRows() {
+  const rows = visibleRows();
+  if (!rows.length) {
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">${
+      lastRows.length ? "Nothing matches the current filters." : "No tickets this month."}</td></tr>`;
+    return;
+  }
+  $("rows").innerHTML = rows.map(t => `<tr>
+    <td>${t.link ? `<a href="${esc(t.link)}" target="_blank" rel="noopener noreferrer">#${esc(t.number ?? "—")}</a>` : `#${esc(t.number ?? "—")}`}</td>
+    <td>${esc(t.title || "(no title)")}</td>
+    <td>${esc(t.assignee_name)}</td>
+    <td class="muted" style="white-space:nowrap">${esc(stateLabel(t.state))}</td>
+    <td>${tagCell(t.tagged_functionality, t.func_ok, t.checked)}</td>
+    <td>${tagCell(t.tagged_category, t.cat_ok, t.checked)}</td>
+    <td>${findingCell(t)}</td>
+  </tr>`).join("");
+}
+
+function exportCSV() {
+  const cols = ["number", "title", "assignee", "status", "fetch_date",
+                "tagged_functionality", "functionality_ok",
+                "suggested_functionality", "functionality_suggestion_is_new",
+                "tagged_category", "category_ok", "suggested_category",
+                "category_suggestion_is_new", "note", "checked"];
+  const cell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [cols.join(",")];
+  visibleRows().forEach(t => lines.push([
+    t.number, t.title || "", t.assignee_name, t.state || "", t.fetch_date,
+    t.tagged_functionality, t.checked ? (t.func_ok ? "yes" : "no") : "",
+    t.suggested_functionality || "", t.func_suggestion_new ? "yes" : "",
+    t.tagged_category, t.checked ? (t.cat_ok ? "yes" : "no") : "",
+    t.suggested_category || "", t.cat_suggestion_new ? "yes" : "",
+    t.note || "", t.checked ? "yes" : "no",
+  ].map(cell).join(",")));
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `functionality-check-${monthStr()}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function renderChips(s) {
+  $("chips").innerHTML = `
+    <div class="chip"><b>${s.in_scope}</b><span>Tickets</span></div>
+    <div class="chip"><b>${s.checked}</b><span>Checked</span></div>
+    <div class="chip c-ok"><b>${s.ok}</b><span>Tagged right</span></div>
+    <div class="chip c-issue"><b>${s.issues}</b><span>Issues</span></div>
+    <div class="chip c-new"><b>${s.new_options}</b><span>New-option proposals</span></div>`;
+}
+
+async function load() {
+  const token = ++loadToken;
+  $("month-title").textContent = `${MONTHS[curMonth - 1]} ${curYear}`;
+  try {
+    const [data, prev] = await Promise.all([
+      QC.api(`/api/funcheck?month=${monthStr()}`),
+      QC.api(`/api/funcheck/preview?month=${monthStr()}`),
+    ]);
+    if (token !== loadToken) return;
+    lastRows = data.tickets;
+    renderChips(data.summary);
+    populateFilters();
+    renderRows();
+    const spent = prev.spend && prev.spend.runs
+      ? ` Spent so far: ~$${Number(prev.spend.total_cost_usd).toFixed(4)} over ${prev.spend.runs} run${prev.spend.runs === 1 ? "" : "s"}.`
+      : "";
+    $("preview-hint").textContent = prev.reason + spent;
+  } catch (e) {
+    if (token !== loadToken) return;
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function runCheck() {
+  if (running) return;
+  running = true;
+  const btn = $("run-btn");
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  const line = $("result-line");
+  line.className = "result-line";
+  try {
+    const r = await QC.api(`/api/funcheck/run?month=${monthStr()}`, { method: "POST" });
+    line.textContent = r.already_done
+      ? "Nothing to check — every ticket this month is already checked and unchanged."
+      : `Checked ${r.checked} ticket${r.checked === 1 ? "" : "s"}`
+        + (r.skipped ? ` · ${r.skipped} skipped` : "")
+        + (r.cost_usd != null ? ` · ~$${Number(r.cost_usd).toFixed(4)}` : "")
+        + ` · status: ${r.status}.`;
+    line.classList.add("show");
+    if (r.status && r.status !== "success") line.classList.add("err");
+  } catch (e) {
+    line.textContent = e.message;
+    line.className = "result-line err show";
+  } finally {
+    running = false;
+    btn.disabled = false;
+    btn.textContent = "Check this month";
+    load();
+  }
+}
+
+$("prev-month").addEventListener("click", () => {
+  if (--curMonth < 1) { curMonth = 12; curYear--; }
+  load();
+});
+$("next-month").addEventListener("click", () => {
+  const next = curMonth === 12 ? `${curYear + 1}-01`
+    : `${curYear}-${String(curMonth + 1).padStart(2, "0")}`;
+  const nowStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  if (next > nowStr) return;
+  if (++curMonth > 12) { curMonth = 1; curYear++; }
+  load();
+});
+$("only-issues").addEventListener("change", renderRows);
+$("f-assignee").addEventListener("change", renderRows);
+$("f-state").addEventListener("change", renderRows);
+$("export-btn").addEventListener("click", exportCSV);
+$("run-btn").addEventListener("click", runCheck);
+
+(async () => {
+  await QC.ready;
+  if (QC.me && QC.me.can_run_qc) $("run-btn").hidden = false;
+  await load();
+})();
+</script>
+</body>
+</html>
