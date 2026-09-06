@@ -56,7 +56,24 @@
     font-family: inherit;
   }
   .regen:hover { border-color: var(--color-accent); color: var(--color-accent); }
-  body.member .regen, body.member #gen-btn { display: none; }
+  body.member .regen, body.member #gen-btn, body.member #cmp-card { display: none; }
+  .cmp-pill {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    font-size: 11.5px; padding: 3px 11px; border-radius: 12px; cursor: pointer;
+    font-family: inherit; white-space: nowrap;
+  }
+  .cmp-pill:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .cmp-pill.on {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+  #cmp-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; padding: 6px 16px; font-size: 12.5px; font-weight: 700;
+    cursor: pointer; font-family: inherit;
+  }
+  #cmp-btn:not(:disabled):hover { border-color: var(--color-accent); color: var(--color-accent); }
+  #cmp-btn:disabled { opacity: .5; cursor: default; }
 </style>
 </head>
 <body class="shell" data-page="reports">
@@ -74,10 +91,20 @@
         <label for="gen-month">Month</label>
         <input type="month" id="gen-month">
         <button id="gen-btn">Generate report</button>
-        <span class="gen-hint">Numbers, trails and clusters are computed from the
-        database; the short scenario paragraphs are AI-written from that evidence
-        (the report still generates without AI if Vertex is unavailable).
-        Regenerating replaces the stored month.</span>
+        <span class="gen-hint">If the month has unfetched days, they are fetched
+        from Pylon first — the Dashboard calendar fills in too (shared database) —
+        so a full backfill can take several minutes. Numbers, trails and clusters
+        are computed from the database; the short scenario paragraphs are
+        AI-written from that evidence. Regenerating replaces the stored month.</span>
+      </div>
+
+      <div class="gen-card" id="cmp-card">
+        <label style="align-self:center">Compare months</label>
+        <div id="cmp-months" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+        <button id="cmp-btn" disabled>Compare selected</button>
+        <span class="gen-hint">Pick two or more months with data — the trend
+        report (functionalities, categories, recurring patterns, AI-written
+        analysis) is generated and stored like a monthly report.</span>
       </div>
 
       <div class="msg-line" id="msg"></div>
@@ -105,46 +132,93 @@ function monthName(m) {
   return new Date(y, mo - 1, 1).toLocaleString("en", { month: "long", year: "numeric" });
 }
 
+// A report key is a month, or a comma list of months (a trend comparison).
+function keyLabel(key) {
+  const parts = key.split(",");
+  if (parts.length === 1) return monthName(key);
+  const short = m => new Date(+m.slice(0, 4), +m.slice(5) - 1, 1)
+    .toLocaleString("en", { month: "short", year: "2-digit" });
+  return "Trends: " + parts.map(short).join(" · ");
+}
+
+const cmpSel = new Set();
+
+function renderCmpMonths(months) {
+  // Coverage rides on every pill: a month with few or no day-fetches will
+  // read as a quiet month, so say how much of it the pipeline actually saw.
+  $("cmp-months").innerHTML = months.map(m => {
+    const cov = m.days_fetched
+      ? `${m.days_fetched}d fetched` : "backfill only";
+    const warn = m.days_fetched ? "" : ' style="border-style:dashed"';
+    return `
+    <button type="button" class="cmp-pill${cmpSel.has(m.month) ? " on" : ""}"${warn}
+            data-m="${esc(m.month)}"
+            title="${m.n} tickets · ${cov}">${esc(monthName(m.month))} (${m.n} · ${cov})</button>`;
+  }).join("");
+  $("cmp-btn").disabled = cmpSel.size < 2;
+}
+
 async function load() {
   try {
     const d = await QC.api("/api/reports");
+    renderCmpMonths(d.available_months || []);
     if (!d.reports.length) {
       $("rows").innerHTML = `<tr><td colspan="6" class="empty">
         No reports yet — pick a month above and generate the first one.</td></tr>`;
       return;
     }
-    $("rows").innerHTML = d.reports.map(r => `<tr>
-      <td><a href="/reports/${esc(r.month)}" target="_blank" rel="noopener">${esc(monthName(r.month))}</a></td>
-      <td>${r.tickets}</td>
-      <td>${r.cases}</td>
+    $("rows").innerHTML = d.reports.map(r => {
+      const isCmp = r.month.includes(",");
+      return `<tr>
+      <td><a href="/reports/${encodeURIComponent(r.month)}" target="_blank" rel="noopener">${esc(keyLabel(r.month))}</a></td>
+      <td>${isCmp ? "—" : r.tickets}</td>
+      <td>${isCmp ? `${r.cases} months` : r.cases}</td>
       <td class="muted">${esc(QC.fmtTime(r.generated_at))}</td>
       <td class="muted">${esc(r.generated_by || "—")}</td>
       <td style="white-space:nowrap">
-        <a href="/api/reports/${esc(r.month)}/evidence.csv" title="Every ticket behind the report, as CSV">CSV</a>
-        &nbsp;·&nbsp;<a href="/reports/${esc(r.month)}?download=1" title="Standalone HTML file">HTML</a>
+        ${isCmp ? "" : `<a href="/api/reports/${esc(r.month)}/evidence.csv" title="Every ticket behind the report, as CSV">CSV</a>&nbsp;·&nbsp;`}<a href="/reports/${encodeURIComponent(r.month)}?download=1" title="Standalone HTML file">HTML</a>
         &nbsp;<button class="regen" data-month="${esc(r.month)}">Regenerate</button>
       </td>
-    </tr>`).join("");
+    </tr>`;
+    }).join("");
   } catch (e) {
     $("rows").innerHTML = `<tr><td colspan="6" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
 
-async function generate(month, btn) {
-  if (busy || !month) return;
+async function generate(key, btn) {
+  if (busy || !key) return;
   busy = true;
   const prev = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Generating…";
   const msg = $("msg");
   msg.className = "msg-line";
+  const isCmp = key.includes(",");
   try {
-    const r = await QC.api(`/api/reports/generate?month=${month}`, { method: "POST" });
-    msg.textContent = `${monthName(r.month)} generated — ${r.tickets} tickets, `
-      + `${r.cases} case files`
-      + (r.ai_narrative ? ` · AI narratives ~$${Number(r.cost_usd).toFixed(4)}`
-                        : " · AI narrative unavailable, factual lines used")
-      + ". Opens from the list below.";
+    const r = isCmp
+      ? await QC.api(`/api/reports/compare?months=${encodeURIComponent(key)}`, { method: "POST" })
+      : await QC.api(`/api/reports/generate?month=${key}`, { method: "POST" });
+    let backfill = "";
+    if (r.fetch) {
+      const fetched = isCmp
+        ? Object.values(r.fetch).reduce((a, f) => a + f.fetched, 0)
+        : r.fetch.fetched;
+      const failed = isCmp
+        ? Object.values(r.fetch).reduce((a, f) => a + f.failed.length, 0)
+        : (r.fetch.failed || []).length;
+      if (fetched) backfill = ` · backfilled ${fetched} day${fetched === 1 ? "" : "s"} from Pylon`;
+      if (failed) backfill += ` · ${failed} day${failed === 1 ? "" : "s"} could not be fetched`;
+    }
+    msg.textContent = (isCmp
+      ? `${keyLabel(r.key)} generated`
+        + (r.ai_narrative ? ` · AI analysis by ${r.model} ~$${Number(r.cost_usd).toFixed(4)}`
+                          : " · AI analysis unavailable, tables only")
+      : `${monthName(r.month)} generated — ${r.tickets} tickets, `
+        + `${r.cases} case files`
+        + (r.ai_narrative ? ` · AI narratives ~$${Number(r.cost_usd).toFixed(4)}`
+                          : " · AI narrative unavailable, factual lines used"))
+      + backfill + ". Opens from the list below.";
     msg.classList.add("show");
   } catch (e) {
     msg.textContent = e.message;
@@ -156,6 +230,17 @@ async function generate(month, btn) {
     load();
   }
 }
+
+$("cmp-months").addEventListener("click", (ev) => {
+  const pill = ev.target.closest(".cmp-pill");
+  if (!pill) return;
+  const m = pill.dataset.m;
+  if (cmpSel.has(m)) cmpSel.delete(m); else cmpSel.add(m);
+  pill.classList.toggle("on", cmpSel.has(m));
+  $("cmp-btn").disabled = cmpSel.size < 2;
+});
+$("cmp-btn").addEventListener("click", () =>
+  generate([...cmpSel].sort().join(","), $("cmp-btn")));
 
 $("gen-btn").addEventListener("click", () => generate($("gen-month").value, $("gen-btn")));
 $("rows").addEventListener("click", (ev) => {

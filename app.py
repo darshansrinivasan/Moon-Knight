@@ -864,26 +864,84 @@ async def reports_page(user: dict = Depends(auth.require_user)):
 
 @app.get("/api/reports")
 async def get_reports(user: dict = Depends(auth.require_user)):
-    return {"reports": await asyncio.to_thread(report.list_reports)}
+    return {"reports": await asyncio.to_thread(report.list_reports),
+            "available_months": await asyncio.to_thread(report.available_months)}
 
 
-@app.get("/reports/{month}", response_class=HTMLResponse)
-async def view_report(month: str, download: bool = False,
+@app.get("/reports/{key}", response_class=HTMLResponse)
+async def view_report(key: str, download: bool = False,
                       user: dict = Depends(auth.require_user)):
     """The stored page, verbatim — regeneration is the only way it changes.
 
+    `key` is a month, or a comma list of months for a trend comparison.
     `download=1` serves the same bytes as a file, for sharing the report
     outside the app; “Save as PDF” is the page's own print button.
     """
-    _require_month(month)
-    page = await asyncio.to_thread(report.get_html, month)
+    try:
+        page = await asyncio.to_thread(report.get_html, key)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if page is None:
         raise HTTPException(404, "No report generated for this month yet")
     headers = {"Cache-Control": "no-store"}
     if download:
+        safe = key.replace(",", "_")
         headers["Content-Disposition"] = \
-            f'attachment; filename="product-signals-{month}.html"'
+            f'attachment; filename="product-signals-{safe}.html"'
     return HTMLResponse(page, headers=headers)
+
+
+@app.post("/api/reports/compare")
+async def generate_comparison(months: str,
+                              user: dict = Depends(auth.require_operator)):
+    """Generate a multi-month trend report — AI-narrated, stored like the
+    monthly ones. `months` is a comma list, at least two."""
+    try:
+        month_list = report.require_key(months).split(",")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    # A comparison over unfetched months narrates gaps as trends — buy the
+    # data for every chosen month first, exactly like the monthly report.
+    fetch_infos = {}
+    try:
+        for m in month_list:
+            fetch_infos[m] = await _ensure_month_fetched(m, user["email"])
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, f"Months have unfetched days and {e}")
+    lock_key = f"report:{','.join(month_list)}"
+    try:
+        with db.advisory_lock(lock_key[:60], user["email"], ttl_seconds=1800):
+            result = await asyncio.to_thread(
+                report.generate_compare, month_list, user["email"])
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
+    backfilled = sum(f["fetched"] for f in fetch_infos.values())
+    vault.audit(user["email"], "report.compare",
+                f"{result['key']}"
+                + (f" backfilled={backfilled}d" if backfilled else "")
+                + ("" if result["ai_narrative"] else " (no AI narrative)"))
+    return {**result, "fetch": fetch_infos}
+
+
+@app.post("/api/reports/{month}/chat")
+async def report_chat(month: str, request: Request,
+                      user: dict = Depends(auth.require_operator)):
+    """One chat turn over the month's evidence. Operator-gated: every question
+    is a Vertex call, and the response carries its own cost."""
+    _require_month(month)
+    body = await request.json()
+    try:
+        return await asyncio.to_thread(
+            report.chat, month, body.get("question"),
+            body.get("history") or [], user["email"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
 
 
 @app.get("/api/reports/{month}/evidence.csv")
@@ -909,12 +967,73 @@ async def report_evidence_csv(month: str,
                  f'attachment; filename="product-signals-evidence-{month}.csv"'})
 
 
+async def _ensure_month_fetched(month: str, user_email: str) -> dict:
+    """Day-fetch every missing day of a month from Pylon, before a report.
+
+    A report over an unfetched month narrates fetch gaps as demand, so
+    generation now buys the data first, however long that takes. Each day goes
+    through the same `fetch_and_store` the Dashboard uses — tickets, fetch_log
+    and R-checks land in the shared database, so the calendar fills in as a
+    side effect rather than by any extra sync.
+
+    Days already in fetch_log are trusted and skipped; future days do not
+    exist yet. A day that fails is recorded and skipped — except when Pylon
+    itself is unconfigured, which aborts, because every day would fail the
+    same way.
+    """
+    first = datetime.strptime(month, "%Y-%m").date()
+    today = date.today()
+    if first > today:
+        return {"days": 0, "missing": 0, "fetched": 0, "failed": []}
+    next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    last = min(next_month - timedelta(days=1), today)
+
+    def have() -> set:
+        with db.get_conn() as conn:
+            return {r["fetch_date"] for r in conn.execute(
+                "SELECT fetch_date FROM fetch_log WHERE fetch_date LIKE ?",
+                (f"{month}-%",))}
+
+    covered = await asyncio.to_thread(have)
+    days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+    missing = [d for d in days if d.isoformat() not in covered]
+
+    fetched = 0
+    failed: list[str] = []
+    for d in missing:
+        try:
+            with db.advisory_lock(f"fetch:{d.isoformat()}", user_email,
+                                  ttl_seconds=1800):
+                await fetch_and_store(d)
+            fetched += 1
+        except pylon.PylonNotConfigured:
+            raise
+        except db.LockBusy as e:
+            failed.append(f"{d.isoformat()}: {e}")
+        except Exception as e:
+            logger.warning("Report backfill fetch failed for %s: %s", d, e)
+            failed.append(f"{d.isoformat()}: {str(e)[:120]}")
+
+    if fetched:
+        vault.audit(user_email, "report.backfill",
+                    f"{month} fetched={fetched} of {len(missing)} missing days")
+    return {"days": len(days), "missing": len(missing),
+            "fetched": fetched, "failed": failed}
+
+
 @app.post("/api/reports/generate")
 async def generate_report(month: str,
                           user: dict = Depends(auth.require_operator)):
-    """Generate or regenerate one month's report. Operator-gated: the
-    narrative layer bills Vertex (the report still generates without it)."""
+    """Generate or regenerate one month's report — fetching the month first.
+
+    Operator-gated: the backfill hits Pylon and R-scores every fetched day,
+    and the narrative layer bills Vertex (the report still generates without
+    the narrative)."""
     _require_month(month)
+    try:
+        fetch_info = await _ensure_month_fetched(month, user["email"])
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, f"Month has unfetched days and {e}")
     try:
         with db.advisory_lock(f"report:{month}", user["email"],
                               ttl_seconds=1800):
@@ -927,8 +1046,10 @@ async def generate_report(month: str,
         raise HTTPException(502, qc_runner.explain_vertex_error(e))
     vault.audit(user["email"], "report.generate",
                 f"{month} tickets={result['tickets']} cases={result['cases']}"
+                + (f" backfilled={fetch_info['fetched']}d"
+                   if fetch_info["fetched"] else "")
                 + ("" if result["ai_narrative"] else " (no AI narrative)"))
-    return result
+    return {**result, "fetch": fetch_info}
 
 
 # ── manual Slack reports ──────────────────────────────────────────────────────

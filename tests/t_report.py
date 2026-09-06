@@ -95,7 +95,7 @@ real = report._call_gemini
 model_calls = {"n": 0}
 
 
-def fake(prompt, stats=None, overrides=None, system=None, schema=None):
+def fake(prompt, stats=None, overrides=None, system=None, schema=None, max_output=None):
     model_calls["n"] += 1
     if stats is not None:
         stats.models["gemini-test"] = stats.models.get("gemini-test", 0) + 1
@@ -103,6 +103,11 @@ def fake(prompt, stats=None, overrides=None, system=None, schema=None):
         n = prompt.count("=== TICKET idx:")
         return json.dumps([{"idx": i, "summary": f"One-line summary {i}."}
                            for i in range(n)])
+    if schema is report.TREND_SCHEMA:
+        return json.dumps([
+            {"section": "summary", "insight": "Volume moved month over month."},
+            {"section": "functionalities", "insight": "Invite/remove rose."},
+        ])
     if schema is report.SUGGEST_SCHEMA:
         return json.dumps([{"title": "Self-serve re-authentication",
                             "suggestion": "An idea entirely from the model.",
@@ -196,6 +201,205 @@ try:
     check("a bad month is rejected", "returned", "ValueError")
 except ValueError:
     check("a bad month is rejected", "ValueError", "ValueError")
+
+print()
+print("=== multi-month comparison: deterministic series + AI narrative ===")
+# August seeds: r9 exists (general_question). Add movement to measure.
+ticket("c1", "alerts_automated_tray_sentry_slack",
+       title="G-Drive re-authentication needed", account="fuze",
+       date="2026-08-10")
+ticket("c2", "general_question", "invite_remove_users",
+       title="Invite a user please", internal=False, account="beckett",
+       date="2026-08-11")
+ticket("c3", "oncall", "salesforce_sfdc", title="SFDC sync broken",
+       account="deepl", date="2026-08-12")
+
+cd = report.compare_data(["2026-09", "2026-08"])
+check("months sorted", cd["months"], ["2026-08", "2026-09"])
+kpi = {k["name"]: k for k in cd["kpis"]}
+check("ticket totals per month", kpi["Tickets in scope"]["values"], [4, 7])
+# Neither test month was day-fetched — that must be said, not footnoted.
+check("all-backfill months warn about comparability",
+      cd["coverage_warning"].startswith("None of these months was day-fetched"),
+      True)
+with db.get_conn() as c:
+    for day in range(1, 11):
+        c.execute("INSERT OR REPLACE INTO fetch_log (fetch_date,ticket_count,"
+                  "fetched_at) VALUES (?,?,?)", (f"2026-08-{day:02d}", 1, T0))
+    c.execute("INSERT OR REPLACE INTO fetch_log (fetch_date,ticket_count,"
+              "fetched_at) VALUES ('2026-09-01',1,?)", (T0,))
+cd = report.compare_data(["2026-09", "2026-08"])
+kpi = {k["name"]: k for k in cd["kpis"]}
+check("day-fetch coverage is the first KPI row",
+      (cd["kpis"][0]["name"], kpi["Days day-fetched"]["values"]),
+      ("Days day-fetched", [10, 1]))
+check("uneven coverage names the sparse month",
+      "2026-09 (1 day fetched)" in cd["coverage_warning"]
+      and "not lower demand" in cd["coverage_warning"], True)
+check("delta is last minus first", kpi["Tickets in scope"]["delta"], 3)
+pat = {p["name"]: p for p in cd["patterns"]}
+check("recurring patterns tracked across months",
+      pat["Credential & re-authentication relays"]["values"], [1, 2])
+funcs = {f["name"]: f for f in cd["functionalities"]}
+check("functionality series carries both months",
+      funcs["invite_remove_users"]["values"], [1, 1])
+check("a functionality present only in the last month is 'appeared'",
+      "feature_flags" in cd["appeared"], True)
+check("one present only earlier is 'gone quiet' when it had volume",
+      "salesforce_sfdc" in cd["vanished"], False)  # only 1 ticket — below the bar
+try:
+    report.compare_data(["2026-09"])
+    check("one month is rejected", "returned", "ValueError")
+except ValueError:
+    check("one month is rejected", "ValueError", "ValueError")
+
+report._call_gemini = fake
+try:
+    res3 = report.generate_compare(["2026-09", "2026-08"], "t@x.com")
+finally:
+    report._call_gemini = real
+check("comparison stored under its key", res3["key"], "2026-08,2026-09")
+cpage = report.get_html("2026-09,2026-08")   # any order resolves the same key
+check("trend page titled and narrated",
+      ("Product Signals Trends" in cpage
+       and "Volume moved month over month." in cpage
+       and "AI-written · gemini-test" in cpage), True)
+check("the coverage warning is printed on the page",
+      "Coverage warning" in cpage and "not lower demand" in cpage, True)
+check("tables carry both month columns",
+      "Aug 2026" in cpage and "Sep 2026" in cpage, True)
+check("comparison listed alongside monthly reports",
+      any(r["month"] == "2026-08,2026-09" for r in report.list_reports()), True)
+
+report._call_gemini = boom
+try:
+    res4 = report.generate_compare(["2026-09", "2026-08"], "t@x.com")
+finally:
+    report._call_gemini = real
+check("without the model, tables still generate",
+      (res4["ai_narrative"], "Functionality trends" in report.get_html(res4["key"])),
+      (False, True))
+
+print()
+print("=== chat: the model cites, the code counts ===")
+
+
+chat_system = {}
+
+
+def fake_chat(prompt, stats=None, overrides=None, system=None, schema=None, max_output=None):
+    if stats is not None:
+        stats.models["gemini-test"] = 1
+    chat_system["text"] = system
+    # One valid number, one duplicate, one hallucinated, one garbage.
+    first = int(system.split("TICKETS:")[1].strip().split("|")[0])
+    return json.dumps({"answer": "There are {count} matching tickets.",
+                       "ticket_numbers": [first, first, 999999, "x"]})
+
+
+report._call_gemini = fake_chat
+try:
+    out = report.chat(M, "how many are about invites?", [], "t@x.com")
+finally:
+    report._call_gemini = real
+
+check("the context speaks the report's language — group column and counts",
+      ("GROUP COUNTS" in chat_system["text"]
+       and "Questions & how-to (FAQ-shaped):" in chat_system["text"]
+       and "|Questions & how-to (FAQ-shaped)|" in chat_system["text"]), True)
+check("count is the VERIFIED match count, not the model's list length",
+      (out["count"], out["answer"]), (1, "There are 1 matching tickets."))
+check("hallucinated and duplicate numbers dropped",
+      [t["number"] for t in out["tickets"]], [out["tickets"][0]["number"]])
+check("cost and model attached to the answer",
+      (out["cost_usd"] >= 0, out["model"]), (True, "gemini-test"))
+check("tokens broken out for the cost line",
+      sorted(out["tokens"]), ["cached", "output", "prompt"])
+with db.get_conn() as c:
+    chat_run = c.execute("SELECT date, config_json FROM qc_runs"
+                         " WHERE date LIKE 'chat:%'").fetchone()
+check("every chat call is filed on the Runs ledger",
+      chat_run["date"], f"chat:{M}")
+check("the question is in the run record",
+      "invites" in chat_run["config_json"], True)
+check("the serialized context is cached in-process",
+      M in report._chat_ctx_cache, True)
+try:
+    report.chat(M, "   ")
+    check("an empty question is rejected", "returned", "ValueError")
+except ValueError:
+    check("an empty question is rejected", "ValueError", "ValueError")
+
+# "Deep classify" questions: the model returns segments; every segment count
+# and the total are computed from verified numbers, never from its prose.
+rows_now = {r["ticket_id"] for r in report.evidence_rows(M)}
+two = sorted(rows_now)[:2]
+
+
+def fake_breakdown(prompt, stats=None, overrides=None, system=None, schema=None, max_output=None):
+    if stats is not None:
+        stats.models["gemini-test"] = 1
+    return json.dumps({
+        "answer": "The {count} tickets split into two segments.",
+        "ticket_numbers": [],
+        "breakdown": [
+            {"label": "Access asks", "ticket_numbers": [two[0], two[0], 999999]},
+            {"label": "Alerts", "ticket_numbers": [two[1]]},
+            {"label": "Hallucinated only", "ticket_numbers": [424242]},
+        ]})
+
+
+report._call_gemini = fake_breakdown
+try:
+    bd = report.chat(M, "deep classify these", [], "t@x.com")
+finally:
+    report._call_gemini = real
+check("segment counts are verified per label",
+      [(s["label"], s["count"]) for s in bd["breakdown"]],
+      [("Access asks", 1), ("Alerts", 1)])
+check("the total is the union of everything cited",
+      (bd["count"], bd["answer"]),
+      (2, "The 2 tickets split into two segments."))
+check("a segment with no real tickets is dropped entirely",
+      any(s["label"] == "Hallucinated only" for s in bd["breakdown"]), False)
+
+print()
+print("=== report generation buys the missing days from Pylon first ===")
+import asyncio as aio
+
+import app as appmod
+
+fetched_days = []
+
+
+async def fake_fetch(target):
+    fetched_days.append(target.isoformat())
+    with db.get_conn() as c:
+        c.execute("INSERT OR REPLACE INTO fetch_log (fetch_date,ticket_count,"
+                  "fetched_at) VALUES (?,0,?)", (target.isoformat(), T0))
+    return appmod.FetchResult(count=0)
+
+
+real_fetch = appmod.fetch_and_store
+appmod.fetch_and_store = fake_fetch
+try:
+    info = aio.run(appmod._ensure_month_fetched("2026-08", "t@x.com"))
+    info2 = aio.run(appmod._ensure_month_fetched("2026-08", "t@x.com"))
+    future = aio.run(appmod._ensure_month_fetched("2030-01", "t@x.com"))
+finally:
+    appmod.fetch_and_store = real_fetch
+
+check("August: 10 days covered, the other 21 fetched",
+      (info["days"], info["missing"], info["fetched"], info["failed"]),
+      (31, 21, 21, []))
+check("fetches hit exactly the missing days, in order",
+      (fetched_days[0], fetched_days[-1], len(fetched_days)),
+      ("2026-08-11", "2026-08-31", 21))
+check("a now-covered month fetches nothing",
+      (info2["missing"], info2["fetched"]), (0, 0))
+check("a future month has no days to fetch", future["days"], 0)
+check("the dashboard sees the backfill — same fetch_log, same database",
+      report._days_fetched("2026-08"), 31)
 
 print()
 if fails:
