@@ -332,8 +332,17 @@ const FILTERS = [
   makeFilter("f-cat", "tagged_category", "categories", v => v),
 ];
 
+// The filter scope, before the "Only issues" view toggle: the chips are
+// computed over this, so they always describe the same slice as the filters —
+// while the toggle only trims what the table shows, never the arithmetic
+// (chips that followed it would zero "Tagged right" and always equal the row
+// count on "Issues").
+function filteredRows() {
+  return lastRows.filter(t => FILTERS.every(f => f.matches(t)));
+}
+
 function visibleRows() {
-  let rows = lastRows.filter(t => FILTERS.every(f => f.matches(t)));
+  let rows = filteredRows();
   if ($("only-issues").checked) {
     rows = rows.filter(t => t.checked && !(t.func_ok && t.cat_ok));
   }
@@ -345,6 +354,7 @@ function populateFilters() {
 }
 
 function renderRows() {
+  renderChips();   // the chips describe the same filter scope as the table
   const rows = visibleRows();
   if (!rows.length) {
     $("rows").innerHTML = `<tr><td colspan="7" class="empty">${
@@ -386,9 +396,21 @@ function exportCSV() {
   URL.revokeObjectURL(a.href);
 }
 
-function renderChips(s) {
+// Chips recompute from the filtered rows, so they always agree with the table
+// above the "Only issues" toggle. When filters are active the first chip says
+// so ("of 180") rather than silently changing meaning.
+function renderChips() {
+  const rows = filteredRows();
+  const s = { checked: 0, ok: 0, issues: 0, new_options: 0 };
+  rows.forEach(t => {
+    if (!t.checked) return;
+    s.checked++;
+    if (t.func_ok && t.cat_ok) s.ok++; else s.issues++;
+    if (t.func_suggestion_new || t.cat_suggestion_new) s.new_options++;
+  });
+  const filtered = rows.length !== lastRows.length;
   $("chips").innerHTML = `
-    <div class="chip"><b>${s.in_scope}</b><span>Tickets</span></div>
+    <div class="chip"><b>${rows.length}</b><span>Tickets${filtered ? ` (of ${lastRows.length})` : ""}</span></div>
     <div class="chip"><b>${s.checked}</b><span>Checked</span></div>
     <div class="chip c-ok"><b>${s.ok}</b><span>Tagged right</span></div>
     <div class="chip c-issue"><b>${s.issues}</b><span>Issues</span></div>
@@ -405,7 +427,6 @@ async function load() {
     ]);
     if (token !== loadToken) return;
     lastRows = data.tickets;
-    renderChips(data.summary);
     populateFilters();
     renderRows();
     const spent = prev.spend && prev.spend.runs
