@@ -67,6 +67,58 @@
   .msf-item input { accent-color: var(--color-accent); cursor: pointer; flex-shrink: 0; }
   .msf-item .n { color: var(--muted); margin-left: auto; font-size: 11px; }
   .msf-empty { font-size: 12px; color: var(--muted); padding: 6px; }
+
+  /* share panel */
+  #share-btn {
+    background: transparent; border: 1px solid var(--color-accent);
+    color: var(--color-accent); border-radius: 8px; padding: 5px 14px;
+    font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  .share-panel {
+    background: var(--surface); border: 1px solid var(--color-accent);
+    border-radius: 12px; padding: 18px 20px; margin-bottom: 18px;
+  }
+  .share-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .share-head b { font-size: 14px; }
+  .share-head #share-close {
+    margin-left: auto; background: none; border: none; color: var(--muted);
+    cursor: pointer; font-size: 14px;
+  }
+  .share-grid {
+    display: grid; grid-template-columns: 130px 1fr; gap: 12px 14px;
+    align-items: start; font-size: 12.5px;
+  }
+  .share-grid > label { color: var(--muted); padding-top: 6px; }
+  .share-grid textarea, .share-grid input[type="text"] {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; font-family: inherit; resize: vertical;
+  }
+  .share-grid textarea:focus, .share-grid input:focus { outline: none; border-color: var(--color-accent); }
+  .share-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .share-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+    border-radius: 999px; padding: 2px 10px; font-size: 12px;
+  }
+  .share-chip button { background: none; border: none; color: inherit; cursor: pointer; padding: 0; font-size: 12px; }
+  .share-fmt { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; padding-top: 5px; }
+  .share-fmt label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .share-fmt input { accent-color: var(--color-accent); }
+  .share-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+  #share-send {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+    border-radius: 8px; padding: 7px 18px; font-size: 12.5px;
+    font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  #share-send:disabled { opacity: .5; cursor: default; }
+  .msf-kind {
+    font-size: 9.5px; font-weight: 700; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 3px; padding: 0 5px;
+  }
   #export-btn {
     background: transparent; border: 1px solid var(--border);
     color: var(--muted); border-radius: 8px; padding: 5px 13px;
@@ -164,9 +216,43 @@
         <div class="msf" id="f-cat"></div>
         <label class="only"><input type="checkbox" id="only-issues"> Only issues</label>
         <button id="export-btn" title="Download the rows currently shown as CSV">↓ CSV</button>
+        <button id="share-btn" hidden title="Send the rows currently shown to Slack, with a custom message and team mentions">Share…</button>
         <div class="run-side">
           <span class="hint" id="preview-hint"></span>
           <button id="run-btn" hidden>Check this month</button>
+        </div>
+      </div>
+
+      <div class="share-panel" id="share-panel" hidden>
+        <div class="share-head">
+          <b>Share to Slack</b>
+          <span class="muted" id="share-scope"></span>
+          <button type="button" id="share-close" title="Close">✕</button>
+        </div>
+        <div class="share-grid">
+          <label>Message</label>
+          <textarea id="share-msg" rows="3" maxlength="1500"></textarea>
+          <label>Tag teams &amp; people</label>
+          <div>
+            <div class="share-chips" id="share-chips"></div>
+            <div class="msf" id="share-pick" style="display:inline-block">
+              <input type="search" class="msf-search" id="share-search"
+                     placeholder="Search groups & people…" style="width:260px;margin:0">
+              <div class="msf-drop" id="share-results" style="min-width:300px"></div>
+            </div>
+          </div>
+          <label>Channel</label>
+          <input type="text" id="share-channel" style="max-width:260px">
+          <label>Data as</label>
+          <div class="share-fmt" id="share-fmt">
+            <label><input type="radio" name="sfmt" value="xlsx" checked> Excel attached (.xlsx)</label>
+            <label id="sheet-opt"><input type="radio" name="sfmt" value="sheet"> Google Sheet link</label>
+            <span class="muted" id="sheet-why"></span>
+          </div>
+        </div>
+        <div class="share-actions">
+          <button id="share-send">Send to Slack</button>
+          <span class="muted" id="share-note"></span>
         </div>
       </div>
 
@@ -480,13 +566,147 @@ $("next-month").addEventListener("click", () => {
   if (++curMonth > 12) { curMonth = 1; curYear++; }
   load();
 });
+// ── share to Slack ────────────────────────────────────────────────────────────
+let shareMeta = null;
+const shareTags = [];   // {type: "group"|"user", id, label}
+
+function renderShareChips() {
+  $("share-chips").innerHTML = shareTags.map((t, i) => `
+    <span class="share-chip">@${esc(t.label)}
+      <button type="button" data-i="${i}" title="Remove">✕</button></span>`).join("")
+    || `<span class="muted" style="font-size:12px">No one tagged yet.</span>`;
+}
+
+async function openShare() {
+  const panel = $("share-panel");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const rows = visibleRows();
+  const issues = rows.filter(t => t.checked && !(t.func_ok && t.cat_ok)).length;
+  $("share-scope").textContent =
+    `sharing the ${rows.length} tickets currently shown (${issues} issue${issues === 1 ? "" : "s"})`;
+  const pretty = `${MONTHS[curMonth - 1]}`;
+  if (!$("share-msg").value.trim()) {
+    $("share-msg").value =
+      `Functionality tagging review for ${pretty} — ${issues} ticket${issues === 1 ? "" : "s"} need retagging, sheet attached.`;
+  }
+  renderShareChips();
+  if (!shareMeta) {
+    $("share-note").textContent = "Checking Slack & Drive capability…";
+    try {
+      shareMeta = await QC.api("/api/funcheck/share/meta");
+    } catch (e) {
+      $("share-note").textContent = e.message;
+      return;
+    }
+  }
+  $("share-channel").placeholder = shareMeta.channel_default || "#channel";
+  const sheetRadio = $("sheet-opt").querySelector("input");
+  sheetRadio.disabled = !shareMeta.sheet.ok;
+  $("sheet-why").textContent = shareMeta.sheet.ok ? "" : `(${shareMeta.sheet.message})`;
+  $("share-note").textContent = shareMeta.slack_ok ? ""
+    : shareMeta.slack_message || "Slack is not ready.";
+  $("share-send").disabled = !shareMeta.slack_ok;
+}
+
+let shareSearchTimer = null;
+function renderShareResults(items) {
+  const box = $("share-results");
+  box.innerHTML = items.length ? items.map(x => `
+    <div class="msf-item" data-type="${esc(x.type)}" data-id="${esc(x.id)}"
+         data-label="${esc(x.label)}">
+      <span class="msf-kind">${x.type === "group" ? "team" : "person"}</span>
+      <span>${esc(x.label)}</span>
+      ${x.sub ? `<span class="n">${esc(x.sub)}</span>` : ""}
+    </div>`).join("")
+    : `<div class="msf-empty">No matches.</div>`;
+  box.classList.add("open");
+}
+
+$("share-search").addEventListener("input", () => {
+  clearTimeout(shareSearchTimer);
+  const q = $("share-search").value.trim().toLowerCase();
+  if (!q) { $("share-results").classList.remove("open"); return; }
+  shareSearchTimer = setTimeout(async () => {
+    const groups = ((shareMeta && shareMeta.groups) || [])
+      .filter(g => g.handle.toLowerCase().includes(q) || g.name.toLowerCase().includes(q))
+      .slice(0, 6)
+      .map(g => ({ type: "group", id: g.id, label: g.handle || g.name, sub: g.name }));
+    let people = [];
+    try {
+      const d = await QC.api(`/api/directory/reviewers?q=${encodeURIComponent(q)}`);
+      people = (d.results || []).slice(0, 6)
+        .map(p => ({ type: "user", id: p.id, label: p.name, sub: p.email || "" }));
+    } catch (e) { /* people search unavailable — groups still work */ }
+    renderShareResults([...groups, ...people]);
+  }, 250);
+});
+
+$("share-results").addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-id]");
+  if (!row) return;
+  if (!shareTags.some(t => t.id === row.dataset.id)) {
+    shareTags.push({ type: row.dataset.type, id: row.dataset.id,
+                     label: row.dataset.label });
+  }
+  $("share-search").value = "";
+  $("share-results").classList.remove("open");
+  renderShareChips();
+});
+document.addEventListener("click", (ev) => {
+  if (!ev.target.closest("#share-pick")) $("share-results").classList.remove("open");
+});
+$("share-chips").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("[data-i]");
+  if (!btn) return;
+  shareTags.splice(+btn.dataset.i, 1);
+  renderShareChips();
+});
+$("share-close").addEventListener("click", () => { $("share-panel").hidden = true; });
+$("share-btn").addEventListener("click", openShare);
+
+$("share-send").addEventListener("click", async () => {
+  const btn = $("share-send");
+  const line = $("result-line");
+  line.className = "result-line";
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  try {
+    const fmt = document.querySelector('input[name="sfmt"]:checked').value;
+    const r = await QC.api("/api/funcheck/share", {
+      method: "POST",
+      body: JSON.stringify({
+        month: monthStr(),
+        numbers: visibleRows().map(t => t.number),
+        message: $("share-msg").value,
+        mentions: shareTags,
+        channel: $("share-channel").value,
+        format: fmt,
+      }),
+    });
+    line.textContent = `Shared ${r.rows} tickets (${r.issues} issues) to ${r.channel}`
+      + (r.sheet_link ? " with a Google Sheet link." : " with the Excel file in the thread.");
+    line.classList.add("show");
+    $("share-panel").hidden = true;
+  } catch (e) {
+    line.textContent = e.message;
+    line.className = "result-line err show";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Send to Slack";
+  }
+});
+
 $("only-issues").addEventListener("change", renderRows);
 $("export-btn").addEventListener("click", exportCSV);
 $("run-btn").addEventListener("click", runCheck);
 
 (async () => {
   await QC.ready;
-  if (QC.me && QC.me.can_run_qc) $("run-btn").hidden = false;
+  if (QC.me && QC.me.can_run_qc) {
+    $("run-btn").hidden = false;
+    $("share-btn").hidden = false;
+  }
   await load();
 })();
 </script>

@@ -310,3 +310,125 @@ def list_models(project: str, location: str) -> list[dict]:
             seen.add(m["id"])
             unique.append(m)
     return unique
+
+
+# ── Drive: sheets for the sharing feature ─────────────────────────────────────
+# All through the drive.file scope, so the app can only ever touch files it
+# created itself. Requests use the connected account's credential; a token
+# granted before the Drive scope was added answers 403, which drive_status
+# turns into "reconnect Google" rather than a mid-send failure.
+
+DRIVE_API = "https://www.googleapis.com/drive/v3"
+DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
+_XLSX_MIME = ("application/vnd.openxmlformats-officedocument"
+              ".spreadsheetml.sheet")
+_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+
+class DriveNotReady(RuntimeError):
+    """Drive is unusable and the message says exactly why."""
+
+
+def _drive_headers() -> dict:
+    creds = oauth_credentials()
+    if creds is None:
+        raise DriveNotReady(
+            "No Google account connected — connect one in Admin → Vertex AI")
+    try:
+        return _auth_headers(creds)
+    except Exception as e:
+        raise DriveNotReady(f"Google credential could not refresh: {e}")
+
+
+def drive_status(folder_id: str | None) -> dict:
+    """Whether a Sheet could be created right now, and why not if not."""
+    try:
+        headers = _drive_headers()
+    except DriveNotReady as e:
+        return {"ok": False, "message": str(e)}
+    if not folder_id:
+        return {"ok": False,
+                "message": "No Drive folder configured — set it in Admin → Slack"}
+    r = httpx.get(f"{DRIVE_API}/files/{folder_id}",
+                  params={"fields": "id,name,mimeType",
+                          "supportsAllDrives": "true"},
+                  headers=headers, timeout=20)
+    if r.status_code == 403:
+        return {"ok": False, "message":
+                "The Google connection lacks Drive access — reconnect the "
+                "account in Admin → Vertex AI to grant it (or the folder is "
+                "not visible to this app)."}
+    if r.status_code == 404:
+        return {"ok": False, "message":
+                "Drive folder not found. With drive.file scope the folder "
+                "must have been created or opened by this app — easiest is a "
+                "folder the connected account owns, shared normally."}
+    if r.status_code != 200:
+        return {"ok": False,
+                "message": f"Drive answered HTTP {r.status_code}: {r.text[:160]}"}
+    body = r.json()
+    if body.get("mimeType") != "application/vnd.google-apps.folder":
+        return {"ok": False,
+                "message": f"'{body.get('name')}' is not a folder"}
+    return {"ok": True, "message": f"Sheets will land in “{body.get('name')}”",
+            "folder_name": body.get("name")}
+
+
+def create_sheet_from_xlsx(name: str, xlsx: bytes,
+                           folder_id: str, visibility: str,
+                           domain: str) -> dict:
+    """Upload an xlsx, converted to a native Google Sheet, and share it.
+
+    `visibility`: 'domain' lets anyone on the login domain view; 'link' lets
+    anyone with the link view (the Slack channel's members, wherever they
+    are). Anything else leaves the sheet private to the connected account.
+    """
+    import json as _json
+
+    headers = _drive_headers()
+    meta = {"name": name, "mimeType": _SHEET_MIME}
+    if folder_id:
+        meta["parents"] = [folder_id]
+
+    boundary = "qcshare314159"
+    body = (
+        f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+        f"{_json.dumps(meta)}\r\n"
+        f"--{boundary}\r\nContent-Type: {_XLSX_MIME}\r\n\r\n"
+    ).encode() + xlsx + f"\r\n--{boundary}--".encode()
+
+    r = httpx.post(
+        DRIVE_UPLOAD,
+        params={"uploadType": "multipart", "supportsAllDrives": "true",
+                "fields": "id,webViewLink"},
+        headers={**headers,
+                 "Content-Type": f"multipart/related; boundary={boundary}"},
+        content=body, timeout=120)
+    if r.status_code == 403:
+        raise DriveNotReady(
+            "Drive refused the upload — reconnect the Google account in "
+            "Admin → Vertex AI to grant Drive access.")
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Drive upload failed: HTTP {r.status_code} "
+                           f"{r.text[:200]}")
+    created = r.json()
+
+    perm = None
+    if visibility == "domain":
+        perm = {"type": "domain", "domain": domain, "role": "reader"}
+    elif visibility == "link":
+        perm = {"type": "anyone", "role": "reader"}
+    if perm:
+        pr = httpx.post(
+            f"{DRIVE_API}/files/{created['id']}/permissions",
+            params={"supportsAllDrives": "true"},
+            headers={**headers, "Content-Type": "application/json"},
+            json=perm, timeout=30)
+        if pr.status_code not in (200, 201):
+            logger.warning("Sheet created but sharing failed (%s): %s",
+                           pr.status_code, pr.text[:200])
+
+    return {"id": created["id"],
+            "link": created.get("webViewLink")
+            or f"https://docs.google.com/spreadsheets/d/{created['id']}",
+            "shared": bool(perm)}

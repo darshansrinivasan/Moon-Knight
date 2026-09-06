@@ -7,3 +7,4 @@ beautifulsoup4
 google-genai
 google-auth
 cryptography
+openpyxl>=3.1

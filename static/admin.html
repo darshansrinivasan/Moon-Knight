@@ -265,6 +265,39 @@
           </div>
 
           <div class="card">
+            <h2>Sharing</h2>
+            <p class="card-sub">
+              Functionality-check shares: a custom message with team mentions,
+              plus the data as an attached Excel file or a Google Sheet.
+            </p>
+            <div class="field">
+              <label for="share_drive_folder_id">Drive folder ID</label>
+              <div class="hint">Where generated Google Sheets land. The app has
+                <b>drive.file</b> scope only, so use a folder the connected
+                Google account owns (the ID is the last part of the folder's URL).</div>
+              <input type="text" id="share_drive_folder_id" placeholder="1AbCdEf…">
+            </div>
+            <div class="field">
+              <label for="share_sheet_visibility">Sheet visibility</label>
+              <div class="hint"><b>Domain</b> — anyone at the company can view.
+                <b>Link</b> — anyone with the link can view (covers external
+                members of the Slack channel).</div>
+              <select id="share_sheet_visibility">
+                <option value="domain">Domain — anyone at the company</option>
+                <option value="link">Link — anyone with the link</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button data-save="share_drive_folder_id,share_sheet_visibility">Save sharing settings</button>
+            </div>
+            <div class="msg" id="msg-share"></div>
+            <div class="field">
+              <label>Capability</label>
+              <div class="hint" id="share-status">Checking…</div>
+            </div>
+          </div>
+
+          <div class="card">
             <h2>Mentions</h2>
             <p class="card-sub">
               Who gets @-tagged in the scheduled report, and how assignee names
@@ -522,6 +555,8 @@ function fillSettings(s, sources = {}) {
   // A select falls back to its first option on "", which would misreport the
   // effective default (leads) as Off — so default it explicitly.
   $("slack_mention_mode").value = s.slack_mention_mode || "leads";
+  $("share_drive_folder_id").value = s.share_drive_folder_id || "";
+  $("share_sheet_visibility").value = s.share_sheet_visibility || "domain";
   fillQuotaSelect([], s.vertex_quota_project || "");
   $("slack_enabled").checked = s.slack_enabled === "1";
 
@@ -761,7 +796,8 @@ function wireSaveButtons() {
         body[k] = v;
       });
       const msgId = keys[0].startsWith("vertex") ? "msg-vertex"
-        : keys[0] === "slack_mention_mode" ? "msg-mentions" : "msg-slack";
+        : keys[0] === "slack_mention_mode" ? "msg-mentions"
+        : keys[0].startsWith("share_") ? "msg-share" : "msg-slack";
       const msg = $(msgId);
       const held = droppedBlankKeys(keys, body);
 
@@ -1111,9 +1147,29 @@ async function load() {
     show($("msg-ident"), e.message, "err");
   }
 
+  loadShareStatus();   // not awaited: two live probes, purely informational
+
   applyReadOnly();
   $("loading").style.display = "none";
   $("content").style.display = "block";
+}
+
+// ── sharing capability probe ──────────────────────────────────────────────────
+async function loadShareStatus() {
+  const host = $("share-status");
+  try {
+    const m = await api("/api/funcheck/share/meta");
+    const lines = [];
+    lines.push(m.slack_ok
+      ? `✓ Slack ready — ${m.groups.length} taggable group${m.groups.length === 1 ? "" : "s"}`
+      : `✕ Slack: ${esc(m.slack_message)}`);
+    lines.push(m.sheet.ok
+      ? `✓ Google Sheets ready — ${esc(m.sheet.message)}`
+      : `✕ Google Sheets: ${esc(m.sheet.message)} (Excel attachment still works)`);
+    host.innerHTML = lines.join("<br>");
+  } catch (e) {
+    host.textContent = e.message;
+  }
 }
 
 // ── Slack mentions & identity overrides ──────────────────────────────────────

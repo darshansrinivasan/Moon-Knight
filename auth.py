@@ -234,6 +234,9 @@ def safe_next(path: str | None) -> str:
 
 
 CLOUD_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+# drive.file, not full drive: the app may only touch files it created itself —
+# enough to make a Sheet, drop it in the configured folder and share it.
+DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
 
 def _authorize_url(request: Request, next_path: str, flow: str,
@@ -273,7 +276,7 @@ def cloud_connect_url(request: Request, next_path: str = "/admin") -> str:
     flow — so only one redirect URI ever needs registering.
     """
     return _authorize_url(
-        request, next_path, "gcp", f"openid email {CLOUD_SCOPE}",
+        request, next_path, "gcp", f"openid email {CLOUD_SCOPE} {DRIVE_SCOPE}",
         # offline + consent are what actually return a refresh token.
         {"access_type": "offline", "prompt": "consent",
          "include_granted_scopes": "true", "hd": ALLOWED_DOMAIN},

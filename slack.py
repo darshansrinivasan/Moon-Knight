@@ -852,6 +852,79 @@ def mention_or_name(name: str, resolved: dict) -> str:
     return f"<@{sid}>" if sid else _esc(name)
 
 
+async def bot_scopes() -> set:
+    """The OAuth scopes the bot token actually holds.
+
+    Slack reports them in the `x-oauth-scopes` response header of any API
+    call, so sharing features can probe for `usergroups:read` and
+    `files:write` and say exactly what is missing instead of failing
+    mid-send.
+    """
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(
+            f"{SLACK_API}/auth.test",
+            headers={"Authorization": f"Bearer {_token()}"})
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Slack auth.test failed: {data.get('error')}")
+    return {s.strip() for s in
+            (r.headers.get("x-oauth-scopes") or "").split(",") if s.strip()}
+
+
+async def list_usergroups() -> list[dict]:
+    """The workspace's user groups (@handles), for tagging teams.
+
+    Mentioning a group only pings when sent as `<!subteam^ID>` — the plain
+    text "@integrations-pod" notifies nobody, which is exactly the failure
+    this listing exists to prevent.
+    """
+    data = await _post("usergroups.list", {})
+    return sorted(
+        ({"id": g["id"], "handle": g.get("handle") or "",
+          "name": g.get("name") or g.get("handle") or g["id"]}
+         for g in data.get("usergroups") or []),
+        key=lambda g: g["handle"])
+
+
+async def post_with_file(channel: str, text: str, filename: str,
+                         content: bytes, file_title: str) -> dict:
+    """Post a message, then attach a file in its thread.
+
+    Two steps on purpose: chat.postMessage accepts a channel NAME and returns
+    the channel ID, which the external-upload completion requires; and the
+    message (with its mentions) stays the notification while the data rides in
+    the thread rather than burying the channel.
+    """
+    parent = await _post("chat.postMessage", {"channel": channel, "text": text})
+    channel_id = parent["channel"]
+
+    if not may_post():
+        raise NotTheDeployment("Refusing to upload to Slack from a non-deployed copy")
+    headers = {"Authorization": f"Bearer {_token()}"}
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            f"{SLACK_API}/files.getUploadURLExternal", headers=headers,
+            data={"filename": filename, "length": str(len(content))})
+        prep = r.json()
+        if not prep.get("ok"):
+            raise RuntimeError(f"Slack upload prep failed: {prep.get('error')}")
+        up = await client.post(prep["upload_url"],
+                               files={"file": (filename, content)})
+        if up.status_code != 200:
+            raise RuntimeError(f"Slack file upload failed: HTTP {up.status_code}")
+        done = await client.post(
+            f"{SLACK_API}/files.completeUploadExternal",
+            headers={**headers, "Content-Type": "application/json; charset=utf-8"},
+            json={"files": [{"id": prep["file_id"], "title": file_title}],
+                  "channel_id": channel_id,
+                  "thread_ts": parent.get("ts")})
+        fin = done.json()
+        if not fin.get("ok"):
+            raise RuntimeError(f"Slack upload completion failed: {fin.get('error')}")
+    return {"ts": parent.get("ts"), "channel": channel_id,
+            "file_id": prep["file_id"]}
+
+
 async def search_reviewers(q: str, domain: str, limit: int = 25) -> list[dict]:
     """Slack people who have an email on the login domain — they can be reviewers."""
     domain = (domain or "").lower().lstrip("@")

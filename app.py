@@ -32,6 +32,7 @@ import openqc
 import prompts
 import pylon
 import report
+import share
 import qc_runner
 import resync_overall
 import review
@@ -834,6 +835,40 @@ async def get_funcheck(month: str, user: dict = Depends(auth.require_user)):
 async def funcheck_preview(month: str, user: dict = Depends(auth.require_user)):
     _require_month(month)
     return await asyncio.to_thread(funcheck.preview, month)
+
+
+@app.get("/api/funcheck/share/meta")
+async def funcheck_share_meta(user: dict = Depends(auth.require_operator)):
+    """What the share panel can do right now: channel default, taggable
+    groups, and honest capability probes (Slack scopes, Drive access)."""
+    return await share.meta()
+
+
+@app.post("/api/funcheck/share")
+async def funcheck_share(request: Request,
+                         user: dict = Depends(auth.require_operator)):
+    """Send the sender's filtered rows + custom message to Slack."""
+    body = await request.json()
+    month = str(body.get("month") or "")
+    _require_month(month)
+    try:
+        result = await share.send(
+            month, body.get("numbers") or [],
+            body.get("message"), body.get("mentions") or [],
+            body.get("channel"), body.get("format") or "xlsx",
+            user["email"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except slack.NotTheDeployment as e:
+        raise HTTPException(403, str(e))
+    except (slack.SlackNotConfigured, gcp.DriveNotReady) as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Share failed: {str(e)[:300]}")
+    vault.audit(user["email"], "funcheck.share",
+                f"{month} rows={result['rows']} to={result['channel']} "
+                f"format={result['format']}")
+    return {"ok": True, **result}
 
 
 @app.post("/api/funcheck/run")

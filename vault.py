@@ -222,6 +222,11 @@ SETTING_SPECS = [
     # their own failed tickets, daily, in a group channel is a deliberate choice
     # and needs to be reversible without a deploy.
     {"key": "slack_mention_mode", "default": "leads"},
+    # Functionality-check sharing: where generated Google Sheets land, and who
+    # can open them ("domain" = anyone at the login domain, "link" = anyone
+    # with the link — the Slack channel's members).
+    {"key": "share_drive_folder_id", "default": ""},
+    {"key": "share_sheet_visibility", "default": "domain"},
     {"key": "dashboard_base_url", "env": "QC_BASE_URL",             "default": ""},
     {"key": "schedule_enabled",   "legacy_env": "SCHEDULE_ENABLED", "default": "0", "bool": True},
     {"key": "schedule_time",      "legacy_env": "SCHEDULE_TIME",    "default": "09:30"},
