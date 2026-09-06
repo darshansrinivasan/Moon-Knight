@@ -197,6 +197,23 @@ finally:
     gcp._drive_headers = real_headers
 
 print()
+print("=== the credential never down-scopes the token on refresh ===")
+# scopes=[cloud-platform] on the Credentials object was sent with every token
+# refresh, and Google narrowed each access token to it — so Drive stayed 403
+# even after the user re-consented with the Drive scope. None = all granted.
+import os
+vault.set_credential("google_cloud_refresh_token", "1//fake", "t")
+os.environ["GOOGLE_OAUTH_CLIENT_ID"] = "cid"
+os.environ["GOOGLE_OAUTH_CLIENT_SECRET"] = "cs"
+try:
+    creds = gcp.oauth_credentials()
+    check("no scope list rides on refreshes",
+          creds is not None and creds.scopes is None, True)
+finally:
+    os.environ.pop("GOOGLE_OAUTH_CLIENT_ID", None)
+    os.environ.pop("GOOGLE_OAUTH_CLIENT_SECRET", None)
+
+print()
 print("=== settings are registered, so Admin can actually save them ===")
 refused = vault.set_settings({"share_drive_folder_id": "1abc",
                               "share_sheet_visibility": "link"}, "t")

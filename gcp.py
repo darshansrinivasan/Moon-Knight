@@ -67,7 +67,12 @@ def oauth_credentials():
         token_uri=TOKEN_URI,
         client_id=client_id,
         client_secret=client_secret,
-        scopes=[CLOUD_SCOPE],
+        # No scopes — deliberately. A scope list here is sent with every token
+        # refresh and Google narrows the access token to it, so listing only
+        # cloud-platform silently stripped Drive access off tokens whose
+        # refresh token had been granted it. None means "everything the user
+        # consented to", which is exactly what the vault's token represents.
+        scopes=None,
     )
 
 
