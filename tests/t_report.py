@@ -77,6 +77,10 @@ check("console ops counted across legacy and new category names",
       d["console_ops"], 2)
 check("demand grouping unifies slug and curated spellings",
       dict(d["demand"])["Console ops done for customers"], 2)
+check("raw categories are reported exactly as tagged",
+      dict(d["categories"])["General FAQ - How to questions"], 1)
+check("legacy slugs stay verbatim beside curated names",
+      dict(d["categories"])["general_question"], 1)
 check("FAQ theme found",
       (d["themes"][0]["name"], d["themes"][0]["n"]),
       ("User & access management", 2))
@@ -237,6 +241,11 @@ check("uneven coverage names the sparse month",
       "2026-09 (1 day fetched)" in cd["coverage_warning"]
       and "not lower demand" in cd["coverage_warning"], True)
 check("delta is last minus first", kpi["Tickets in scope"]["delta"], 3)
+cats = {c["name"]: c for c in cd["categories"]}
+check("comparison trends raw categories, both spellings verbatim",
+      (cats["general_question"]["values"],
+       cats["General FAQ - How to questions"]["values"]),
+      ([2, 1], [0, 1]))
 pat = {p["name"]: p for p in cd["patterns"]}
 check("recurring patterns tracked across months",
       pat["Credential & re-authentication relays"]["values"], [1, 2])
@@ -303,9 +312,10 @@ try:
 finally:
     report._call_gemini = real
 
-check("the context speaks the report's language — group column and counts",
-      ("GROUP COUNTS" in chat_system["text"]
-       and "Questions & how-to (FAQ-shaped):" in chat_system["text"]
+check("the context speaks the report's language — categories AND rollups",
+      ("CATEGORY COUNTS" in chat_system["text"]
+       and "General FAQ - How to questions: 1" in chat_system["text"]
+       and "GROUP ROLLUPS" in chat_system["text"]
        and "|Questions & how-to (FAQ-shaped)|" in chat_system["text"]), True)
 check("count is the VERIFIED match count, not the model's list length",
       (out["count"], out["answer"]), (1, "There are 1 matching tickets."))

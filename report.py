@@ -202,9 +202,16 @@ def build_data(month: str) -> dict:
     tickets = _load(month)
 
     demand = {}
+    categories = {}
     for t in tickets:
         demand[_group_of(t["category"])] = demand.get(_group_of(t["category"]), 0) + 1
+        cat = t["category"] or "(untagged)"
+        categories[cat] = categories.get(cat, 0) + 1
     demand = sorted(demand.items(), key=lambda kv: -kv[1])
+    # The page shows categories exactly as tagged — the PM's vocabulary is the
+    # catalog, not this module's narrative rollup. `demand` (the rollup) stays
+    # for the KPI tile, the clusters and the AI payloads.
+    categories = sorted(categories.items(), key=lambda kv: -kv[1])
 
     faq = [t for t in tickets if (t["category"] or "").lower().startswith("general")]
     themes = []
@@ -263,6 +270,7 @@ def build_data(month: str) -> dict:
         "console_ops": sum(1 for t in tickets
                            if _group_of(t["category"]) == "Console ops done for customers"),
         "demand": demand,
+        "categories": categories,
         "themes": themes,
         "untagged_faq": untagged_faq,
         "faq_total": len(faq),
@@ -487,10 +495,11 @@ CHAT_SCHEMA = {
 
 _CHAT_SYSTEM_PREFIX = """You answer a product manager's questions about one \
 month of support-ticket evidence. The manager is reading the report BUILT FROM \
-this data, so they will use the report's own labels and numbers: the `group` \
-column below is exactly the report's "Where the demand sits" chart (e.g. \
-"Questions & how-to (FAQ-shaped)"), and GROUP COUNTS restates that chart. When \
-the manager quotes a number (say 113), it is almost always one of those counts.
+this data, so they will use the report's own labels and numbers: the report's \
+"Where the demand sits" chart is CATEGORY COUNTS below (raw request-category \
+tags), rolled up into the coarse buckets in GROUP ROLLUPS (the `group` \
+column). When the manager quotes a number (say 113), it is almost always one \
+of those counts.
 
 Rules:
 - Use ONLY the data below. If it cannot answer the question, say so plainly \
@@ -543,13 +552,16 @@ def _chat_context(month: str) -> tuple[str, dict]:
     lines = []
     by_number: dict = {}
     groups: dict = {}
+    cats: dict = {}
     for r in rows:
         by_number[r["ticket_id"]] = r
-        # The report's own grouping rides on every row, so the manager's
-        # on-page vocabulary ("Questions & how-to (FAQ-shaped)") is directly
-        # filterable rather than something the model must reverse-engineer.
+        # Both vocabularies the manager might quote ride along: the raw
+        # category (what the report's demand chart now shows) and the coarse
+        # rollup group, so neither has to be reverse-engineered.
         group = _group_of(r["request_category"])
         groups[group] = groups.get(group, 0) + 1
+        cat = r["request_category"] or "(untagged)"
+        cats[cat] = cats.get(cat, 0) + 1
         lines.append("|".join([
             str(r["ticket_id"]), clean(r["title"], 70),
             clean(r["account"], 30), clean(r["assignee"], 25),
@@ -557,7 +569,10 @@ def _chat_context(month: str) -> tuple[str, dict]:
             clean(r["functionality"], 60), clean(r["request_category"], 50),
             clean(r["resolution_category"], 40), clean(r["ai_summary"], 170),
         ]))
-    header = ("GROUP COUNTS (the report's demand chart):\n"
+    header = ("CATEGORY COUNTS (the report's demand chart, as tagged):\n"
+              + "\n".join(f"  {c}: {n}" for c, n in
+                          sorted(cats.items(), key=lambda kv: -kv[1]))
+              + "\n\nGROUP ROLLUPS (coarse buckets, the `group` column):\n"
               + "\n".join(f"  {g}: {n}" for g, n in
                           sorted(groups.items(), key=lambda kv: -kv[1]))
               + f"\n  TOTAL: {len(rows)}\n\nTICKETS:\n")
@@ -687,9 +702,12 @@ def snapshot(month: str) -> dict:
     """One month's aggregates for trend comparison — no excerpts, no model."""
     tickets = _load(month)
     demand = {}
+    categories = {}
     funcs = {}
     for t in tickets:
         demand[_group_of(t["category"])] = demand.get(_group_of(t["category"]), 0) + 1
+        cat = t["category"] or "(untagged)"
+        categories[cat] = categories.get(cat, 0) + 1
         if t["functionality"]:
             funcs[t["functionality"]] = funcs.get(t["functionality"], 0) + 1
     faq = [t for t in tickets if _low(t, "category").startswith("general")]
@@ -713,6 +731,7 @@ def snapshot(month: str) -> dict:
         "console_ops": sum(1 for t in tickets
                            if _group_of(t["category"]) == "Console ops done for customers"),
         "demand": demand,
+        "categories": categories,
         "functionalities": funcs,
         "themes": themes,
         "patterns": patterns,
@@ -789,6 +808,7 @@ def compare_data(months: list[str]) -> dict:
         "coverage_warning": coverage_warning,
         "kpis": kpis,
         "demand": _series(snaps, "demand"),
+        "categories": _series(snaps, "categories", top=20),
         "functionalities": funcs,
         "themes": _series(snaps, "themes"),
         "patterns": _series(snaps, "patterns"),
@@ -872,8 +892,11 @@ padding-left:12px;margin:16px 0 0}
 h2{font-family:"Spectral",Georgia,serif;font-weight:600;font-size:26px;margin:50px 0 6px}
 .sub{color:var(--muted);font-size:15px;margin:0 0 18px;max-width:70ch}
 .bars{display:grid;gap:9px;margin:18px 0 6px}
-.brow{display:grid;grid-template-columns:240px 1fr;gap:14px;align-items:center}
-.brow .lab{font-size:14px;color:var(--ink2);text-align:right;line-height:1.25}
+.brow{display:grid;grid-template-columns:300px 1fr;gap:14px;align-items:center}
+/* Category slugs are single unbroken words — without anywhere-wrapping they
+   overflow the column and run beneath the bars. */
+.brow .lab{font-size:13.5px;color:var(--ink2);text-align:right;line-height:1.25;
+overflow-wrap:anywhere;min-width:0}
 .brow .track{display:flex;align-items:center;gap:9px;min-height:20px}
 .brow .fill{height:17px;background:var(--bar);border-radius:0 3px 3px 0;min-width:2px}
 .brow .val{font-family:"IBM Plex Mono",monospace;font-size:13px}
@@ -1128,9 +1151,12 @@ def render(data: dict, narratives: dict, generated_by: str,
     <div class="tile"><b>{data["console_ops"]}</b><span>tickets where support performed a console action</span></div>
   </div>
 
-  <h2>Where the demand sits</h2>
-  <p class="sub">Every ticket, grouped by what the request actually was.</p>
-  {_bars_html(data["demand"], data["total"])}
+  <h2>Where the demand sits — by request category</h2>
+  <p class="sub">Every ticket, by its request-category tag exactly as tagged in
+  Pylon — older tickets show legacy slugs until they are retagged.</p>
+  {_bars_html(data["categories"], data["total"])}
+  <p class="chart-note" style="font-size:13px;color:var(--muted)">Rolled up:
+  {" · ".join(f"{_ESC(g)} {n}" for g, n in data["demand"])}.</p>
 
   {cases}
 
@@ -1387,8 +1413,8 @@ def render_compare(cdata: dict, narratives: dict, model: str,
   {_insight_html(narratives, "demand")}
   {_trend_table(cdata["kpis"], months)}
 
-  <h2>Where the demand sits</h2>
-  {_trend_table(cdata["demand"], months)}
+  <h2>Request-category trends</h2>
+  {_trend_table(cdata["categories"], months)}
 
   <h2>Functionality trends</h2>
   {_insight_html(narratives, "functionalities")}
