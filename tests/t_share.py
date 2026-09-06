@@ -150,6 +150,53 @@ except ValueError:
     check("empty selection refused", "ValueError", "ValueError")
 
 print()
+print("=== the app can create its own folder — the drive.file escape hatch ===")
+
+
+class _FakeResp:
+    def __init__(self, status, body):
+        self.status_code = status
+        self._body = body
+        self.text = json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+class _FakeHttpx:
+    def __init__(self, resp):
+        self.resp = resp
+        self.calls = []
+
+    def post(self, url, **kw):
+        self.calls.append((url, kw))
+        return self.resp
+
+    def get(self, url, **kw):
+        return self.resp
+
+
+real_httpx, real_headers = gcp.httpx, gcp._drive_headers
+gcp._drive_headers = lambda: {"Authorization": "Bearer t"}
+gcp.httpx = _FakeHttpx(_FakeResp(200, {"id": "1FOLDER", "name": "QC Product Reports",
+                                       "webViewLink": "https://drive/x"}))
+try:
+    folder = gcp.create_drive_folder("")
+    check("folder created with a sensible default name",
+          (folder["id"], gcp.httpx.calls[0][1]["json"]["name"]),
+          ("1FOLDER", "QC Product Reports"))
+    gcp.httpx = _FakeHttpx(_FakeResp(403, {"error": "insufficient scope"}))
+    try:
+        gcp.create_drive_folder("x")
+        check("403 becomes a reconnect message", "created", "DriveNotReady")
+    except gcp.DriveNotReady as e:
+        check("403 becomes a reconnect message",
+              "reconnect" in str(e).lower(), True)
+finally:
+    gcp.httpx = real_httpx
+    gcp._drive_headers = real_headers
+
+print()
 print("=== settings are registered, so Admin can actually save them ===")
 refused = vault.set_settings({"share_drive_folder_id": "1abc",
                               "share_sheet_visibility": "link"}, "t")

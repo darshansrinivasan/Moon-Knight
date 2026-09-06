@@ -837,6 +837,29 @@ async def funcheck_preview(month: str, user: dict = Depends(auth.require_user)):
     return await asyncio.to_thread(funcheck.preview, month)
 
 
+@app.post("/api/admin/share/folder")
+async def create_share_folder(request: Request,
+                              user: dict = Depends(auth.require_admin)):
+    """Create the Drive reports folder through the app and store its ID.
+
+    Exists because drive.file scope cannot see hand-made folders: the app must
+    be the folder's creator for the folder to exist as far as it can tell.
+    """
+    body = await request.json() if await request.body() else {}
+    try:
+        folder = await asyncio.to_thread(
+            gcp.create_drive_folder, (body or {}).get("name") or "")
+    except gcp.DriveNotReady as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Folder creation failed: {str(e)[:300]}")
+    vault.set_settings({"share_drive_folder_id": folder["id"]}, user["email"])
+    vault.audit(user["email"], "share.folder.create",
+                f"{folder['name']} ({folder['id']})")
+    return {"ok": True, **folder,
+            "status": await asyncio.to_thread(gcp.drive_status, folder["id"])}
+
+
 @app.get("/api/funcheck/share/meta")
 async def funcheck_share_meta(user: dict = Depends(auth.require_operator)):
     """What the share panel can do right now: channel default, taggable

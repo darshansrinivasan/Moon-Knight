@@ -432,3 +432,30 @@ def create_sheet_from_xlsx(name: str, xlsx: bytes,
             "link": created.get("webViewLink")
             or f"https://docs.google.com/spreadsheets/d/{created['id']}",
             "shared": bool(perm)}
+
+
+def create_drive_folder(name: str) -> dict:
+    """Create the reports folder through the app, so drive.file can see it.
+
+    The scope only exposes files this app created or was explicitly handed —
+    a folder made by hand in the Drive UI probes as 404 no matter what. The
+    fix is for the app to be the creator.
+    """
+    headers = _drive_headers()
+    r = httpx.post(
+        f"{DRIVE_API}/files",
+        params={"fields": "id,name,webViewLink", "supportsAllDrives": "true"},
+        headers={**headers, "Content-Type": "application/json"},
+        json={"name": (name or "QC Product Reports").strip()[:120],
+              "mimeType": "application/vnd.google-apps.folder"},
+        timeout=30)
+    if r.status_code == 403:
+        raise DriveNotReady(
+            "Drive refused — reconnect the Google account in Admin → "
+            "Vertex AI to grant Drive access first.")
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Folder creation failed: HTTP {r.status_code} "
+                           f"{r.text[:200]}")
+    body = r.json()
+    return {"id": body["id"], "name": body.get("name"),
+            "link": body.get("webViewLink")}

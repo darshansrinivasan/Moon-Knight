@@ -83,7 +83,7 @@
   body.readonly [data-role], body.readonly [data-toggle],
   body.readonly #coverage-form, body.readonly [data-coverage-del],
   body.readonly #ident-editor, body.readonly .ident-remove,
-  body.readonly .ident-mute { display: none !important; }
+  body.readonly .ident-mute, body.readonly #share-folder-btn { display: none !important; }
 
   /* ── Slack mentions & identity map ── */
   .ident-list {
@@ -273,9 +273,14 @@
             <div class="field">
               <label for="share_drive_folder_id">Drive folder ID</label>
               <div class="hint">Where generated Google Sheets land. The app has
-                <b>drive.file</b> scope only, so use a folder the connected
-                Google account owns (the ID is the last part of the folder's URL).</div>
-              <input type="text" id="share_drive_folder_id" placeholder="1AbCdEf…">
+                <b>drive.file</b> scope only, so it can never see a folder made
+                by hand in Drive — let it create its own with the button, which
+                also fills and saves the ID.</div>
+              <div class="row">
+                <input type="text" id="share_drive_folder_id" placeholder="1AbCdEf…">
+                <button type="button" class="ghost" id="share-folder-btn"
+                        title="Create a 'QC Product Reports' folder via the app and use it">Create folder</button>
+              </div>
             </div>
             <div class="field">
               <label for="share_sheet_visibility">Sheet visibility</label>
@@ -1153,6 +1158,27 @@ async function load() {
   $("loading").style.display = "none";
   $("content").style.display = "block";
 }
+
+// ── sharing: app-created Drive folder ────────────────────────────────────────
+$("share-folder-btn").addEventListener("click", async () => {
+  const btn = $("share-folder-btn");
+  const msg = $("msg-share");
+  btn.disabled = true;
+  btn.textContent = "Creating…";
+  try {
+    const d = await api("/api/admin/share/folder", {
+      method: "POST", body: JSON.stringify({ name: "QC Product Reports" }),
+    });
+    $("share_drive_folder_id").value = d.id;
+    show(msg, `Folder “${d.name}” created and saved as the destination.`, "ok");
+    loadShareStatus();
+  } catch (e) {
+    show(msg, e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Create folder";
+  }
+});
 
 // ── sharing capability probe ──────────────────────────────────────────────────
 async function loadShareStatus() {
