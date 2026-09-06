@@ -24,11 +24,49 @@
     display: flex; gap: 6px; align-items: center; font-size: 12px;
     color: var(--text); cursor: pointer;
   }
-  .controls select {
+  /* searchable multi-select filters */
+  .msf { position: relative; }
+  .msf-btn {
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--text); border-radius: 8px; padding: 5px 8px;
-    font-size: 12px; font-family: inherit; max-width: 190px;
+    color: var(--muted); border-radius: 8px; padding: 5px 24px 5px 10px;
+    font-size: 12px; font-family: inherit; cursor: pointer;
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; position: relative;
   }
+  .msf-btn::after {
+    content: "▾"; position: absolute; right: 8px; top: 50%;
+    transform: translateY(-50%); font-size: 10px; color: var(--muted);
+  }
+  .msf-btn:hover, .msf-btn.open { border-color: var(--color-accent); color: var(--text); }
+  .msf-btn.active { border-color: var(--color-accent); color: var(--color-accent); }
+  .msf-drop {
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 80;
+    min-width: 260px; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.18); display: none; padding: 8px;
+  }
+  .msf-drop.open { display: block; }
+  .msf-search {
+    width: 100%; background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 5px 8px;
+    font-size: 12px; font-family: inherit; margin-bottom: 6px;
+  }
+  .msf-search:focus { outline: none; border-color: var(--color-accent); }
+  .msf-actions { display: flex; gap: 10px; margin-bottom: 4px; }
+  .msf-actions button {
+    background: none; border: none; color: var(--accent2); font-size: 11px;
+    cursor: pointer; padding: 2px 0; font-family: inherit;
+  }
+  .msf-actions button:hover { text-decoration: underline; }
+  .msf-list { max-height: 240px; overflow-y: auto; }
+  .msf-item {
+    display: flex; align-items: center; gap: 8px; padding: 5px 6px;
+    font-size: 12px; color: var(--text); cursor: pointer; border-radius: 5px;
+  }
+  .msf-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .msf-item input { accent-color: var(--color-accent); cursor: pointer; flex-shrink: 0; }
+  .msf-item .n { color: var(--muted); margin-left: auto; font-size: 11px; }
+  .msf-empty { font-size: 12px; color: var(--muted); padding: 6px; }
   #export-btn {
     background: transparent; border: 1px solid var(--border);
     color: var(--muted); border-radius: 8px; padding: 5px 13px;
@@ -120,8 +158,10 @@
           <h2 id="month-title"></h2>
           <button id="next-month">&#8250;</button>
         </div>
-        <select id="f-assignee" title="Filter by assignee"><option value="">All assignees</option></select>
-        <select id="f-state" title="Filter by ticket status"><option value="">All statuses</option></select>
+        <div class="msf" id="f-assignee"></div>
+        <div class="msf" id="f-state"></div>
+        <div class="msf" id="f-func"></div>
+        <div class="msf" id="f-cat"></div>
         <label class="only"><input type="checkbox" id="only-issues"> Only issues</label>
         <button id="export-btn" title="Download the rows currently shown as CSV">↓ CSV</button>
         <div class="run-side">
@@ -191,12 +231,109 @@ function stateLabel(s) {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
+// ── searchable multi-select filter ───────────────────────────────────────────
+// One component for all four filters: type to narrow the option list by
+// substring, tick any number of options, or "All shown" to grab everything
+// the search matches (e.g. every functionality containing "signature").
+function makeFilter(id, key, noun, fmt) {
+  const host = $(id);
+  host.innerHTML = `
+    <button type="button" class="msf-btn">All ${noun}</button>
+    <div class="msf-drop">
+      <input type="search" class="msf-search" placeholder="Search ${noun}…">
+      <div class="msf-actions">
+        <button type="button" data-act="shown">Select all shown</button>
+        <button type="button" data-act="clear">Clear</button>
+      </div>
+      <div class="msf-list"></div>
+    </div>`;
+  const btn = host.querySelector(".msf-btn");
+  const drop = host.querySelector(".msf-drop");
+  const search = host.querySelector(".msf-search");
+  const list = host.querySelector(".msf-list");
+  const selected = new Set();
+  let counts = new Map();
+
+  const shownValues = () => {
+    const q = search.value.trim().toLowerCase();
+    return [...counts.keys()].sort().filter(v =>
+      !q || fmt(v).toLowerCase().includes(q) || v.toLowerCase().includes(q));
+  };
+  const syncBtn = () => {
+    btn.textContent = !selected.size ? `All ${noun}`
+      : selected.size === 1 ? fmt([...selected][0])
+      : `${selected.size} ${noun}`;
+    btn.classList.toggle("active", selected.size > 0);
+  };
+  const renderList = () => {
+    const shown = shownValues();
+    list.innerHTML = shown.length ? shown.map(v => `
+      <label class="msf-item">
+        <input type="checkbox" value="${esc(v)}" ${selected.has(v) ? "checked" : ""}>
+        <span>${esc(fmt(v))}</span><span class="n">${counts.get(v)}</span>
+      </label>`).join("")
+      : `<div class="msf-empty">Nothing matches “${esc(search.value)}”.</div>`;
+  };
+  const changed = () => { syncBtn(); renderList(); renderRows(); };
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+    if (open) { renderList(); search.focus(); }
+  });
+  document.addEventListener("click", (e) => {
+    if (!host.contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+  search.addEventListener("input", renderList);
+  host.querySelector('[data-act="shown"]').addEventListener("click", () => {
+    shownValues().forEach(v => selected.add(v));
+    changed();
+  });
+  host.querySelector('[data-act="clear"]').addEventListener("click", () => {
+    selected.clear();
+    search.value = "";
+    changed();
+  });
+  list.addEventListener("change", (e) => {
+    const cb = e.target.closest("input[type=checkbox]");
+    if (!cb) return;
+    if (cb.checked) selected.add(cb.value); else selected.delete(cb.value);
+    syncBtn();
+    renderRows();
+  });
+
+  return {
+    populate(rows) {
+      counts = new Map();
+      rows.forEach(t => {
+        const v = t[key] || "—";
+        counts.set(v, (counts.get(v) || 0) + 1);
+      });
+      // A selection absent from the new month stays selected only if it still
+      // exists; vanished values are dropped so nothing filters invisibly.
+      [...selected].forEach(v => { if (!counts.has(v)) selected.delete(v); });
+      syncBtn();
+      renderList();
+    },
+    matches(t) {
+      return !selected.size || selected.has(t[key] || "—");
+    },
+  };
+}
+
+const FILTERS = [
+  makeFilter("f-assignee", "assignee_name", "assignees", v => v),
+  makeFilter("f-state", "state", "statuses", stateLabel),
+  makeFilter("f-func", "tagged_functionality", "functionalities", v => v),
+  makeFilter("f-cat", "tagged_category", "categories", v => v),
+];
+
 function visibleRows() {
-  let rows = lastRows;
-  const who = $("f-assignee").value;
-  const st  = $("f-state").value;
-  if (who) rows = rows.filter(t => t.assignee_name === who);
-  if (st)  rows = rows.filter(t => (t.state || "—") === st);
+  let rows = lastRows.filter(t => FILTERS.every(f => f.matches(t)));
   if ($("only-issues").checked) {
     rows = rows.filter(t => t.checked && !(t.func_ok && t.cat_ok));
   }
@@ -204,23 +341,7 @@ function visibleRows() {
 }
 
 function populateFilters() {
-  // Options with counts, computed over the month; a selection that vanished
-  // with a month change falls back to All rather than filtering invisibly.
-  const fill = (id, key, label, fmt) => {
-    const sel = $(id);
-    const prev = sel.value;
-    const counts = new Map();
-    lastRows.forEach(t => {
-      const v = t[key] || "—";
-      counts.set(v, (counts.get(v) || 0) + 1);
-    });
-    const opts = [...counts.keys()].sort();
-    sel.innerHTML = `<option value="">${label}</option>` + opts.map(v =>
-      `<option value="${esc(v)}">${esc(fmt(v))} (${counts.get(v)})</option>`).join("");
-    sel.value = opts.includes(prev) ? prev : "";
-  };
-  fill("f-assignee", "assignee_name", "All assignees", v => v);
-  fill("f-state", "state", "All statuses", stateLabel);
+  FILTERS.forEach(f => f.populate(lastRows));
 }
 
 function renderRows() {
@@ -339,8 +460,6 @@ $("next-month").addEventListener("click", () => {
   load();
 });
 $("only-issues").addEventListener("change", renderRows);
-$("f-assignee").addEventListener("change", renderRows);
-$("f-state").addEventListener("change", renderRows);
 $("export-btn").addEventListener("click", exportCSV);
 $("run-btn").addEventListener("click", runCheck);
 
