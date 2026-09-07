@@ -327,16 +327,18 @@ def _minmax(xs: list[float], fn) -> float | None:
 
 
 def _pctile(xs: list[float], p: float, *, min_n: int = 1) -> float | None:
+    """Pylon analytics P75/P90: pick a real observation, don't interpolate.
+
+    Linear interpolation (Excel PERCENTILE.INC) invented values no ticket
+    had and missed Pylon's agent FRT chart on small per-agent samples.
+    Rank is ceil(p/100 * n), same as percentile_disc / nearest-rank.
+    """
     if len(xs) < min_n:
         return None
-    if len(xs) == 1:
-        return round(xs[0], 3)
     ordered = sorted(xs)
-    k = (len(ordered) - 1) * (p / 100)
-    lo = math.floor(k)
-    hi = min(lo + 1, len(ordered) - 1)
-    frac = k - lo
-    return round(ordered[lo] + (ordered[hi] - ordered[lo]) * frac, 3)
+    n = len(ordered)
+    rank = min(max(math.ceil(p / 100 * n), 1), n)
+    return round(ordered[rank - 1], 3)
 
 
 def _secs_to_mins(v):
@@ -1215,8 +1217,10 @@ def build(week_start: str | None = None, *, start: str | None = None,
         agents["cv_assigned"].append(a_c["assigned"])
         agents["pv_resolved"].append(a_p["resolved"])
         agents["cv_resolved"].append(a_c["resolved"])
-        agents["pv_frt"].append(_secs_to_mins(_mean(a_p["frt"])))
-        agents["cv_frt"].append(_secs_to_mins(_mean(a_c["frt"])))
+        # Agent Performance → First Response is Pylon's P75, not the mean.
+        # Mean sat between two tickets and disagreed with the P75 chart.
+        agents["pv_frt"].append(_secs_to_mins(_pctile(a_p["frt"], 75, min_n=2)))
+        agents["cv_frt"].append(_secs_to_mins(_pctile(a_c["frt"], 75, min_n=2)))
         agents["pv_res"].append(_secs_to_hrs(_mean(a_p["res"])))
         agents["cv_res"].append(_secs_to_hrs(_mean(a_c["res"])))
         agents["pv_csat_avg"].append(pca["avg"] if pca else None)

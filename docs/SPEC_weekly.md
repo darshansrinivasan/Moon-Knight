@@ -214,7 +214,7 @@ Every assignee with a created ticket in either week, sorted by
 names
 pv_assigned, cv_assigned
 pv_resolved, cv_resolved     resolved-in-week, by current assignee
-pv_frt, cv_frt               minutes (mean); null if none
+pv_frt, cv_frt               minutes (P75, nearest-rank); null if < 2 samples
 pv_res, cv_res               hours (mean); null if none
 pv_csat_avg, cv_csat_avg     mean score or null
 ```
@@ -229,6 +229,9 @@ pv_frt_avg   cv_frt_avg   frt_diff          (secs)
 pv_res_avg   cv_res_avg   res_diff          (secs)
 pv_frt_p75   cv_frt_p75                     (secs; null if < 2 samples)
 pv_frt_p90   cv_frt_p90                     (secs; null if < 2 samples)
+                                            nearest-rank / percentile_disc,
+                                            matching Pylon analytics P75/P90
+                                            (not interpolated)
 pv_escalations  cv_escalations
 pv_sla_breaches cv_sla_breaches
 pv_reopened     cv_reopened                 (0)

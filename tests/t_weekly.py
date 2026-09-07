@@ -218,6 +218,15 @@ check("Ann and Bob present", set(names) >= {"Ann", "Bob"}, True)
 ann = next(a for a in D["agentTable"] if a["agent"] == "Ann")
 bob = next(a for a in D["agentTable"] if a["agent"] == "Bob")
 check("Bob assigned 1 this week", bob["cv_assigned"], 1)
+# Ann's current FRTs are 2h and 30h. Linear interpolation invented 23h;
+# Pylon picks the real 30h ticket (nearest-rank).
+check("Ann p75 is the slower real ticket, not an interpolated 23h",
+      ann["cv_frt_p75"], 30 * 3600)
+check("Ann p90 is the slower real ticket",
+      ann["cv_frt_p90"], 30 * 3600)
+ann_i = names.index("Ann")
+check("Agent Performance FRT is P75 minutes",
+      D["agents"]["cv_frt"][ann_i], 30 * 60)
 check("CSAT current total", D["csatCurr"]["total"], 2)
 check("CSAT current avg", D["csatCurr"]["avg"], 4.5)
 check("CSAT previous total", D["csatPrev"]["total"], 1)
@@ -407,6 +416,19 @@ check("Pylon resolution_seconds is the resolution time",
 # stored clock reports no duration rather than the wrong one.
 check("closed without Pylon resolution clock reports no duration",
       by_n[n_c4]["res_secs"], None)
+
+print()
+print("=== Pylon nearest-rank percentiles ===")
+# Shreekaran-shaped week: interpolation sat between 627s and 1009s (722s)
+# while Pylon reported the real 627s / 3915s tickets.
+_shree = [34, 38, 56, 56, 113, 627, 1009, 3915]
+check("p75 is a real observation", weekly._pctile(_shree, 75, min_n=2), 627)
+check("p90 is a real observation", weekly._pctile(_shree, 90, min_n=2), 3915)
+_mohd = [45, 54, 369, 458, 599, 1140, 1854]
+check("p75 does not sit between two tickets",
+      weekly._pctile(_mohd, 75, min_n=2), 1140)
+check("n=1 is the only sample", weekly._pctile([674], 75), 674)
+check("too few samples is null", weekly._pctile([674], 75, min_n=2), None)
 
 print()
 if fails:

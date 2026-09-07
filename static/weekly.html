@@ -575,15 +575,13 @@ function filteredRows() {
 
 function mean(xs) { return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; }
 function pct(c, p) { return p ? Math.round((c - p) / p * 1000) / 10 : null; }
+// Pylon analytics P75/P90: nearest-rank, not interpolated.
 function pctile(xs, p, minN) {
   minN = minN == null ? 1 : minN;
   if (xs.length < minN) return null;
-  if (xs.length === 1) return xs[0];
   const s = [...xs].sort((a, b) => a - b);
-  const k = (s.length - 1) * (p / 100);
-  const lo = Math.floor(k);
-  const hi = Math.min(lo + 1, s.length - 1);
-  return s[lo] + (s[hi] - s[lo]) * (k - lo);
+  const rank = Math.min(Math.max(Math.ceil((p / 100) * s.length), 1), s.length);
+  return s[rank - 1];
 }
 
 function fromRows(rows) {
@@ -703,8 +701,8 @@ function fromRows(rows) {
       cv_assigned: names.map(n => curr.filter(r => r.assignee === n).length),
       pv_resolved: names.map(n => prev.filter(r => r.assignee === n && r.is_resolved).length),
       cv_resolved: names.map(n => curr.filter(r => r.assignee === n && r.is_resolved).length),
-      pv_frt: names.map(n => { const xs = prev.filter(r => r.assignee === n).map(r => r.frt_secs).filter(v => v != null); return xs.length ? mean(xs) / 60 : null; }),
-      cv_frt: names.map(n => { const xs = curr.filter(r => r.assignee === n).map(r => r.frt_secs).filter(v => v != null); return xs.length ? mean(xs) / 60 : null; }),
+      pv_frt: names.map(n => { const v = pctile(prev.filter(r => r.assignee === n).map(r => r.frt_secs).filter(x => x != null), 75, 2); return v != null ? v / 60 : null; }),
+      cv_frt: names.map(n => { const v = pctile(curr.filter(r => r.assignee === n).map(r => r.frt_secs).filter(x => x != null), 75, 2); return v != null ? v / 60 : null; }),
       pv_res: names.map(n => { const xs = prev.filter(r => r.assignee === n && r.is_resolved).map(r => r.res_secs).filter(v => v != null); return xs.length ? mean(xs) / 3600 : null; }),
       cv_res: names.map(n => { const xs = curr.filter(r => r.assignee === n && r.is_resolved).map(r => r.res_secs).filter(v => v != null); return xs.length ? mean(xs) / 3600 : null; }),
     },
@@ -941,9 +939,13 @@ function initCharts() {
     { label: cl, data: agt.cv_resolved, backgroundColor: p.pass, borderRadius: 4 },
   ] }, options: base });
   dC("cAgFRT");
+  const frtMin = v => v != null ? Math.round(v / 60 * 10) / 10 : null;
+  const tbl = D.agentTable || [];
   CH.cAgFRT = new Chart($("cAgFRT"), { type: "bar", data: { labels: agt.names, datasets: [
-    { label: "FRT " + pl + " (min)", data: agt.pv_frt, backgroundColor: p.muted, borderRadius: 4 },
-    { label: "FRT " + cl + " (min)", data: agt.cv_frt, backgroundColor: p.pass, borderRadius: 4 },
+    { label: "P75 FRT " + pl + " (min)", data: tbl.map(a => frtMin(a.pv_frt_p75)), backgroundColor: p.accent, borderRadius: 4 },
+    { label: "P90 FRT " + pl + " (min)", data: tbl.map(a => frtMin(a.pv_frt_p90)), backgroundColor: p.fail, borderRadius: 4 },
+    { label: "P75 FRT " + cl + " (min)", data: tbl.map(a => frtMin(a.cv_frt_p75)), backgroundColor: p.accent2, borderRadius: 4 },
+    { label: "P90 FRT " + cl + " (min)", data: tbl.map(a => frtMin(a.cv_frt_p90)), backgroundColor: p.review, borderRadius: 4 },
   ] }, options: base });
   dC("cAgRT");
   CH.cAgRT = new Chart($("cAgRT"), { type: "bar", data: { labels: agt.names, datasets: [
