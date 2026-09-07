@@ -27,6 +27,7 @@ RULE_LABELS = {
     "r4": "Response >24h",
     "r5": "Status/owner mismatch",
     "r7": "Rootly/Jira missing",
+    "r11": "Silent after promising update",
     "r8": "Oncall incomplete",
 }
 
@@ -199,6 +200,16 @@ def _aggregate(tickets: list[dict]) -> dict:
     # Worst first, so the thread reads in order of who needs attention most.
     groups = sorted(by_assignee.items(), key=lambda kv: (-len(kv[1]), kv[0].lower()))
 
+    # R10 is advisory — kept out of RULE_LABELS so it never mixes into the
+    # "rule failures" line (those are grade failures) — but the habit gets its
+    # own callout, with names: that visibility is the whole reason it exists.
+    sa_misses: dict = {}
+    if qc_rules.check_enabled("r10"):
+        for t in tickets:
+            if t.get("r10") == "Fail":
+                name = t.get("assignee_name") or "Unassigned"
+                sa_misses[name] = sa_misses.get(name, 0) + 1
+
     scored = total - pending
     return {
         "total":      total,
@@ -208,6 +219,7 @@ def _aggregate(tickets: list[dict]) -> dict:
         "pending":    pending,
         "pass_rate":  round(counts["Pass"] / scored * 100) if scored else None,
         "rule_fails": sorted(rule_fails.items(), key=lambda kv: -kv[1]),
+        "spotassist_misses": sorted(sa_misses.items(), key=lambda kv: -kv[1]),
         "groups":     groups,
         "attention":  len(needs_attention),
     }
@@ -325,6 +337,15 @@ def _summary_blocks(s: dict, base_url: str) -> list:
     if s["rule_fails"]:
         top = ", ".join(f"{RULE_LABELS[k]} ({n})" for k, n in s["rule_fails"][:3])
         lines.append(f"\u2022 Most common rule failures: {top}")
+    if s.get("spotassist_misses"):
+        n_missed = sum(n for _, n in s["spotassist_misses"])
+        top = ", ".join(f"{_esc(name)} ({n})"
+                        for name, n in s["spotassist_misses"][:3])
+        lines.append(
+            f"\u2022 \U0001f3ab {n_missed} Slack "
+            f"ticket{'s' if n_missed != 1 else ''} answered by hand without "
+            f"SpotAssist \u2014 add the ticket emoji before replying. "
+            f"Most: {top}")
     if s["groups"]:
         worst, tickets = s["groups"][0]
         plural = "s" if len(tickets) != 1 else ""

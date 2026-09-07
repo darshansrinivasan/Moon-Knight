@@ -373,6 +373,29 @@ check("the day report's alarm wording is untouched",
       "rotating_light" in day_analysis["text"]["text"], True)
 
 print()
+print("=== R10 advisory: named in the report, never mixed into grade failures ===")
+agg = slack._aggregate([
+    {"overall_result": "Pass", "assignee_name": "Ann", "r10": "Fail"},
+    {"overall_result": "Pass", "assignee_name": "Ann", "r10": "Fail"},
+    {"overall_result": "Pass", "assignee_name": "Bob", "r10": "Pass"},
+])
+check("misses counted per person", agg["spotassist_misses"], [("Ann", 2)])
+check("advisory fails stay out of rule_fails",
+      any(k == "r10" for k, _ in agg["rule_fails"]), False)
+check("a Pass-overall ticket with an r10 miss needs no attention thread",
+      agg["attention"], 0)
+sa_blocks = slack._summary_blocks(
+    {"date": "2026-09-01", "total": 3, "pass": 3, "fail": 0, "review": 0,
+     "pending": 0, "pass_rate": 100, "rule_fails": [],
+     "spotassist_misses": [("Ann", 2)], "groups": [], "attention": 0},
+    "http://x")
+sa_analysis = next(b for b in sa_blocks
+                   if b.get("text", {}).get("text", "").startswith("*Analysis*"))
+check("the callout names the habit and the person",
+      "without SpotAssist" in sa_analysis["text"]["text"]
+      and "Ann (2)" in sa_analysis["text"]["text"], True)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

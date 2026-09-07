@@ -518,6 +518,56 @@ def _r8(ctx: _Context, stored: str) -> tuple[str | None, str]:
 # checks is one readable line and mirrors how `scorer` is organised. The keys are
 # the deterministic checks the leaderboard counts (leaderboard.RULE_KEYS); R6 and
 # R9 are retired and always N/A, so there is nothing to explain.
+def _r10(ctx: _Context, stored: str) -> tuple[str | None, str]:
+    """Advisory SpotAssist trigger — recomputed by the one definition in scorer."""
+    source = (ctx.ticket.get("source") or "").strip().lower()
+    bot = qc_rules.spotassist_author()
+    verdict = scorer.r10({"source": source}, ctx.messages)
+    if verdict == "Pass":
+        return "Pass", f"{bot} engaged in the thread — the ticket emoji was added"
+    if verdict == "Fail":
+        return "Fail", (
+            f"a rep replied by hand and {bot} never engaged — the ticket emoji "
+            f"was likely never added to the Slack thread (advisory: does not "
+            f"affect the overall grade)")
+    if source not in qc_rules.spotassist_sources():
+        return "N/A", f"source '{source or '—'}' auto-engages {bot}; nothing to trigger"
+    return "N/A", "no rep reply yet, so there is nobody to hold to the emoji habit"
+
+
+def _r11(ctx: _Context, stored: str) -> tuple[str | None, str]:
+    """Follow-through — recomputed by the one definition in scorer, so the
+    panel can also say how long the silence has actually been."""
+    from datetime import datetime, timezone
+    state = (ctx.ticket.get("state") or "").strip().lower()
+    if state not in qc_rules.r11_states():
+        return "N/A", (f"state {_quote(state or '—')} does not owe periodic "
+                       f"updates, so the silence clock does not run")
+    verdict = scorer.r11({"state": state}, ctx.messages)
+    last = None
+    for m in ctx.messages:
+        if m.get("is_private"):
+            continue
+        ts = scorer._parse_ts(m.get("timestamp"))
+        if ts and (last is None or ts > last[0]):
+            last = (ts, m)
+    if last is None:
+        return "N/A", "no public message yet — response time is R4's job"
+    ts, m = last
+    if scorer._msg_is_customer(m):
+        return "N/A", "the customer has the last word — that is R4's clock"
+    hours = scorer._weekday_hours(ts, datetime.now(timezone.utc),
+                                  scorer._schedule_tz())
+    limit = qc_rules.r11_update_hours()
+    who = scorer._msg_author_name(m) or "support"
+    if verdict == "Fail":
+        return "Fail", (f"{who}'s message is the last word and the customer "
+                        f"has heard nothing for {hours:.0f} working hours "
+                        f"(weekends excluded) against a {limit:g}h limit")
+    return "Pass", (f"{who} spoke last, {hours:.0f} working hours ago — "
+                    f"inside the {limit:g}h update window")
+
+
 _HANDLERS = {
     "r1": _r1,
     "r2": _r2,
@@ -526,6 +576,8 @@ _HANDLERS = {
     "r5": _r5,
     "r7": _r7,
     "r8": _r8,
+    "r10": _r10,
+    "r11": _r11,
 }
 
 CHECK_KEYS = tuple(_HANDLERS)

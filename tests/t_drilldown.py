@@ -103,7 +103,7 @@ check("r6 is not drillable (never computed)", "r6" in dd.ALLOWED_CHECKS, False)
 check("allowlist is the leaderboard's checks plus A1–A5",
       dd.ALLOWED_CHECKS,
       ("a1", "a2", "a3", "a4", "a5",
-       "r1", "r2", "r3", "r4", "r5", "r7", "r8"))
+       "r1", "r10", "r11", "r2", "r3", "r4", "r5", "r7", "r8"))
 print("   (a silent fallback here would answer a typo with the whole range)")
 
 print()
@@ -324,7 +324,7 @@ check("no value drifted outside the known outcomes",
       any(c["unexpected"] for c in b["rules"] + b["ai"]), False)
 check("every check the leaderboard counts is present, in order",
       [c["key"] for c in b["rules"] + b["ai"]],
-      ["r1", "r2", "r3", "r4", "r5", "r7", "r8",
+      ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11",
        "a1", "a2", "a3", "a4", "a5"])
 check("result keys", sorted(b), ["ai", "assignee", "range", "rules", "summary"])
 check("check keys", sorted(by_key["r3"]),

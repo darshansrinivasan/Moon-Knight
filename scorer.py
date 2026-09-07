@@ -80,7 +80,13 @@ FIELD_USED_BY = {
 # does nothing — see t_rulecfg for the assertion that keeps this in step with
 # what `score_all` actually produces.
 DEAD_CHECKS = ("r6", "r9")
-TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8")
+TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")
+
+# Advisory checks are visible everywhere a check is visible — matrix, evidence,
+# notes, analytics, leaderboard tallies — but never flip the ticket's overall
+# grade. r10 measures a habit the team is still building (triggering SpotAssist
+# on Slack tickets); failing a ticket outright for it was explicitly declined.
+ADVISORY_CHECKS = ("r10",)
 
 # R8's conditions, each independently required or not. The field this reads,
 # `does_rootly_exist`, is still defined in Pylon but has stopped being filled;
@@ -890,6 +896,128 @@ def r9(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     return "N/A"
 
 
+def _weekday_hours(start: datetime, end: datetime, tz) -> float:
+    """Elapsed hours between two instants, skipping Saturdays and Sundays.
+
+    Weekends are calendar days in `tz` (the workspace's schedule timezone), so
+    "went silent Friday evening" does not fail Monday morning: Sat+Sun simply
+    do not count. Walks day by day — spans here are days to weeks, never years.
+    """
+    if end <= start:
+        return 0.0
+    total = timedelta(0)
+    cur = start.astimezone(tz)
+    end_local = end.astimezone(tz)
+    while cur < end_local:
+        day_end = (cur + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        seg_end = min(day_end, end_local)
+        if cur.weekday() < 5:              # Mon..Fri
+            total += seg_end - cur
+        cur = seg_end
+    return total.total_seconds() / 3600
+
+
+def _schedule_tz():
+    """The workspace timezone (Admin → schedule_tz); UTC when unset/invalid."""
+    from zoneinfo import ZoneInfo
+    import vault
+    try:
+        return ZoneInfo(vault.get_setting("schedule_tz") or "Asia/Kolkata")
+    except Exception:
+        return timezone.utc
+
+
+def r11(issue: dict, messages: list[dict],
+        now: datetime | None = None) -> str:
+    """Follow-through: support spoke last and then went silent on the customer.
+
+    The mirror image of r4. r4's clock runs while the CUSTOMER's message is the
+    last word; the moment support replies, r4 passes forever — which makes
+    "I'm checking, will update you" followed by days of silence invisible
+    (ticket #75945 sat 4 days exactly this way). Here the clock runs while
+    SUPPORT's public message is the last word, in a state where support still
+    owns progress (rules.r11_states). Internal notes never count as updates —
+    the customer cannot see them.
+
+    Weekend-aware: elapsed time skips Sat/Sun in the workspace timezone, so the
+    threshold (rules.r11_update_hours, default 24) means working hours of
+    silence. `now` is injectable for the rules dry-run, which re-judges the
+    ticket as of its original scoring moment rather than today.
+    """
+    state = (issue.get("state") or "").strip().lower()
+    if state not in qc_rules.r11_states():
+        return "N/A"
+    last = None
+    for m in messages:
+        if m.get("is_private"):
+            continue
+        ts = _parse_ts(m.get("timestamp"))
+        if ts is None:
+            continue
+        if last is None or ts > last[0]:
+            last = (ts, m)
+    if last is None:
+        return "N/A"                      # nothing public yet — r4's territory
+    ts, m = last
+    if _msg_is_customer(m):
+        return "N/A"                      # customer spoke last — r4's clock
+    now = now or datetime.now(timezone.utc)
+    silent = _weekday_hours(ts, now, _schedule_tz())
+    return "Fail" if silent > qc_rules.r11_update_hours() else "Pass"
+
+
+def _msg_author_name(m: dict) -> str:
+    """Author name from either message shape.
+
+    r10 runs at fetch time on Pylon API messages (author.name) and again from
+    resync_overall on stored rows (author_name column) — one accessor, or the
+    two paths drift.
+    """
+    return str(m.get("author_name")
+               or (m.get("author") or {}).get("name") or "").strip()
+
+
+def _msg_is_customer(m: dict) -> bool:
+    if "is_customer" in m:
+        return bool(m["is_customer"])
+    return _is_customer_msg(m)
+
+
+def r10(issue: dict, messages: list[dict]) -> str:
+    """ADVISORY. Slack tickets: was SpotAssist given the chance to answer?
+
+    SpotAssist auto-engages on email and in-app chat, but on Slack it fires
+    only when someone reacts with the ticket emoji — kept manual on purpose,
+    because auto-engaging would reply to Slack threads that are not really
+    tickets. The habit being measured: when the customer does not add the
+    emoji, the rep should, instead of hand-writing the whole answer.
+
+    The signal is SpotAssist's own message in the thread (the emoji reliably
+    triggers it), so no Slack API access is needed. Pass — SpotAssist engaged,
+    whoever added the emoji. Fail — a rep posted a public reply and SpotAssist
+    never appeared: the emoji was skipped and the answer written by hand.
+    N/A — not a Slack ticket, no customer message (internal threads), or no
+    rep reply yet (responsiveness is R4's job).
+
+    Advisory: listed in ADVISORY_CHECKS, so `_compute_overall` never lets it
+    flip a ticket's grade — it exists to be seen, not to punish.
+    """
+    if (issue.get("source") or "").strip().lower() not in qc_rules.spotassist_sources():
+        return "N/A"
+    bot = qc_rules.spotassist_author().lower()
+    if any(_msg_author_name(m).lower() == bot for m in messages):
+        return "Pass"
+    if not any(_msg_is_customer(m) for m in messages):
+        return "N/A"
+    rep_replied = any(
+        not _msg_is_customer(m)
+        and not m.get("is_private")
+        and _msg_author_name(m).lower() != bot
+        for m in messages)
+    return "Fail" if rep_replied else "N/A"
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def score_all(
@@ -908,4 +1036,6 @@ def score_all(
         "r7": r7(issue, messages, external_issues),
         "r8": r8(issue, messages, external_issues),
         "r9": r9(issue, messages, external_issues),
+        "r10": r10(issue, messages),
+        "r11": r11(issue, messages),
     }

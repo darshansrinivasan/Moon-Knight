@@ -80,6 +80,20 @@ def defaults() -> dict:
         "status_policy": {k: dict(v)
                           for k, v in scorer.DEFAULT_STATUS_POLICY.items()},
 
+        # R10 (advisory): the AI agent's author name on Pylon messages, and
+        # the ticket sources where it engages only on the ticket emoji.
+        # _load copies only keys present here, so these MUST be listed or a
+        # saved override would be silently dropped.
+        "spotassist_author":  "SpotAssist",
+        "spotassist_sources": ["slack"],
+
+        # R11 follow-through: how many WORKING hours (Sat/Sun skipped, in the
+        # schedule timezone) support may stay publicly silent in the states
+        # below before the ticket fails. The states are the ones where support
+        # owns progress; customer-owned and handoff states have their own rules.
+        "r11_update_hours": 24,
+        "r11_states": ["investigating", "on_hold", "new", "waiting_on_you"],
+
         # Which Pylon custom field each check reads. Slugs were literals in
         # five files, so a field Pylon renames or retires could only be
         # followed with a deploy — and the check meanwhile fails every ticket,
@@ -314,6 +328,49 @@ def check_enabled(key: str) -> bool:
     return str(key).strip().lower() not in disabled_checks()
 
 
+def r11_update_hours() -> float:
+    try:
+        return float(current().get("r11_update_hours", 24))
+    except (TypeError, ValueError):
+        return 24.0
+
+
+def r11_states() -> set:
+    """Statuses where support owes the customer periodic progress updates.
+
+    r11's clock only runs here. Falls back to the shipped seed when the stored
+    list is empty — an empty set would silently switch the check off while its
+    toggle still says on, which is the R8-empty-conditions trap again.
+    """
+    raw = current().get("r11_states")
+    vals = ({str(s).strip().lower() for s in raw if str(s).strip()}
+            if isinstance(raw, list) else set())
+    return vals or {"investigating", "on_hold", "new", "waiting_on_you"}
+
+
+def spotassist_author() -> str:
+    """The AI agent's author name as it appears on Pylon messages.
+
+    r10's whole signal is "a message by this author exists" — if the bot is
+    ever renamed, this is the one place that has to follow, and it follows
+    without a deploy.
+    """
+    return str(current().get("spotassist_author") or "").strip() or "SpotAssist"
+
+
+def spotassist_sources() -> set:
+    """Ticket sources where SpotAssist needs a manual trigger (lowercased).
+
+    Email and chat auto-engage the agent, so r10 has nothing to check there;
+    Slack is the shipped default. Extendable (e.g. microsoft_teams) the day
+    another source gets the same on-demand behaviour.
+    """
+    raw = current().get("spotassist_sources")
+    vals = ({str(s).strip().lower() for s in raw if str(s).strip()}
+            if isinstance(raw, list) else set())
+    return vals or {"slack"}
+
+
 def field(name: str) -> str:
     """The Pylon slug this check should read for `name`.
 
@@ -495,6 +552,35 @@ def validate(candidate: dict) -> list:
             for t in (tags or []):
                 if not str(t).startswith("@"):
                     errors.append(f"r5_group_states: tag '{t}' must start with @")
+
+    if "r11_update_hours" in candidate:
+        try:
+            hours = float(candidate.get("r11_update_hours", 24))
+            if not (1 <= hours <= 336):
+                errors.append("r11_update_hours must be between 1 and 336 hours")
+        except (TypeError, ValueError):
+            errors.append("r11_update_hours must be a number")
+    if "r11_states" in candidate:
+        raw = candidate["r11_states"]
+        if not isinstance(raw, list):
+            errors.append("r11_states must be a list of status names")
+        else:
+            for s in raw:
+                if not _STATE.match(str(s)):
+                    errors.append(f"r11_states: '{s}' is not a valid state name")
+
+    if "spotassist_author" in candidate:
+        if not isinstance(candidate["spotassist_author"], str):
+            errors.append("spotassist_author must be a string")
+    if "spotassist_sources" in candidate:
+        raw = candidate["spotassist_sources"]
+        if not isinstance(raw, list):
+            errors.append("spotassist_sources must be a list of ticket sources")
+        else:
+            for s in raw:
+                if not _STATE.match(str(s)):
+                    errors.append(
+                        f"spotassist_sources: '{s}' is not a valid source name")
 
     import scorer
     if "disabled_checks" in candidate:

@@ -47,8 +47,9 @@ def ticket(**over):
         "account_id": "acct-1", "account_name": "Acme Corp",
         "account_type": "customer",
         "custom_fields": {}, "external_issues": [], "body_html": "",
+        "source": "email",
         "r1": "Pass", "r2": "Pass", "r3": "Pass", "r4": "Pass",
-        "r5": "Pass", "r7": "Pass", "r8": "Pass",
+        "r5": "Pass", "r7": "Pass", "r8": "Pass", "r10": "N/A", "r11": "N/A",
     }
     row.update(over)
     for key in ("custom_fields", "external_issues"):
@@ -143,9 +144,15 @@ FAIL_T = ticket(
     state="waiting_on_engg",
     account_id=INTERNAL_ID, account_name="SpotDraft Internal",
     custom_fields={"resolution_category": val("Escalated to Oncall")},
-    r1="Fail", r2="Fail", r3="Fail", r4="Fail", r5="Fail", r7="Fail", r8="Fail",
+    source="slack",
+    r1="Fail", r2="Fail", r3="Fail", r4="Fail", r5="Fail", r7="Fail",
+    r8="Fail", r10="Fail",
 )
-FAIL_MSGS = [cust("still broken", NOW - timedelta(hours=41))]
+# The support reply predates the customer's last message, so R4's 41h wait is
+# untouched — but it is a public rep reply with no SpotAssist in the thread,
+# which is exactly R10's failure.
+FAIL_MSGS = [supp("looking into it", NOW - timedelta(hours=50)),
+             cust("still broken", NOW - timedelta(hours=41))]
 ev = evidence.for_ticket(FAIL_T, FAIL_MSGS)
 all_answered("all-Fail", ev)
 agrees("all-Fail", ev)

@@ -157,6 +157,87 @@ with db.get_conn() as c:
 check("errored run not counted", db.qc_spend_for_date(DATE)["total_cost_usd"], 0.17)
 
 print()
+print("=== resync backfills R10 for tickets fetched before the check existed ===")
+import resync_overall
+
+with db.get_conn() as c:
+    # A Slack ticket, graded Pass by the AI, rep replied by hand, no SpotAssist,
+    # rule_checks.r10 still NULL — exactly what the archive looks like the day
+    # the check ships.
+    c.execute(
+        "INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,state,"
+        "assignee_name,custom_fields,source,customer_portal_visible,fetched_at)"
+        " VALUES ('sa1',9001,?, 'Slack ticket','closed','Alice','{}','slack',1,?)",
+        (DATE, T0))
+    c.execute(
+        "INSERT OR REPLACE INTO rule_checks (ticket_id,fetch_date,r1,r2,r3,r4,r5)"
+        " VALUES ('sa1',?, 'Pass','Pass','Pass','Pass','Pass')", (DATE,))
+    c.execute("DELETE FROM messages WHERE ticket_id='sa1'")
+    c.executemany(
+        "INSERT INTO messages (id,ticket_id,message_html,timestamp,author_name,"
+        "is_customer,is_private) VALUES (?,?,?,?,?,?,0)",
+        [("m-sa1a", "sa1", "<p>help</p>", T0, "Cus Tomer", 1),
+         ("m-sa1b", "sa1", "<p>done!</p>", T0, "Ram Rep", 0)])
+    c.execute(
+        "INSERT OR REPLACE INTO ai_checks (ticket_id,fetch_date,a1,a3,a4,a5,"
+        "overall_result,ai_notes,checked_at) VALUES ('sa1',?,"
+        "'Accurate','Good','Consistent','Pass','Pass','',?)", (DATE, T0))
+
+res = resync_overall.run(DATE)
+with db.get_conn() as c:
+    row = c.execute("SELECT rc.r10, ac.overall_result, ac.ai_notes"
+                    " FROM rule_checks rc JOIN ai_checks ac"
+                    " ON ac.ticket_id=rc.ticket_id"
+                    " WHERE rc.ticket_id='sa1'").fetchone()
+check("r10 computed from stored messages, no AI call", row["r10"], "Fail")
+check("advisory fail leaves the overall grade alone",
+      row["overall_result"], "Pass")
+check("the advice note reaches the stored notes",
+      "R10 (advisory)" in (row["ai_notes"] or ""), True)
+check("resync reports the backfill", res["r10_updated"] >= 1, True)
+
+print()
+print("=== resync also ages silent tickets into an R11 Fail — and the overall follows ===")
+with db.get_conn() as c:
+    # Support took the last word 10 days ago in 'investigating' and vanished:
+    # AI graded it Pass at the time; the resync must fail it TODAY without a
+    # refetch and without an AI call — that is the whole point of the check.
+    c.execute(
+        "INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,state,"
+        "assignee_name,custom_fields,source,customer_portal_visible,fetched_at)"
+        " VALUES ('ft1',9002,?, 'Silent promise','investigating','Indu','{}','email',1,?)",
+        (DATE, T0))
+    c.execute(
+        "INSERT OR REPLACE INTO rule_checks (ticket_id,fetch_date,r1,r2,r3,r4,r5)"
+        " VALUES ('ft1',?, 'Pass','Pass','Pass','Pass','Pass')", (DATE,))
+    c.execute("DELETE FROM messages WHERE ticket_id='ft1'")
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    long_ago = (_dt.now(_tz.utc) - _td(days=10)).isoformat()
+    reply_at = (_dt.now(_tz.utc) - _td(days=10) + _td(hours=1)).isoformat()
+    c.executemany(
+        "INSERT INTO messages (id,ticket_id,message_html,timestamp,author_name,"
+        "is_customer,is_private) VALUES (?,?,?,?,?,?,0)",
+        [("m-ft1a", "ft1", "<p>broken</p>", long_ago, "Cus Tomer", 1),
+         ("m-ft1b", "ft1", "<p>I'm checking, will update you</p>", reply_at,
+          "Indu", 0)])
+    c.execute(
+        "INSERT OR REPLACE INTO ai_checks (ticket_id,fetch_date,a1,a3,a4,a5,"
+        "overall_result,ai_notes,checked_at) VALUES ('ft1',?,"
+        "'Accurate','Good','Consistent','Pass','Pass','',?)", (DATE, T0))
+
+res2 = resync_overall.run(DATE)
+with db.get_conn() as c:
+    row = c.execute("SELECT rc.r11, ac.overall_result, ac.ai_notes"
+                    " FROM rule_checks rc JOIN ai_checks ac"
+                    " ON ac.ticket_id=rc.ticket_id"
+                    " WHERE rc.ticket_id='ft1'").fetchone()
+check("10 days of silence backfills r11=Fail", row["r11"], "Fail")
+check("and the overall grade flips to Fail — r11 is not advisory",
+      row["overall_result"], "Fail")
+check("the note tells them what to do",
+      "R11 Fail" in (row["ai_notes"] or ""), True)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)
