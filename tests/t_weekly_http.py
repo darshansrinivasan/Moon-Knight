@@ -87,6 +87,15 @@ check("original KPI and chart ids",
       'id="k-vol"' in r.text and 'id="cTrend"' in r.text and 'id="agTBody"' in r.text)
 check("title is Support weekly Dashboard",
       "Support weekly Dashboard" in r.text)
+check("horizontal charts put beginAtZero on x",
+      "function hBarOpts()" in r.text
+      and "indexAxis: \"y\"" in r.text
+      and "beginAtZero: true" in r.text.split("function hBarOpts()")[1].split("function ")[0])
+check("horizontal charts no longer inherit chartBase y-beginAtZero",
+      "options: { ...base, indexAxis: \"y\" }" not in r.text)
+check("empty store is named, not filled in",
+      'id="store-note"' in r.text
+      and "does not invent categories or customers" in r.text)
 
 r = client.get("/admin")
 check("admin has CSAT section",

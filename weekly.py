@@ -211,14 +211,38 @@ def _local_date(ts: datetime | None, tz) -> date | None:
     return ts.astimezone(tz).date()
 
 
-def _cf(cf: dict, role: str):
-    key = qc_rules.field(role)
-    raw = cf.get(key)
-    if raw is None:
+def _cf_scalar(raw) -> str | None:
+    """One stored custom-field value, including Pylon's multi-select `values`.
+
+    `_cf_val` only reads interpreted_value/value. A select can be filled with
+    `values: ["general_question"]` and empty `value` — R2 already treats that
+    as tagged, and dropping it here made the weekly category chart invent
+    Unknown while Pylon still had the slug.
+    """
+    if raw is None or raw == "":
         return None
     if isinstance(raw, dict):
-        return scorer._cf_val(raw)
-    return raw
+        val = scorer._cf_val(raw)
+        if val not in (None, ""):
+            return val
+        for item in raw.get("values") or []:
+            got = _cf_scalar(item)
+            if got:
+                return got
+        return None
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            got = _cf_scalar(item)
+            if got:
+                return got
+        return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _cf(cf: dict, role: str):
+    key = qc_rules.field(role)
+    return _cf_scalar(cf.get(key))
 
 
 def _cf_yes(cf: dict, role: str) -> bool:
@@ -452,10 +476,14 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
         "type": row.get("type") or "",
         "priority": _priority(row.get("priority")),
         "assignee": assignee,
+        # Customer volume is the Pylon account on the issue. The issue payload
+        # only carries account.id; the name lives on GET /accounts/{id} and is
+        # stored in `accounts` during fetch. Missing name → Unknown, never a
+        # made-up customer.
         "account": (row.get("account_name") or "").strip() or "Unknown",
-        # Pylon's own label when the synced map knows the slug — the weekly
-        # and monthly pages must name a category identically. _humanize stays
-        # as the fallback for values the map has never seen.
+        # Top Issue Categories is request_category (Pylon custom field), not
+        # functionality. funcheck.canon translates the stored slug to the
+        # label; _humanize is only for slugs the map has never seen.
         "category": _canon_category(_cf(cf, "request_category")),
         "created": created,
         "created_day": created_day,

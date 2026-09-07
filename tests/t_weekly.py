@@ -190,6 +190,16 @@ check("High is the current-week priority",
 check("Salesforce leads categories",
       D["categories"]["labels"][0], "Salesforce (SFDC)")
 check("Acme is a customer", "Acme" in D["customers"]["labels"], True)
+# Pylon select fields can store the slug only in `values`. Dropping that
+# is how a week of real tickets became Unknown on the category chart.
+check("values-only slug is read",
+      weekly._cf({"request_category": {"values": ["how_to"]}}, "request_category"),
+      "how_to")
+check("values-only is not Unknown",
+      weekly._canon_category(
+          weekly._cf({"request_category": {"values": ["how_to"]}},
+                     "request_category")),
+      "How To")
 check("status chart has Closed", "Closed" in M["cv_status"], True)
 check("Waiting on Engg counted", M["cv_status"]["Waiting on Engg"], 1)
 

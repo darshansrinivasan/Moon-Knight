@@ -91,9 +91,11 @@
   .wu { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
   .up { background: color-mix(in srgb, var(--pass) 16%, transparent); color: var(--pass); }
   .kpi-ins { font-size: 10px; color: var(--muted); margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); line-height: 1.4; }
-  .cwrap { position: relative; width: 100%; }
+  .cwrap { position: relative; width: 100%; min-height: 170px; }
   .cwrap canvas { max-height: 250px; }
+  .cwrap.tall { min-height: 280px; }
   .tall canvas { max-height: 320px; }
+  .cwrap .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .sm canvas { max-height: 170px; }
   .xs canvas { max-height: 130px; }
   .str { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
@@ -282,6 +284,7 @@
           <button type="button" class="fbtn" id="clearFilters">Clear filters</button>
         </div>
       </div>
+      <div class="warn-note" id="store-note" hidden></div>
 
       <div class="g6" id="kpis">
         <div class="kpi" style="--kc:var(--color-accent)">
@@ -776,6 +779,48 @@ function chartBase() {
     },
   };
 }
+// Horizontal bars: beginAtZero belongs on the VALUE axis (x). Leaving it on
+// y (from chartBase) makes Chart.js treat the category axis as linear, so
+// string labels draw no bars — both Top Issue Categories and Top Customers
+// looked empty while D.categories / D.customers still had the real counts.
+function hBarOpts() {
+  const p = pal();
+  return {
+    responsive: true, maintainAspectRatio: true,
+    indexAxis: "y",
+    plugins: { legend: { labels: { color: p.muted, font: { size: 10 }, boxWidth: 10 } } },
+    scales: {
+      x: { ticks: { color: p.muted, font: { size: 9 } }, grid: { color: p.border }, beginAtZero: true },
+      y: { ticks: { color: p.muted, font: { size: 9 } }, grid: { color: p.border } },
+    },
+  };
+}
+function clip(l, n) {
+  const s = l == null ? "" : String(l);
+  return s.length > n ? s.substr(0, n - 2) + "…" : s;
+}
+function chartOrEmpty(id, labels, build) {
+  const canvas = $(id);
+  const host = canvas && canvas.closest(".cwrap");
+  let empty = host && host.querySelector(".chart-empty");
+  if (!labels || !labels.length) {
+    dC(id);
+    if (canvas) canvas.hidden = true;
+    if (host) {
+      if (!empty) {
+        empty = document.createElement("div");
+        empty.className = "empty chart-empty";
+        host.appendChild(empty);
+      }
+      empty.hidden = false;
+      empty.textContent = "No tickets in this period for this breakdown.";
+    }
+    return;
+  }
+  if (canvas) canvas.hidden = false;
+  if (empty) empty.hidden = true;
+  build();
+}
 
 function initCharts() {
   if (typeof Chart === "undefined") return;
@@ -812,17 +857,20 @@ function initCharts() {
     { label: "Curr Res (hrs)", data: dd.cv_res_hrs, borderColor: p.accent2, tension: .35, pointRadius: 4 },
     { label: "Prev Res (hrs)", data: dd.pv_res_hrs, borderColor: p.muted, borderDash: [5, 3], tension: .35, pointRadius: 3 },
   ] }, options: base });
-  const clip = (l, n) => l.length > n ? l.substr(0, n - 2) + "…" : l;
-  dC("cCat");
-  CH.cCat = new Chart($("cCat"), { type: "bar", data: { labels: D.categories.labels.map(l => clip(l, 30)), datasets: [
-    { label: "Prev", data: D.categories.prev, backgroundColor: p.muted, borderRadius: 4 },
-    { label: "Curr", data: D.categories.curr, backgroundColor: p.accent, borderRadius: 4 },
-  ] }, options: { ...base, indexAxis: "y" } });
-  dC("cCust");
-  CH.cCust = new Chart($("cCust"), { type: "bar", data: { labels: D.customers.labels.map(l => clip(l, 22)), datasets: [
-    { label: "Prev", data: D.customers.prev, backgroundColor: p.muted, borderRadius: 4 },
-    { label: "Curr", data: D.customers.curr, backgroundColor: p.accent2, borderRadius: 4 },
-  ] }, options: { ...base, indexAxis: "y" } });
+  chartOrEmpty("cCat", D.categories.labels, () => {
+    dC("cCat");
+    CH.cCat = new Chart($("cCat"), { type: "bar", data: { labels: D.categories.labels.map(l => clip(l, 30)), datasets: [
+      { label: "Prev", data: D.categories.prev, backgroundColor: p.muted, borderRadius: 4 },
+      { label: "Curr", data: D.categories.curr, backgroundColor: p.accent, borderRadius: 4 },
+    ] }, options: hBarOpts() });
+  });
+  chartOrEmpty("cCust", D.customers.labels, () => {
+    dC("cCust");
+    CH.cCust = new Chart($("cCust"), { type: "bar", data: { labels: D.customers.labels.map(l => clip(l, 22)), datasets: [
+      { label: "Prev", data: D.customers.prev, backgroundColor: p.muted, borderRadius: 4 },
+      { label: "Curr", data: D.customers.curr, backgroundColor: p.accent2, borderRadius: 4 },
+    ] }, options: hBarOpts() });
+  });
   dC("cEscCat");
   CH.cEscCat = new Chart($("cEscCat"), { type: "bar", data: { labels: D.escCategories.labels.map(l => clip(l, 28)), datasets: [
     { label: "Prev", data: D.escCategories.prev, backgroundColor: p.muted, borderRadius: 4 },
@@ -1087,6 +1135,15 @@ function paint() {
   $("fpt-cv").textContent = D.currWeekLabel;
   if (D.period_start) $("period-start").value = D.period_start;
   if (D.period_end) $("period-end").value = D.period_end;
+  const storeNote = $("store-note");
+  const vol = ((D.metrics || {}).cv_total || 0) + ((D.metrics || {}).pv_total || 0);
+  if (!vol) {
+    storeNote.hidden = false;
+    storeNote.textContent = "No tickets in the QC store for this period. Charts stay empty until those dates are fetched from Pylon — this page does not invent categories or customers.";
+  } else {
+    storeNote.hidden = true;
+    storeNote.textContent = "";
+  }
   const note = $("csat-note");
   if (D.csatCurr && D.csatCurr.total) {
     note.hidden = true;
