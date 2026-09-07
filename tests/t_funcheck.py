@@ -88,6 +88,24 @@ check("observed-but-uncurated tags are NOT options",
       "Workflows" in vocab["functionality"], False)
 
 print()
+print("=== Admin can override either list; broken edits fall back loudly ===")
+vault.set_raw_setting("funcheck_functionalities_json",
+                      json.dumps(["Alpha : One", " Alpha : Two "]), "t")
+v2 = funcheck.options()
+check("a stored override replaces the shipped list, trimmed",
+      v2["functionality"], ["Alpha : One", "Alpha : Two"])
+check("the other list is untouched by it", len(v2["category"]), 26)
+vault.set_raw_setting("funcheck_functionalities_json", "{broken", "t")
+check("corrupt override degrades to the shipped list, not to empty",
+      len(funcheck.options()["functionality"]), 266)
+vault.set_raw_setting("funcheck_functionalities_json", "[]", "t")
+check("an empty override is ignored too",
+      len(funcheck.options()["functionality"]), 266)
+vault.set_raw_setting("funcheck_functionalities_json", "", "t")
+check("clearing the setting is the reset",
+      funcheck.options() == vocab, True)
+
+print()
 print("=== validation: vocabulary membership is checked in code ===")
 t2 = [t for t in funcheck._load_month(M) if t["id"] == "f2"][0]
 row = funcheck._clean_result(

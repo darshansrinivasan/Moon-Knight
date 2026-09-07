@@ -842,6 +842,70 @@ async def funcheck_preview(month: str, user: dict = Depends(auth.require_user)):
     return await asyncio.to_thread(funcheck.preview, month)
 
 
+@app.get("/api/admin/catalog")
+async def get_catalog(user: dict = Depends(auth.require_user)):
+    """The tagging vocabulary the Functionality Check validates against."""
+    import funcheck_catalog
+
+    def load():
+        current = funcheck.options()
+        return {
+            "functionality": current["functionality"],
+            "category": current["category"],
+            "overridden": {
+                key: bool(vault.get_raw_setting(setting))
+                for key, setting in funcheck.CATALOG_SETTINGS.items()},
+            "shipped_counts": {
+                "functionality": len(funcheck_catalog.FUNCTIONALITIES),
+                "category": len(funcheck_catalog.REQUEST_CATEGORIES)},
+            "can_edit": user["role"] == "admin",
+        }
+    return await asyncio.to_thread(load)
+
+
+@app.put("/api/admin/catalog")
+async def put_catalog(request: Request,
+                      user: dict = Depends(auth.require_admin)):
+    """Replace one vocabulary list, or reset it to the shipped catalog.
+
+    Body: {"list": "functionality"|"category", "entries": [...]} to save, or
+    {"list": ..., "reset": true} to fall back to funcheck_catalog.py. Entries
+    are trimmed and case-insensitively deduplicated, order preserved — the
+    order is the dropdown's order in spirit, so it is the editor's to keep.
+    """
+    body = await request.json()
+    which = str(body.get("list") or "")
+    setting = funcheck.CATALOG_SETTINGS.get(which)
+    if not setting:
+        raise HTTPException(400, "list must be 'functionality' or 'category'")
+
+    if body.get("reset"):
+        vault.set_raw_setting(setting, "", user["email"])
+        vault.audit(user["email"], "catalog.reset", which)
+    else:
+        raw = body.get("entries")
+        if not isinstance(raw, list):
+            raise HTTPException(400, "entries must be a list of strings")
+        cleaned, seen = [], set()
+        for e in raw:
+            e = " ".join(str(e or "").split())[:120]
+            if not e or e.lower() in seen:
+                continue
+            seen.add(e.lower())
+            cleaned.append(e)
+        if not cleaned:
+            raise HTTPException(400, "The list cannot be emptied — reset it "
+                                     "to the shipped catalog instead")
+        if len(cleaned) > 1000:
+            raise HTTPException(400, "That is more than 1000 options")
+        vault.set_raw_setting(setting, json.dumps(cleaned), user["email"])
+        vault.audit(user["email"], "catalog.save", f"{which} n={len(cleaned)}")
+
+    current = await asyncio.to_thread(funcheck.options)
+    return {"ok": True, "functionality": current["functionality"],
+            "category": current["category"]}
+
+
 @app.post("/api/admin/share/folder")
 async def create_share_folder(request: Request,
                               user: dict = Depends(auth.require_admin)):

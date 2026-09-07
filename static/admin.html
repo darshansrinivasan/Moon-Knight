@@ -83,7 +83,8 @@
   body.readonly [data-role], body.readonly [data-toggle],
   body.readonly #coverage-form, body.readonly [data-coverage-del],
   body.readonly #ident-editor, body.readonly .ident-remove,
-  body.readonly .ident-mute, body.readonly #share-folder-btn { display: none !important; }
+  body.readonly .ident-mute, body.readonly #share-folder-btn,
+  body.readonly [data-cat-save], body.readonly [data-cat-reset] { display: none !important; }
 
   /* ── Slack mentions & identity map ── */
   .ident-list {
@@ -175,6 +176,7 @@
       <button data-section="people">People</button>
       <button data-section="review">Review coverage</button>
       <button data-section="statuses">Ticket statuses</button>
+      <button data-section="catalog">Tagging catalog</button>
       <button data-section="audit" id="nav-audit">Activity log</button>
     </aside>
     <div class="content-pane">
@@ -440,6 +442,43 @@
               <button type="button" id="status-save">Save statuses</button>
             </div>
             <div class="msg" id="msg-statuses"></div>
+          </div>
+        </div>
+
+        <div class="section" id="sec-catalog">
+          <div class="card">
+            <h2>Tagging catalog</h2>
+            <p class="card-sub">
+              The functionality and request-category vocabularies the
+              Functionality Check validates against — the same lists Pylon's
+              dropdowns mirror. One entry per line; order is preserved. Edits
+              apply immediately, no deploy.
+            </p>
+            <p class="card-sub" style="color:var(--review)">
+              Changing a list re-opens existing Functionality Check verdicts —
+              a new option can change the right suggestion, so affected tickets
+              re-bill on the next check run.
+            </p>
+            <div class="field">
+              <label for="cat-func">Functionalities <span class="hint" id="cat-func-count" style="display:inline"></span></label>
+              <textarea id="cat-func" rows="16" spellcheck="false"
+                        style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.5"></textarea>
+            </div>
+            <div class="actions">
+              <button type="button" data-cat-save="functionality">Save functionalities</button>
+              <button type="button" class="ghost" data-cat-reset="functionality"
+                      title="Discard the override and fall back to the list shipped with the app">Reset to shipped list</button>
+            </div>
+            <div class="field">
+              <label for="cat-cat">Request categories <span class="hint" id="cat-cat-count" style="display:inline"></span></label>
+              <textarea id="cat-cat" rows="10" spellcheck="false"
+                        style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.5"></textarea>
+            </div>
+            <div class="actions">
+              <button type="button" data-cat-save="category">Save categories</button>
+              <button type="button" class="ghost" data-cat-reset="category">Reset to shipped list</button>
+            </div>
+            <div class="msg" id="msg-catalog"></div>
           </div>
         </div>
 
@@ -1154,10 +1193,79 @@ async function load() {
 
   loadShareStatus();   // not awaited: two live probes, purely informational
 
+  try {
+    await loadCatalog();
+  } catch (e) {
+    show($("msg-catalog"), e.message, "err");
+  }
+
   applyReadOnly();
   $("loading").style.display = "none";
   $("content").style.display = "block";
 }
+
+// ── tagging catalog ───────────────────────────────────────────────────────────
+const CAT_FIELDS = { functionality: "cat-func", category: "cat-cat" };
+
+function fillCatalog(d) {
+  $("cat-func").value = d.functionality.join("\n");
+  $("cat-cat").value = d.category.join("\n");
+  $("cat-func-count").textContent =
+    `· ${d.functionality.length} options` +
+    (d.overridden && d.overridden.functionality
+      ? ` (edited — shipped list has ${d.shipped_counts.functionality})` : " (shipped list)");
+  $("cat-cat-count").textContent =
+    `· ${d.category.length} options` +
+    (d.overridden && d.overridden.category
+      ? ` (edited — shipped list has ${d.shipped_counts.category})` : " (shipped list)");
+  if (d.can_edit === false) {
+    $("cat-func").readOnly = true;
+    $("cat-cat").readOnly = true;
+  }
+}
+
+async function loadCatalog() {
+  fillCatalog(await api("/api/admin/catalog"));
+}
+
+document.querySelectorAll("[data-cat-save]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const which = btn.dataset.catSave;
+    const entries = $(CAT_FIELDS[which]).value.split("\n")
+      .map(s => s.trim()).filter(Boolean);
+    const msg = $("msg-catalog");
+    btn.disabled = true;
+    try {
+      const d = await api("/api/admin/catalog", {
+        method: "PUT",
+        body: JSON.stringify({ list: which, entries }),
+      });
+      await loadCatalog();
+      show(msg, `Saved — ${d[which].length} ${which} options now live. ` +
+        "Existing check verdicts re-open on the next run.", "ok");
+    } catch (e) {
+      show(msg, e.message, "err");
+    } finally { btn.disabled = false; }
+  });
+});
+
+document.querySelectorAll("[data-cat-reset]").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const which = btn.dataset.catReset;
+    const msg = $("msg-catalog");
+    btn.disabled = true;
+    try {
+      await api("/api/admin/catalog", {
+        method: "PUT",
+        body: JSON.stringify({ list: which, reset: true }),
+      });
+      await loadCatalog();
+      show(msg, `${which} reset to the shipped list.`, "ok");
+    } catch (e) {
+      show(msg, e.message, "err");
+    } finally { btn.disabled = false; }
+  });
+});
 
 // ── sharing: app-created Drive folder ────────────────────────────────────────
 $("share-folder-btn").addEventListener("click", async () => {

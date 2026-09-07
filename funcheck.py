@@ -77,19 +77,44 @@ def _field_slug(name: str) -> str:
         "functionality" if name == "functionality" else "category"]
 
 
+CATALOG_SETTINGS = {"functionality": "funcheck_functionalities_json",
+                    "category": "funcheck_categories_json"}
+
+
 def options() -> dict:
     """{'functionality': [...], 'category': [...]} — the canonical vocabulary.
 
-    From `funcheck_catalog`, the product owner's curated lists mirrored in
-    Pylon's dropdowns — not the values observed on tickets. Observed values
-    are what people DID select; the catalog is what they MAY select, and a
-    suggestion must come from the latter. Older tickets carry legacy slugs
-    ('salesforce_sfdc') for what the catalog now names in full; the prompt
-    tells the model to treat an obvious legacy spelling as the same tag.
+    The curated lists mirrored in Pylon's dropdowns — not the values observed
+    on tickets. Observed values are what people DID select; the catalog is
+    what they MAY select, and a suggestion must come from the latter. Older
+    tickets carry legacy slugs ('salesforce_sfdc') for what the catalog names
+    in full; the prompt tells the model to treat an obvious legacy spelling
+    as the same tag.
+
+    `funcheck_catalog.py` ships the defaults; Admin → Tagging catalog stores
+    an override per list in the vault, because tending the vocabulary is the
+    product team's recurring job and must not wait for a deploy. A stored
+    override that fails to parse is logged and ignored — a broken edit must
+    degrade to the shipped list, never to an empty vocabulary.
     """
     import funcheck_catalog
-    return {"functionality": list(funcheck_catalog.FUNCTIONALITIES),
-            "category": list(funcheck_catalog.REQUEST_CATEGORIES)}
+    import vault
+    out = {"functionality": list(funcheck_catalog.FUNCTIONALITIES),
+           "category": list(funcheck_catalog.REQUEST_CATEGORIES)}
+    for key, setting in CATALOG_SETTINGS.items():
+        raw = vault.get_raw_setting(setting)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Stored %s override is not valid JSON — using the "
+                           "shipped list", key)
+            continue
+        if (isinstance(data, list) and data
+                and all(isinstance(x, str) and x.strip() for x in data)):
+            out[key] = [x.strip() for x in data]
+    return out
 
 
 def _tagged(t: dict) -> tuple[str, str]:
