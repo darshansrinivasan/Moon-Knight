@@ -427,7 +427,10 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
     assignee = (row.get("assignee_name") or "").strip() or "Unassigned"
     created_day = _local_date(created, tz)
     csat_events = []
-    for item in normalize_csat_items(row.get("csat_responses")):
+    csat_raw = list(normalize_csat_items(row.get("csat_responses")))
+    if not csat_raw:
+        csat_raw = _csat_from_custom_fields(cf)
+    for item in csat_raw:
         day = _local_date(_parse_ts(item.get("submitted_at")), tz) or created_day
         csat_events.append({
             "score": item["score"],
@@ -505,16 +508,24 @@ def normalize_csat_items(raw) -> list[dict]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        score = _int_score(item.get("score"))
+        score = _int_score(
+            item.get("score") or item.get("csat_score") or item.get("rating")
+        )
         if score is None:
+            typed = []
+            loose = []
             for ans in item.get("answers") or []:
                 if not isinstance(ans, dict):
                     continue
                 qtype = str(ans.get("question_type") or "").lower()
-                if qtype in {"score", "csat", "rating"}:
-                    score = _int_score(ans.get("value"))
-                    if score is not None:
-                        break
+                val = _int_score(ans.get("value") or ans.get("score"))
+                if val is None:
+                    continue
+                if qtype in {"score", "csat", "rating", ""} or "csat" in qtype:
+                    typed.append(val)
+                else:
+                    loose.append(val)
+            score = (typed or loose or [None])[0]
         if score is None:
             continue
         comment = item.get("comment")
@@ -530,6 +541,22 @@ def normalize_csat_items(raw) -> list[dict]:
             "comment": comment or "",
             "submitted_at": item.get("submitted_at") or item.get("created_at") or "",
         })
+    return out
+
+
+def _csat_from_custom_fields(cf: dict) -> list[dict]:
+    """Some workspaces put the score on a custom field instead of surveys."""
+    if not isinstance(cf, dict):
+        return []
+    out = []
+    for key, raw in cf.items():
+        slug = str(key).lower()
+        if not any(tok in slug for tok in ("csat", "satisfaction", "survey_score")):
+            continue
+        val = scorer._cf_val(raw) if isinstance(raw, dict) else raw
+        score = _int_score(val)
+        if score is not None:
+            out.append({"score": score, "comment": "", "submitted_at": ""})
     return out
 
 
@@ -553,23 +580,57 @@ def csat_json_for_store(issue: dict, existing_json: str | None = None) -> str:
 
 
 def store_csat_responses(rows: list[dict]) -> int:
-    """Write survey responses onto matching tickets. Returns tickets touched."""
-    by_issue: dict[str, list[dict]] = defaultdict(list)
-    for row in rows or []:
-        issue_id = row.get("issue_id")
-        if not issue_id:
-            continue
-        items = normalize_csat_items(row)
-        if items:
-            by_issue[issue_id].extend(items)
-    if not by_issue:
-        return 0
-    touched = 0
+    """Persist survey rows onto csat_events and matching tickets.
+
+    Responses without an issue_id still count — CSAT is a survey, not a
+    ticket field. Returns events written.
+    """
+    now = datetime.now().isoformat()
+    written = 0
+    by_ticket: dict[str, list[dict]] = defaultdict(list)
     with db.get_conn() as conn:
-        for issue_id, items in by_issue.items():
+        for i, row in enumerate(rows or []):
+            items = normalize_csat_items(row)
+            if not items:
+                continue
+            issue = row.get("issue") if isinstance(row.get("issue"), dict) else {}
+            issue_id = row.get("issue_id") or issue.get("id")
+            number = row.get("issue_number") or issue.get("number")
+            ticket = None
+            if issue_id:
+                ticket = conn.execute(
+                    "SELECT id, number, assignee_name, csat_responses FROM tickets WHERE id = ?",
+                    (str(issue_id),),
+                ).fetchone()
+            if ticket is None and number is not None:
+                ticket = conn.execute(
+                    "SELECT id, number, assignee_name, csat_responses FROM tickets WHERE number = ?",
+                    (number,),
+                ).fetchone()
+            assignee = (ticket["assignee_name"] if ticket else None) or "Unassigned"
+            tid = ticket["id"] if ticket else issue_id
+            for j, item in enumerate(items):
+                eid = str(row.get("id") or f"{tid or 'orphan'}-{item.get('submitted_at')}-{j}-{i}")
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO csat_events
+                        (id, issue_id, ticket_number, assignee, score, comment,
+                         submitted_at, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        eid, tid, ticket["number"] if ticket else number,
+                        assignee, item["score"], item.get("comment") or "",
+                        item.get("submitted_at") or "", now,
+                    ),
+                )
+                written += 1
+                if tid:
+                    by_ticket[tid].append(item)
+        for tid, items in by_ticket.items():
             existing = conn.execute(
                 "SELECT csat_responses FROM tickets WHERE id = ?",
-                (issue_id,),
+                (tid,),
             ).fetchone()
             if existing is None:
                 continue
@@ -579,10 +640,37 @@ def store_csat_responses(rows: list[dict]) -> int:
                 merged[json.dumps(item, sort_keys=True)] = item
             conn.execute(
                 "UPDATE tickets SET csat_responses = ? WHERE id = ?",
-                (json.dumps(list(merged.values())), issue_id),
+                (json.dumps(list(merged.values())), tid),
             )
-            touched += 1
-    return touched
+    return written
+
+
+def _csat_events_from_store(tz) -> list[dict]:
+    """Survey rows that may not have landed on a ticket yet."""
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.score, e.submitted_at, e.assignee,
+                       t.assignee_name AS ticket_assignee
+                FROM csat_events e
+                LEFT JOIN tickets t ON t.id = e.issue_id
+                """
+            ).fetchall()
+    except Exception:
+        return []
+    events = []
+    for row in rows:
+        day = _local_date(_parse_ts(row["submitted_at"]), tz)
+        if day is None:
+            continue
+        events.append({
+            "score": row["score"],
+            "day": day,
+            "assignee": (row["ticket_assignee"] or row["assignee"] or "Unassigned").strip()
+                        or "Unassigned",
+        })
+    return events
 
 
 def _csat_award(avg: float | None, n: int) -> str | None:
@@ -961,9 +1049,19 @@ def build(week_start: str | None = None, *, start: str | None = None,
     }
     def csat_in(start, end):
         events = []
+        seen = set()
         for r in tickets:
             for e in r.get("csat_events") or []:
                 if e["day"] and start <= e["day"] <= end:
+                    key = (e["assignee"], e["score"], e["day"].isoformat())
+                    if key not in seen:
+                        seen.add(key)
+                        events.append(e)
+        for e in _csat_events_from_store(tz):
+            if e["day"] and start <= e["day"] <= end:
+                key = (e["assignee"], e["score"], e["day"].isoformat())
+                if key not in seen:
+                    seen.add(key)
                     events.append(e)
         return events
 

@@ -229,6 +229,25 @@ check("daily resolved does not overwrite KPI scalar",
       isinstance(M["cv_resolved"], int) and isinstance(DD["cv_resolved"], list), True)
 
 print()
+print("=== CSAT store from survey rows ===")
+stored = weekly.store_csat_responses([
+    {
+        "id": "surv-orphan",
+        "submitted_at": "2026-08-19T08:00:00+00:00",
+        "answers": [{"question_type": "", "value": "5"}],
+    },
+    {
+        "id": "surv-c1",
+        "issue_id": "c1",
+        "submitted_at": "2026-08-19T09:00:00+00:00",
+        "answers": [{"value": "4"}],
+    },
+])
+check("survey rows persist even without issue_id", stored >= 2, True)
+again = weekly.build(CURR, now=NOW)
+check("orphan survey score is counted", again["csatCurr"]["total"] >= 3, True)
+
+print()
 print("=== custom dates ===")
 P = weekly.build(start="2026-08-18", end="2026-08-20", now=NOW)
 check("custom period_start", P["period_start"], "2026-08-18")

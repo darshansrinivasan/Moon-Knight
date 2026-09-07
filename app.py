@@ -1032,11 +1032,11 @@ async def get_weekly(week: str | None = None,
                     start: str | None = None,
                     end: str | None = None,
                     user: dict = Depends(auth.require_user)):
-    """Period-over-period support operations.
+    """Period-over-period support operations from the local ticket store.
 
     `start`+`end` select the current window (previous is the same length
-    immediately before). `week` is the Monday fallback. CSAT is pulled
-    from Pylon surveys when a token is configured, then stored on tickets.
+    immediately before). `week` is the Monday fallback. CSAT is a
+    separate `/api/weekly/csat` call so this stays fast.
     """
     if week:
         _require_date(week)
@@ -1045,30 +1045,66 @@ async def get_weekly(week: str | None = None,
     if end:
         _require_date(end)
     try:
-        curr_start, curr_end, prev_start, _prev_end = weekly.resolve_period(
-            week, start, end)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-    # The CSAT refresh calls Pylon and writes tickets — work a read-only
-    # member's page view must not trigger. Operators refresh it, throttled so
-    # a busy morning of reloads is one survey sweep, not one per reload.
-    if auth.can_run_qc(user) and _csat_refresh_due(prev_start, curr_end):
-        try:
-            rows = await pylon.fetch_csat_responses(prev_start, curr_end)
-            if rows:
-                await asyncio.to_thread(weekly.store_csat_responses, rows)
-        except pylon.PylonNotConfigured:
-            pass
-        except Exception as e:
-            _CSAT_REFRESHED.pop((prev_start, curr_end), None)
-            logger.warning("Weekly CSAT fetch skipped: %s", e)
-
-    try:
         return await asyncio.to_thread(
             weekly.build, week, start=start, end=end)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/weekly/csat")
+async def get_weekly_csat(week: str | None = None,
+                         start: str | None = None,
+                         end: str | None = None,
+                         user: dict = Depends(auth.require_user)):
+    """Pull Pylon CSAT for the weekly window, then return the CSAT slice.
+
+    Kept off `/api/weekly` so Apply dates / This week stay a local SQLite
+    read. Failures here leave ticket KPIs alone.
+    """
+    if week:
+        _require_date(week)
+    if start:
+        _require_date(start)
+    if end:
+        _require_date(end)
+    try:
+        _curr_start, curr_end, prev_start, _prev_end = weekly.resolve_period(
+            week, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    fetched = 0
+    error = None
+    # Operators refresh CSAT from Pylon, throttled so a busy morning of
+    # reloads is one survey sweep. Members still read stored scores.
+    if auth.can_run_qc(user) and _csat_refresh_due(prev_start, curr_end):
+        try:
+            rows = await pylon.fetch_csat_responses(prev_start, curr_end)
+            fetched = await asyncio.to_thread(weekly.store_csat_responses, rows)
+        except pylon.PylonNotConfigured:
+            error = "pylon_not_configured"
+        except Exception as e:
+            _CSAT_REFRESHED.pop((prev_start, curr_end), None)
+            logger.warning("Weekly CSAT fetch failed: %s", e)
+            error = str(e)[:200]
+
+    try:
+        payload = await asyncio.to_thread(
+            weekly.build, week, start=start, end=end)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    keys = ("agent", "pv_csat_avg", "cv_csat_avg",
+            "pv_csat_total", "cv_csat_total",
+            "pv_csat_award", "cv_csat_award")
+    return {
+        "csatPrev": payload["csatPrev"],
+        "csatCurr": payload["csatCurr"],
+        "agentTable": [{k: a.get(k) for k in keys} for a in payload["agentTable"]],
+        "coverage": payload["coverage"],
+        "fetched": fetched,
+        "error": error,
+    }
 
 
 @app.get("/reports", response_class=HTMLResponse)
@@ -2315,6 +2351,32 @@ async def test_credential(key: str, user: dict = Depends(auth.require_admin)):
         if key == "vertex_service_account_json":
             return {"ok": False, "message": qc_runner.explain_vertex_error(e)}
         return {"ok": False, "message": str(e)[:300]}
+
+
+@app.get("/api/admin/surveys")
+async def admin_surveys(user: dict = Depends(auth.require_user)):
+    """Every Pylon survey, for the Admin CSAT picker.
+
+    GET https://api.usepylon.com/surveys — the id saved here is what
+    Weekly uses on GET /surveys/{id}/responses.
+    """
+    try:
+        surveys = await pylon.fetch_surveys()
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Pylon surveys failed: {e}") from e
+    return {
+        "surveys": [
+            {
+                "id": s.get("id"),
+                "name": s.get("name") or s.get("id"),
+                "type": s.get("type") or "",
+            }
+            for s in surveys if s.get("id")
+        ],
+        "selected": vault.get_setting("csat_survey_id"),
+    }
 
 
 @app.put("/api/admin/settings")

@@ -711,9 +711,13 @@ function initKPIs() {
   $("k-csat-m").innerHTML = '<span class="kpi-prev">Prev: <b>' + (pv.avg != null ? pv.avg.toFixed(2) + "/5" : "—") + "</b></span>";
   $("k-csat-i").textContent = cv.total
     ? cv.total + " responses · " + (cv.positivePct != null ? cv.positivePct + "% positive" : "—")
-    : (D.coverage && D.coverage.csat === false
-      ? "No CSAT on these tickets yet — refetch or wait for the next Pylon pull."
-      : "No CSAT responses in this period.");
+    : (D._csatLoading
+      ? "Loading CSAT from Pylon…"
+      : (D.coverage && D.coverage.csatError === "pylon_not_configured"
+        ? "No Pylon token — CSAT cannot be pulled."
+        : (D.coverage && D.coverage.csatError
+          ? "CSAT pull failed: " + D.coverage.csatError
+          : "No CSAT responses in this period.")));
   $("k-frt").textContent = fM(m.cv_frt_avg);
   $("k-frt-p").textContent = fM(m.pv_frt_avg);
   const fb = $("k-frt-b");
@@ -1079,10 +1083,13 @@ function paint() {
   const note = $("csat-note");
   if (D.csatCurr && D.csatCurr.total) {
     note.hidden = true;
+  } else if (D._csatLoading) {
+    note.hidden = false;
+    note.textContent = "Pulling CSAT survey responses from Pylon…";
   } else {
     note.hidden = false;
-    note.textContent = D.coverage && D.coverage.csat === false
-      ? "No CSAT scores on these tickets yet. They arrive with the next Pylon fetch, and this page also pulls survey responses when a token is configured."
+    note.textContent = D.coverage && D.coverage.csatError
+      ? "CSAT could not be pulled (" + D.coverage.csatError + ")."
       : "No CSAT responses were submitted in this period.";
   }
   renderFilterChips();
@@ -1134,6 +1141,45 @@ function applyDates() {
   load({ start, end });
 }
 
+function applyCsat(csat) {
+  if (!RAW || !csat) return;
+  RAW.csatPrev = csat.csatPrev || RAW.csatPrev;
+  RAW.csatCurr = csat.csatCurr || RAW.csatCurr;
+  RAW.coverage = Object.assign({}, RAW.coverage || {}, csat.coverage || {}, {
+    csatError: csat.error || null,
+  });
+  RAW._csatLoading = false;
+  const by = {};
+  (csat.agentTable || []).forEach(a => { by[a.agent] = a; });
+  (RAW.agentTable || []).forEach(row => {
+    const hit = by[row.agent];
+    if (!hit) return;
+    row.pv_csat_avg = hit.pv_csat_avg;
+    row.cv_csat_avg = hit.cv_csat_avg;
+    row.pv_csat_total = hit.pv_csat_total;
+    row.cv_csat_total = hit.cv_csat_total;
+    row.pv_csat_award = hit.pv_csat_award;
+    row.cv_csat_award = hit.cv_csat_award;
+  });
+  paint();
+}
+
+async function loadCsat(qs) {
+  if (RAW) RAW._csatLoading = true;
+  if (D) { D._csatLoading = true; initKPIs(); }
+  try {
+    const csat = await QC.api("/api/weekly/csat" + (qs ? "?" + qs : ""));
+    applyCsat(csat);
+  } catch (e) {
+    if (RAW) {
+      RAW._csatLoading = false;
+      RAW.coverage = Object.assign({}, RAW.coverage || {}, { csatError: e.message });
+    }
+    if (D) D._csatLoading = false;
+    paint();
+  }
+}
+
 async function load(opts) {
   // KPI tiles keep their ids (initKPIs writes into them). The table and
   // insight grid take the period-change shimmer.
@@ -1149,6 +1195,7 @@ async function load(opts) {
     }
     const qs = q.toString();
     RAW = await QC.api("/api/weekly" + (qs ? "?" + qs : ""));
+    RAW._csatLoading = true;
     weekStart = RAW.week_start;
     periodStart = RAW.period_start || RAW.week_start;
     periodEnd = RAW.period_end;
@@ -1161,6 +1208,7 @@ async function load(opts) {
     history.replaceState(null, "", url);
     populateFilters();
     paint();
+    loadCsat(qs);
   } catch (e) {
     $("agTBody").innerHTML = `<tr><td colspan="17" class="empty">${QC.esc(e.message)}</td></tr>`;
   }
@@ -1177,8 +1225,6 @@ $("prev-week").addEventListener("click", () => shiftPeriod(-1));
 $("next-week").addEventListener("click", () => shiftPeriod(1));
 $("apply-period").addEventListener("click", applyDates);
 $("this-week").addEventListener("click", () => load({}));
-$("period-start").addEventListener("change", applyDates);
-$("period-end").addEventListener("change", applyDates);
 $("agSearch").addEventListener("input", renderAgentTable);
 $("expBtn").addEventListener("click", exportCsv);
 $("agPag").addEventListener("click", e => {

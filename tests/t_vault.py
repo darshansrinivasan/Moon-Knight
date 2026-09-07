@@ -54,6 +54,16 @@ check("time survived", vault.get_setting("schedule_time"), "09:30")
 check("tz survived", vault.get_setting("schedule_tz"), "Asia/Kolkata")
 
 print()
+print("=== CSAT survey id is a real setting ===")
+refused = vault.set_settings({"csat_survey_id": "surv_csat_1"}, "admin")
+check("csat_survey_id accepted", refused, [])
+check("csat_survey_id persisted", vault.get_setting("csat_survey_id"), "surv_csat_1")
+import pylon
+check("pylon uses the Admin survey id", pylon.configured_csat_survey_id(), "surv_csat_1")
+vault.set_settings({"csat_survey_id": ""}, "admin")
+check("csat_survey_id can be cleared", vault.get_setting("csat_survey_id"), "")
+
+print()
 print("=== a real update still applies ===")
 vault.set_settings({"schedule_time": "07:15"}, "admin")
 check("updated", vault.get_setting("schedule_time"), "07:15")

@@ -246,6 +246,9 @@ SETTING_SPECS = [
     {"key": "schedule_target",    "legacy_env": "SCHEDULE_TARGET",  "default": "yesterday"},
     # Display-only: which Google account was connected for Cloud access.
     {"key": "google_cloud_account", "default": ""},
+    # Pylon survey used by the Weekly Dashboard CSAT pull.
+    # GET /surveys lists them; GET /surveys/{id}/responses is the data.
+    {"key": "csat_survey_id", "default": ""},
 ]
 
 SETTING_DEFAULTS = {s["key"]: s["default"] for s in SETTING_SPECS}

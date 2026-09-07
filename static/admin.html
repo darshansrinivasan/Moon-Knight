@@ -79,7 +79,8 @@
   body.readonly button[data-save],
   body.readonly #invite-btn, body.readonly #invite-email, body.readonly #invite-role,
   body.readonly #test-slack, body.readonly #test-vertex,
-  body.readonly #reload-projects, body.readonly #gcp-connect, body.readonly #gcp-disconnect,
+  body.readonly #reload-projects, body.readonly #reload-surveys,
+  body.readonly #gcp-connect, body.readonly #gcp-disconnect,
   body.readonly [data-role], body.readonly [data-toggle],
   body.readonly #coverage-form, body.readonly [data-coverage-del],
   body.readonly #ident-editor, body.readonly .ident-remove,
@@ -172,6 +173,7 @@
     <aside class="subnav" id="admin-nav">
       <div class="label">Configure</div>
       <button class="active" data-section="creds">Credentials</button>
+      <button data-section="csat">CSAT surveys</button>
       <button data-section="vertex">Vertex AI</button>
       <button data-section="slack">Slack delivery</button>
       <button data-section="people">People</button>
@@ -194,6 +196,33 @@
               Leave a field blank and save to remove a credential. Sign-in credentials come from the environment.
             </p>
             <div id="creds"></div>
+          </div>
+        </div>
+
+        <div class="section" id="sec-csat">
+          <div class="card">
+            <h2>CSAT surveys</h2>
+            <p class="card-sub">
+              Lists every survey from <span class="var">GET /surveys</span>.
+              The one you pick is the id used on
+              <span class="var">GET /surveys/{id}/responses</span> for the
+              Weekly Dashboard. You do not type the id after it is saved.
+            </p>
+            <div class="field">
+              <label for="csat_survey_id">CSAT survey</label>
+              <div class="hint">Reload after adding a Pylon API token if the list is empty.</div>
+              <div class="row">
+                <select id="csat_survey_id">
+                  <option value="">Loading surveys…</option>
+                </select>
+                <button type="button" class="ghost" id="reload-surveys" title="Reload from Pylon">↻</button>
+              </div>
+              <div class="msg" id="msg-surveys"></div>
+            </div>
+            <div class="actions">
+              <button data-save="csat_survey_id">Save CSAT survey</button>
+            </div>
+            <div class="msg" id="msg-csat"></div>
           </div>
         </div>
 
@@ -714,6 +743,37 @@ function renderLocations(locations, current) {
   sel.value = current || "us-central1";
 }
 
+async function loadSurveys({ quiet = false } = {}) {
+  const sel = $("csat_survey_id"), msg = $("msg-surveys");
+  const current = (DATA.settings && DATA.settings.csat_survey_id) || "";
+  if (!quiet) show(msg, "Loading surveys from Pylon…", "info");
+  try {
+    const d = await api("/api/admin/surveys");
+    const surveys = d.surveys || [];
+    const opts = surveys.map(s => {
+      const label = (s.name || s.id) + (s.type ? " (" + s.type + ")" : "");
+      return `<option value="${esc(s.id)}">${esc(label)}</option>`;
+    }).join("");
+    sel.innerHTML = `<option value="">Discover automatically</option>` + opts;
+    if (current && !surveys.some(s => s.id === current)) {
+      sel.insertAdjacentHTML("beforeend",
+        `<option value="${esc(current)}">${esc(current)} (saved, not in list)</option>`);
+    }
+    sel.value = current;
+    if (!quiet) {
+      show(msg, surveys.length
+        ? surveys.length + " survey" + (surveys.length === 1 ? "" : "s") + " from Pylon."
+        : "Pylon returned no surveys.", surveys.length ? "ok" : "err");
+    }
+  } catch (e) {
+    sel.innerHTML = current
+      ? `<option value="${esc(current)}">${esc(current)}</option><option value="">Discover automatically</option>`
+      : `<option value="">Could not load surveys</option>`;
+    sel.value = current;
+    show(msg, e.message, "err");
+  }
+}
+
 async function loadProjects({ quiet = false } = {}) {
   const sel = $("vertex_project"), msg = $("msg-projects");
   const current = DATA.settings.vertex_project || "";
@@ -850,6 +910,7 @@ function wireSaveButtons() {
         body[k] = v;
       });
       const msgId = keys[0].startsWith("vertex") ? "msg-vertex"
+        : keys[0] === "csat_survey_id" ? "msg-csat"
         : keys[0] === "slack_mention_mode" ? "msg-mentions"
         : keys[0].startsWith("share_") ? "msg-share" : "msg-slack";
       const msg = $(msgId);
@@ -866,6 +927,7 @@ function wireSaveButtons() {
           method: "PUT", body: JSON.stringify(body),
         });
         fillSettings(d.settings, d.setting_sources);
+        if (DATA) DATA.settings = d.settings;
         const notes = [];
         if (d.refused && d.refused.length) {
           notes.push(`${d.refused.join(", ")} unchanged — set by the environment`);
@@ -1179,6 +1241,7 @@ async function load() {
   fillSettings(DATA.settings, DATA.setting_sources);
   renderModelChips();
   if (gcpStatus.can_browse && DATA.can_edit) loadProjects({ quiet: true });
+  loadSurveys({ quiet: true });
 
   renderRoleKey();
   renderUsers(DATA.users);
@@ -1530,6 +1593,7 @@ $("test-slack").addEventListener("click", async () => {
 });
 
 $("reload-projects").addEventListener("click", () => loadProjects());
+$("reload-surveys").addEventListener("click", () => loadSurveys());
 $("vertex_project").addEventListener("change", () => {
   GCP.models = [];
   renderModelChips();

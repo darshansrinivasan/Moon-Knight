@@ -90,6 +90,17 @@ def init_db():
             csat_responses TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS csat_events (
+            id            TEXT PRIMARY KEY,
+            issue_id      TEXT,
+            ticket_number INTEGER,
+            assignee      TEXT,
+            score         INTEGER NOT NULL,
+            comment       TEXT,
+            submitted_at  TEXT,
+            fetched_at    TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS messages (
             id           TEXT PRIMARY KEY,
             ticket_id    TEXT,
