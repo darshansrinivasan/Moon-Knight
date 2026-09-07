@@ -279,6 +279,11 @@ async function load(days) {
   const token = ++loadToken;
   const { start, end } = rangeFor(days);
   const qs = start ? `?start=${start}&end=${end}` : "";
+  $("warnings").innerHTML = "";
+  $("cost-note").textContent = "";
+  $("teams").innerHTML = QC.skeleton.tableRows(10, 5);
+  $("people").innerHTML = QC.skeleton.tableRows(9, 8);
+  $("weeks").innerHTML = QC.skeleton.weeks(3);
   try {
     const d = await QC.api(`/api/leaderboard${qs}`);
     if (token !== loadToken) return;   // a newer range already landed

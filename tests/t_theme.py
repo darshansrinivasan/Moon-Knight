@@ -278,6 +278,28 @@ check("the rail and its calendar are still there",
       'id="rail"' in INDEX and 'id="cal-panel"' in INDEX)
 
 print()
+print("=== period-change skeleton is shared, not per-page ===")
+# Month/range swaps used to leave the previous period on screen. The shimmer
+# lives in the shell so every page that has a period control paints the same
+# placeholder the moment the control changes.
+check("shell.css defines the shimmer",
+      ".sk {" in SHELL and "@keyframes qc-skel" in SHELL)
+check("the shimmer uses tokens, not a hex wash",
+      "var(--color-neutral-800)" in SHELL.split(".sk {")[1].split("}")[0])
+JS = (STATIC / "shell.js").read_text()
+check("shell.js exposes QC.skeleton", "QC.skeleton" in JS)
+for page, names in (
+    ("funcheck.html", ("chips", "tableRows")),
+    ("index.html", ("calDays", "kpis", "tableRows", "cards")),
+    ("leaderboard.html", ("tableRows", "weeks")),
+    ("open.html", ("chips", "tableRows")),
+):
+    text = (STATIC / page).read_text()
+    for name in names:
+        check(f"{page} paints {name} on load",
+              f"QC.skeleton.{name}" in text)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

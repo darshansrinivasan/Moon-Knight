@@ -90,6 +90,53 @@
       </div>`;
   }
 
+  // Placeholder markup for a period swap. Pages swap this in at the start of
+  // load() so the previous month/range is never left on screen.
+  const times = (n, fn) => Array.from({ length: n }, (_, i) => fn(i)).join("");
+
+  QC.skeleton = {
+    chips(n) {
+      return `<div class="sk-chips" aria-hidden="true">${
+        times(n || 5, () => `<div class="sk sk-chip"></div>`)
+      }</div>`;
+    },
+    tableRows(cols, rows, widths) {
+      const w = widths || [];
+      return times(rows || 8, () => {
+        const tds = times(cols, c =>
+          `<td><span class="sk sk-line" style="width:${w[c] || (c === 1 ? "72%" : "48%")}"></span></td>`);
+        return `<tr class="sk-row">${tds}</tr>`;
+      });
+    },
+    kpis(n) {
+      return times(n || 6, () =>
+        `<div class="kpi-tile" aria-hidden="true">
+           <span class="sk sk-line" style="width:40%;height:28px;margin-bottom:8px"></span>
+           <span class="sk sk-line" style="width:56%"></span>
+         </div>`);
+    },
+    calDays(count) {
+      return times(count || 35, () =>
+        `<div class="day-cell empty sk" aria-hidden="true"></div>`);
+    },
+    cards(n) {
+      return times(n || 6, () =>
+        `<div class="sk-card" aria-hidden="true">
+           <span class="sk sk-line" style="width:22%"></span>
+           <span class="sk sk-line" style="width:78%;height:13px"></span>
+           <span class="sk sk-line" style="width:46%"></span>
+         </div>`);
+    },
+    weeks(n) {
+      return times(n || 3, () =>
+        `<div class="wk" aria-hidden="true">
+           <div class="wk-head"><span class="sk sk-line" style="width:160px"></span></div>
+           <span class="sk sk-line" style="width:82%;margin-top:8px"></span>
+           <span class="sk sk-line" style="width:64%;margin-top:8px"></span>
+         </div>`);
+    },
+  };
+
   QC.ready = (async function () {
     let me = null;
     try { me = await QC.api("/api/me"); } catch (e) {}

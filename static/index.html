@@ -1504,21 +1504,24 @@ async function renderCalendar() {
   document.getElementById("cal-title").textContent =
     `${MONTHS[curMonth-1]} ${curYear}`;
 
-  // load from server
+  const firstDay = new Date(curYear, curMonth - 1, 1).getDay();
+  const daysInMonth = new Date(curYear, curMonth, 0).getDate();
+  const grid = document.getElementById("days-grid");
+  // Paint the new month's shape immediately so the previous month does not
+  // sit on screen while the fetch is in flight.
+  calData = {};
+  grid.innerHTML = QC.skeleton.calDays(firstDay + daysInMonth);
+
   const token = ++calReq;
   try {
     const d = await getJSON(`/api/calendar/${curYear}/${curMonth}`);
     if (token !== calReq) return;   // a newer load already landed
-    calData = {};
     for (const row of d.days) calData[row.fetch_date] = row;
   } catch(e) { console.error(e); }
   if (token !== calReq) return;
 
-  const grid = document.getElementById("days-grid");
   grid.innerHTML = "";
 
-  const firstDay = new Date(curYear, curMonth - 1, 1).getDay();
-  const daysInMonth = new Date(curYear, curMonth, 0).getDate();
   const todayStr = fmtDate(today);
 
   // leading empty cells
@@ -2801,8 +2804,7 @@ function fmtDisplay(dateStr) {
 }
 
 function showLoading() {
-  document.getElementById("ticket-list").innerHTML =
-    `<div class="loading"><div class="spinner"></div> Loading…</div>`;
+  document.getElementById("ticket-list").innerHTML = QC.skeleton.cards(6);
 }
 function showError(msg) {
   // esc() because callers now pass server error text, not just literals.
@@ -2949,6 +2951,8 @@ function rateClass(rate) {
   return rate >= 80 ? 'rate-pass' : rate >= 50 ? 'rate-review' : 'rate-fail';
 }
 
+let analyticsReq = 0;
+
 async function loadAnalytics() {
   let url;
   if (analyticWeek) {
@@ -2958,15 +2962,18 @@ async function loadAnalytics() {
   } else {
     url = '/api/analytics';
   }
-  document.getElementById('lb-body').innerHTML =
-    `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:40px">Loading…</td></tr>`;
+  const token = ++analyticsReq;
+  document.getElementById('kpi-row').innerHTML = QC.skeleton.kpis(6);
+  document.getElementById('lb-body').innerHTML = QC.skeleton.tableRows(8, 8);
   try {
     const r    = await fetch(url);
     const data = await r.json();
+    if (token !== analyticsReq) return;
     analyticsRows = data.assignees || [];
     populateAnalyticsFilters();
     applyAnalyticsFilters();
   } catch(e) {
+    if (token !== analyticsReq) return;
     document.getElementById('lb-body').innerHTML =
       `<tr><td colspan="8" style="text-align:center;color:var(--fail);padding:40px">Failed to load.</td></tr>`;
   }

@@ -272,6 +272,9 @@ function renderRows(tickets) {
 async function load() {
   const token = ++loadToken;
   $("all-time").classList.toggle("active", !$("start").value && !$("end").value);
+  $("chips").innerHTML = QC.skeleton.chips(5);
+  $("rows").innerHTML = QC.skeleton.tableRows(7, 8);
+  $("preview-hint").textContent = "";
   try {
     const [list, prev] = await Promise.all([
       QC.api(`/api/open/tickets${rangeQS()}`),

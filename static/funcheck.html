@@ -506,6 +506,10 @@ function renderChips() {
 async function load() {
   const token = ++loadToken;
   $("month-title").textContent = `${MONTHS[curMonth - 1]} ${curYear}`;
+  lastRows = [];
+  $("chips").innerHTML = QC.skeleton.chips(5);
+  $("rows").innerHTML = QC.skeleton.tableRows(7, 8);
+  $("preview-hint").textContent = "";
   try {
     const [data, prev] = await Promise.all([
       QC.api(`/api/funcheck?month=${monthStr()}`),

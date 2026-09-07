@@ -421,3 +421,57 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Period-change skeleton. Every month/range swap paints these immediately so
+   the previous period's numbers do not linger while the next fetch is in
+   flight. One shimmer, used by Functionality Check, Dashboard, Analytics,
+   Leaderboard, and Open Tickets. */
+@keyframes qc-skel {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.sk {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-neutral-800);
+  border-radius: var(--radius-sm);
+}
+.sk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-text) 12%, transparent),
+    transparent
+  );
+  animation: qc-skel 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sk::after { animation: none; }
+}
+.sk-line { display: block; height: 11px; width: 70%; }
+.sk-chip {
+  display: block;
+  height: 52px;
+  width: 96px;
+  min-width: 96px;
+  border-radius: 10px;
+}
+.sk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.sk-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+tr.sk-row td { pointer-events: none; }
