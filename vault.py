@@ -287,6 +287,24 @@ def set_raw_setting(key: str, value: str, updated_by: str) -> None:
     _set_raw_setting(key, value, updated_by)
 
 
+def set_raw_settings(values: dict[str, str], updated_by: str) -> None:
+    """Write several raw settings in ONE transaction.
+
+    For settings that only make sense together — the Pylon label map and the
+    catalog lists derived from it — separate writes leave a torn state if the
+    process dies between them, and that tear looks like data corruption
+    rather than a crash.
+    """
+    now = _now()
+    with db.get_conn() as conn:
+        for key, value in values.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value, updated_by, updated_at)"
+                " VALUES (?, ?, ?, ?)",
+                (key, value, updated_by, now),
+            )
+
+
 def _set_raw_setting(key: str, value: str, updated_by: str) -> None:
     """Write a setting that is not part of the public registry."""
     with db.get_conn() as conn:

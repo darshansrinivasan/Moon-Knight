@@ -93,25 +93,29 @@ def _low(t: dict, f: str) -> str:
     return (t.get(f) or "").lower()
 
 
+# Classification reads the RAW Pylon values (category_raw / functionality_raw),
+# never the display labels: a label is wording someone can change in Pylon's
+# admin at any time, and a classifier keyed on wording fails silently the day
+# it is reworded — 64 alert tickets and 25 email-domain tickets would have
+# dropped out of their clusters after the first label sync. Labels are for
+# reading; slugs are for logic.
 def _is_reauth(t):
-    # startswith("alerts") matches the legacy slug and the Pylon label alike.
     return bool(re.search(r"re-?auth|authenticat|authorization expir|credential",
                           _low(t, "title"))) \
-        or _low(t, "category").startswith("alerts")
+        or _low(t, "category_raw").startswith("alerts")
 
 
 def _is_toggle(t):
-    return "feature_flag" in _low(t, "category") \
-        or "feature flag" in _low(t, "category") \
-        or _low(t, "functionality") in ("feature_flags", "others : feature flags")
+    return "feature_flag" in _low(t, "category_raw") \
+        or _low(t, "functionality_raw") == "feature_flags"
 
 
 def _is_access(t):
-    return _low(t, "functionality") in (
+    return _low(t, "functionality_raw") in (
         "invite_remove_users", "team_based_permissions",
         "access_control_contract_type_access_control_global",
         "email_domain_change") \
-        or _low(t, "functionality").startswith("access control")
+        or _low(t, "functionality_raw").startswith("access control")
 
 
 # The recurring patterns both the monthly report and the trend comparison

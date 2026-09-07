@@ -87,26 +87,53 @@ CATALOG_SETTINGS = {"functionality": "funcheck_functionalities_json",
 # words they chose in the dropdown, never the machine name behind it.
 LABELS_SETTING = "pylon_option_labels_json"
 
-_LABEL_FIELDS = {"functionality": "functionalities",
-                 "category": "request_category"}
+
+def _json_setting(key: str, what: str):
+    """A JSON vault setting, or None when absent or unparseable (logged).
+
+    One definition of "load a JSON setting defensively" — options() and the
+    label map used to each carry their own copy of this dance.
+    """
+    import vault
+    raw = vault.get_raw_setting(key)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Stored %s is not valid JSON — ignoring", what)
+        return None
+
+
+# The label map is on the hottest paths in the app (twice per ticket per load,
+# six times per ticket per check run), so it is memoized like rules.current()
+# rather than re-read from SQLite per call — that cost was ~12,000 connection
+# cycles for one month's run. Writers must call invalidate_labels().
+_labels_cache: dict | None = None
+_labels_lock = __import__("threading").Lock()
+
+
+def invalidate_labels() -> None:
+    global _labels_cache
+    with _labels_lock:
+        _labels_cache = None
 
 
 def option_labels() -> dict:
-    """{'functionality': {value: label}, 'category': {...}} — or empty maps."""
-    import vault
+    """{'functionality': {value: label}, 'category': {...}} — cached."""
+    global _labels_cache
+    with _labels_lock:
+        if _labels_cache is not None:
+            return _labels_cache
     out = {"functionality": {}, "category": {}}
-    raw = vault.get_raw_setting(LABELS_SETTING)
-    if not raw:
-        return out
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Stored Pylon label map is not valid JSON — ignoring")
-        return out
-    for key in out:
-        m = data.get(key)
-        if isinstance(m, dict):
-            out[key] = {str(k): str(v) for k, v in m.items() if k and v}
+    data = _json_setting(LABELS_SETTING, "Pylon label map")
+    if isinstance(data, dict):
+        for key in out:
+            m = data.get(key)
+            if isinstance(m, dict):
+                out[key] = {str(k): str(v) for k, v in m.items() if k and v}
+    with _labels_lock:
+        _labels_cache = out
     return out
 
 
@@ -118,37 +145,103 @@ def canon(kind: str, value: str | None) -> str:
     return option_labels()[kind].get(value, value)
 
 
+def clean_entries(entries: list) -> list:
+    """The one definition of a valid catalog list, shared by the hand editor
+    and the Pylon sync — two definitions is how a synced entry stops
+    round-tripping through the Admin textarea."""
+    cleaned, seen = [], set()
+    for e in entries or []:
+        e = " ".join(str(e or "").split())[:120]
+        if not e or e.lower() in seen:
+            continue
+        seen.add(e.lower())
+        cleaned.append(e)
+    return cleaned[:1000]
+
+
+def save_catalog(kind: str, entries: list, actor: str) -> list:
+    """Clean, persist and audit one catalog list. Raises ValueError on empty."""
+    import vault
+    if kind not in CATALOG_SETTINGS:
+        raise ValueError("list must be 'functionality' or 'category'")
+    cleaned = clean_entries(entries)
+    if not cleaned:
+        raise ValueError("The list cannot be emptied — reset it to the "
+                         "shipped catalog instead")
+    vault.set_raw_setting(CATALOG_SETTINGS[kind], json.dumps(cleaned), actor)
+    vault.audit(actor, "catalog.save", f"{kind} n={len(cleaned)}")
+    return cleaned
+
+
+def clear_catalog(kind: str, actor: str) -> None:
+    """Reset one list to the shipped catalog AND drop its slice of the label
+    map — otherwise a reset restores the vocabulary while tickets keep being
+    translated to labels that vocabulary no longer contains, and there is no
+    way back from a bad sync without editing the database."""
+    import vault
+    if kind not in CATALOG_SETTINGS:
+        raise ValueError("list must be 'functionality' or 'category'")
+    data = _json_setting(LABELS_SETTING, "Pylon label map")
+    if isinstance(data, dict) and data.get(kind):
+        data[kind] = {}
+        vault.set_raw_settings({CATALOG_SETTINGS[kind]: "",
+                                LABELS_SETTING: json.dumps(data)}, actor)
+    else:
+        vault.set_raw_setting(CATALOG_SETTINGS[kind], "", actor)
+    invalidate_labels()
+    vault.audit(actor, "catalog.reset", kind)
+
+
+_SYNC_FIELDS = {"functionality": "functionality",
+                "category": "request_category"}
+
+
 async def sync_catalog_from_pylon() -> dict:
     """Pull the two fields' options from Pylon: labels become the catalog,
     and the value→label map becomes the translation every page reads through.
 
     Pylon is the source of truth for what the dropdowns offer — a catalog
     maintained by hand drifts the day someone edits an option in Pylon only.
+    Field slugs resolve through the same Admin mapping `_tagged` reads with,
+    so repointing a field moves the sync and the reader together. All four
+    settings land in one transaction: a torn write here would translate tags
+    into a vocabulary the catalog no longer contains.
     """
     import pylon
     import vault
 
-    fields = {f.get("slug"): f for f in await pylon.fetch_custom_fields()}
+    fields = {f["slug"]: f for f in await pylon.fetch_custom_fields()
+              if f.get("slug")}
     labels: dict = {}
     lists: dict = {}
-    for kind, slug in _LABEL_FIELDS.items():
+    for kind, mapping_name in _SYNC_FIELDS.items():
+        slug = _field_slug(mapping_name)
         field = fields.get(slug)
         if not field:
-            raise RuntimeError(f"Pylon no longer defines the '{slug}' field")
+            raise RuntimeError(f"Pylon no longer defines the '{slug}' field "
+                               "(check Rules → Pylon fields)")
         opts = (field.get("select_metadata") or {}).get("options") or []
-        labels[kind] = {o["slug"]: (o.get("label") or o["slug"]).strip()
-                        for o in opts if o.get("slug")}
-        seen = set()
-        lists[kind] = [v for v in labels[kind].values()
-                       if not (v.lower() in seen or seen.add(v.lower()))]
+        labels[kind] = {
+            o["slug"]: ((o.get("label") or "").strip() or o["slug"])
+            for o in opts if o.get("slug")
+        }
+        lists[kind] = clean_entries(labels[kind].values())
         if not lists[kind]:
             raise RuntimeError(f"Pylon returned no options for '{slug}'")
 
-    vault.set_raw_setting(LABELS_SETTING, json.dumps(labels), "pylon-sync")
-    vault.set_raw_setting(CATALOG_SETTINGS["functionality"],
-                          json.dumps(lists["functionality"]), "pylon-sync")
-    vault.set_raw_setting(CATALOG_SETTINGS["category"],
-                          json.dumps(lists["category"]), "pylon-sync")
+    def persist():
+        vault.set_raw_settings({
+            LABELS_SETTING: json.dumps(labels),
+            CATALOG_SETTINGS["functionality"]: json.dumps(lists["functionality"]),
+            CATALOG_SETTINGS["category"]: json.dumps(lists["category"]),
+        }, "pylon-sync")
+
+    await asyncio.to_thread(persist)
+    invalidate_labels()
+    # Labels change what the report's evidence rows say, at the same row
+    # count — the chat context must not serve the pre-sync spellings.
+    import report
+    report._chat_ctx_cache.clear()
     return {"functionality": len(lists["functionality"]),
             "category": len(lists["category"])}
 
@@ -170,19 +263,10 @@ def options() -> dict:
     degrade to the shipped list, never to an empty vocabulary.
     """
     import funcheck_catalog
-    import vault
     out = {"functionality": list(funcheck_catalog.FUNCTIONALITIES),
            "category": list(funcheck_catalog.REQUEST_CATEGORIES)}
     for key, setting in CATALOG_SETTINGS.items():
-        raw = vault.get_raw_setting(setting)
-        if not raw:
-            continue
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("Stored %s override is not valid JSON — using the "
-                           "shipped list", key)
-            continue
+        data = _json_setting(setting, f"{key} catalog override")
         if (isinstance(data, list) and data
                 and all(isinstance(x, str) and x.strip() for x in data)):
             out[key] = [x.strip() for x in data]

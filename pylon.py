@@ -456,17 +456,36 @@ async def fetch_custom_fields() -> list[dict]:
     simply fail every ticket, quietly and forever. Being told is the difference
     between a setting to change and a week of wrong grades.
     """
+    # Hyphen, not underscore: /custom_fields is a 404 that hid the field list
+    # (and with it, drift detection) behind a warning for weeks. Now that the
+    # catalog sync and the drift report depend on this list, it follows the
+    # same discipline as every other Pylon listing: retried per page, and
+    # paginated — a second page silently dropped would read as fields (and
+    # their options) having been deleted.
     async with httpx.AsyncClient(timeout=30) as client:
-        # Hyphen, not underscore: /custom_fields is a 404 that hid the field
-        # list (and with it, drift detection) behind a warning for weeks.
-        r = await client.get(f"{BASE_URL}/custom-fields", headers=_headers(),
-                             params={"object_type": "issue"})
-        r.raise_for_status()
-        body = r.json()
-    if "data" not in body:
-        raise RuntimeError(
-            f"Pylon returned no custom-field list: {str(body)[:200]}")
-    return body["data"]
+
+        async def one_page(cursor: str | None) -> dict:
+            params: dict = {"object_type": "issue", "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            r = await client.get(f"{BASE_URL}/custom-fields",
+                                 headers=_headers(), params=params)
+            r.raise_for_status()
+            body = r.json()
+            if "data" not in body:
+                raise RuntimeError(
+                    f"Pylon returned no custom-field list: {str(body)[:200]}")
+            return body
+
+        body = await _with_retry(lambda: one_page(None))
+        fields = list(body["data"])
+        pag = body.get("pagination") or {}
+        while pag.get("has_next_page"):
+            body = await _with_retry(
+                lambda c=pag.get("cursor"): one_page(c))
+            fields.extend(body["data"])
+            pag = body.get("pagination") or {}
+    return fields
 
 
 async def fetch_day(target: date) -> FetchedDay:
