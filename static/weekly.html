@@ -245,6 +245,8 @@
         <div class="period-actions">
           <h2 id="week-title" class="period-compare" style="font-size:14px;font-weight:600;color:var(--text);margin:0">This week</h2>
           <span class="period-compare" id="week-compare"></span>
+          <button type="button" class="fbtn" id="refresh-now" title="Fetch today's tickets from Pylon and refresh this week — the daily pipeline only fetches a day the morning after it ends">Refresh from Pylon</button>
+          <span class="ts-lbl" id="refresh-note"></span>
         </div>
       </div>
 
@@ -1255,7 +1257,10 @@ async function loadCsat(qs) {
   }
 }
 
+let lastLoadOpts = {};
+
 async function load(opts) {
+  lastLoadOpts = opts || {};
   // KPI tiles keep their ids (initKPIs writes into them). The table and
   // insight grid take the period-change shimmer.
   $("insGrid").innerHTML = QC.skeleton.kpis(6);
@@ -1300,6 +1305,24 @@ $("prev-week").addEventListener("click", () => shiftPeriod(-1));
 $("next-week").addEventListener("click", () => shiftPeriod(1));
 $("apply-period").addEventListener("click", applyDates);
 $("this-week").addEventListener("click", () => load({}));
+// The refresh reports into its own status line: a failed fetch must never
+// blank the dashboard someone is reading.
+$("refresh-now").addEventListener("click", async () => {
+  const btn = $("refresh-now"), note = $("refresh-note");
+  btn.disabled = true;
+  note.textContent = "Fetching from Pylon…";
+  try {
+    const r = await QC.api("/api/weekly/refresh", { method: "POST" });
+    const week = r.week_refreshed ? `, refreshed ${r.week_refreshed.stored} from earlier this week` : "";
+    note.textContent = `Fetched ${r.fetched} tickets for today${week}.`
+      + (r.complete ? "" : " Pylon returned a partial list — refresh again.");
+    await load(lastLoadOpts);
+  } catch (e) {
+    note.textContent = "Refresh failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 $("agSearch").addEventListener("input", renderAgentTable);
 $("expBtn").addEventListener("click", exportCsv);
 $("agPag").addEventListener("click", e => {

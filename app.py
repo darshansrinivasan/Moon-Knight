@@ -809,6 +809,52 @@ async def refetch_open_tickets(user: dict = Depends(auth.require_operator)):
     return res
 
 
+@app.post("/api/weekly/refresh")
+async def refresh_weekly_from_pylon(user: dict = Depends(auth.require_operator)):
+    """Fetch today's tickets from Pylon and refresh the rest of this week by id.
+
+    The day pipeline fetches a date the morning AFTER it ends, so the weekly's
+    current period undercounts (and skews every percentile over) tickets
+    created since the last fetch. Fetch plus local rule scoring only — no AI
+    scoring, no Slack post, no Vertex spend.
+    """
+    from pylon import _IST  # the day pipeline keys dates by IST; match it
+
+    today = datetime.now(_IST).date()
+    today_str = today.isoformat()
+    monday = today - timedelta(days=today.weekday())
+    try:
+        with db.advisory_lock(f"fetch:{today_str}", user["email"],
+                              ttl_seconds=1800):
+            fetch_res = await fetch_and_store(today)
+        week_refreshed = None
+        if monday < today:
+            with db.advisory_lock("fetch:backfill", user["email"],
+                                  ttl_seconds=1800):
+                week_refreshed = await openqc.backfill_range(
+                    monday.isoformat(),
+                    (today - timedelta(days=1)).isoformat())
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Pylon refresh failed: {e}")
+
+    vault.audit(
+        user["email"], "fetch.weekly_refresh",
+        f"today={today_str} fetched={fetch_res.count}"
+        + (f" week_refreshed={week_refreshed['stored']}"
+           if week_refreshed else ""),
+    )
+    return {
+        "date": today_str,
+        "fetched": fetch_res.count,
+        "complete": fetch_res.complete,
+        "week_refreshed": week_refreshed,
+    }
+
+
 @app.post("/api/backfill")
 async def backfill_tickets(start: str, end: str,
                            user: dict = Depends(auth.require_operator)):

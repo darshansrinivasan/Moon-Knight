@@ -24,6 +24,8 @@ def check(name, ok, detail=""):
 
 print("=== unauthenticated ===")
 check("/api/weekly -> 401", client.get("/api/weekly").status_code == 401)
+check("/api/weekly/refresh -> 401",
+      client.post("/api/weekly/refresh").status_code == 401)
 check("/api/weekly/csat -> 401", client.get("/api/weekly/csat").status_code == 401)
 check("/api/admin/surveys -> 401", client.get("/api/admin/surveys").status_code == 401)
 r = client.get("/weekly")
@@ -73,6 +75,52 @@ if r.status_code == 200:
     check("csat slice does not block on missing Pylon",
           r.json().get("error") in (None, "pylon_not_configured")
           or isinstance(r.json().get("csatCurr"), dict))
+
+print()
+print("=== refresh: fetch today + refresh the week, no AI path ===")
+from types import SimpleNamespace
+
+import openqc
+
+
+async def fake_fetch_and_store(target):
+    fake_fetch_and_store.asked = target
+    return SimpleNamespace(count=7, deleted=0, kept_reviewed=0,
+                           restored=0, complete=True)
+
+
+async def fake_backfill(start, end):
+    fake_backfill.range = (start, end)
+    return {"requested": 3, "stored": 3, "rescored": 1, "deleted": 0,
+            "kept_reviewed": 0, "failed": 0, "scoring_failures": None}
+
+
+fake_fetch_and_store.asked = None
+fake_backfill.range = None
+real_fs, real_bf = appmod.fetch_and_store, openqc.backfill_range
+appmod.fetch_and_store, openqc.backfill_range = fake_fetch_and_store, fake_backfill
+try:
+    r = client.post("/api/weekly/refresh")
+finally:
+    appmod.fetch_and_store, openqc.backfill_range = real_fs, real_bf
+
+check("refresh -> 200", r.status_code == 200, str(r.status_code))
+if r.status_code == 200:
+    body = r.json()
+    check("refresh fetched today's count", body.get("fetched") == 7)
+    check("refresh reports completeness", body.get("complete") is True)
+    check("today was the fetched date",
+          fake_fetch_and_store.asked is not None
+          and fake_fetch_and_store.asked.isoformat() == body.get("date"))
+    # Mondays have no earlier days this week; other days must refresh them.
+    if fake_fetch_and_store.asked.weekday() == 0:
+        check("Monday skips the week refresh", body.get("week_refreshed") is None)
+    else:
+        check("earlier week days refreshed by id",
+              body.get("week_refreshed", {}).get("stored") == 3)
+        check("week refresh stops the day before today",
+              fake_backfill.range is not None
+              and fake_backfill.range[1] < body.get("date"))
 
 print()
 print("=== page renders ===")
