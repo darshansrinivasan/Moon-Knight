@@ -55,6 +55,8 @@ _ADDED_COLUMNS = [
     "ALTER TABLE tickets ADD COLUMN deleted_at TEXT",
     # Pylon CSAT on the issue, plus survey responses we attach later.
     "ALTER TABLE tickets ADD COLUMN csat_responses TEXT",
+    # Survey responses often have account_id and no issue_id.
+    "ALTER TABLE csat_events ADD COLUMN account_id TEXT",
 ]
 
 
@@ -98,7 +100,8 @@ def init_db():
             score         INTEGER NOT NULL,
             comment       TEXT,
             submitted_at  TEXT,
-            fetched_at    TEXT
+            fetched_at    TEXT,
+            account_id    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS messages (

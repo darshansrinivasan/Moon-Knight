@@ -424,7 +424,7 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
         age = (clock - created).total_seconds()
         sla_breached = age > sla_secs
 
-    assignee = (row.get("assignee_name") or "").strip() or "Unassigned"
+    assignee = _display_agent(row.get("assignee_name")) or ""
     created_day = _local_date(created, tz)
     csat_events = []
     csat_raw = list(normalize_csat_items(row.get("csat_responses")))
@@ -583,11 +583,70 @@ def csat_json_for_store(issue: dict, existing_json: str | None = None) -> str:
     return json.dumps(list(merged.values()))
 
 
+def _display_agent(name) -> str | None:
+    """A real person for CSAT charts, or None for Unassigned / blank."""
+    text = (name or "").strip()
+    if not text or text.lower() in {"unassigned", "none", "null", "-", "n/a"}:
+        return None
+    return text
+
+
+def _ticket_for_csat(conn, row: dict):
+    """The ticket this survey belongs to.
+
+    Pylon CSAT often has account_id and no issue_id. Prefer an explicit
+    issue, then the latest ticket on that account created or updated
+    before the survey was submitted.
+    """
+    issue = row.get("issue") if isinstance(row.get("issue"), dict) else {}
+    issue_id = row.get("issue_id") or issue.get("id")
+    number = row.get("issue_number") or issue.get("number")
+    account_id = row.get("account_id") or (issue.get("account") or {}).get("id")
+    submitted = row.get("submitted_at") or ""
+    if issue_id:
+        ticket = conn.execute(
+            "SELECT id, number, assignee_name, csat_responses, account_id "
+            "FROM tickets WHERE id = ?",
+            (str(issue_id),),
+        ).fetchone()
+        if ticket is not None:
+            return ticket
+    if number is not None:
+        ticket = conn.execute(
+            "SELECT id, number, assignee_name, csat_responses, account_id "
+            "FROM tickets WHERE number = ?",
+            (number,),
+        ).fetchone()
+        if ticket is not None:
+            return ticket
+    if not account_id:
+        return None
+    return conn.execute(
+        """
+        SELECT id, number, assignee_name, csat_responses, account_id
+        FROM tickets
+        WHERE account_id = ?
+          AND deleted_at IS NULL
+          AND COALESCE(state, '') != 'archived'
+        ORDER BY
+          CASE
+            WHEN COALESCE(created_at, '') != '' AND created_at <= ? THEN 0
+            WHEN COALESCE(updated_at, '') != '' AND updated_at <= ? THEN 0
+            ELSE 1
+          END,
+          COALESCE(created_at, updated_at, '') DESC
+        LIMIT 1
+        """,
+        (str(account_id), submitted, submitted),
+    ).fetchone()
+
+
 def store_csat_responses(rows: list[dict]) -> int:
     """Persist survey rows onto csat_events and matching tickets.
 
     Responses without an issue_id still count — CSAT is a survey, not a
-    ticket field. Returns events written.
+    ticket field. Assignee comes from the matched ticket, never a
+    placeholder. Returns events written.
     """
     now = datetime.now().isoformat()
     written = 0
@@ -598,34 +657,29 @@ def store_csat_responses(rows: list[dict]) -> int:
             if not items:
                 continue
             issue = row.get("issue") if isinstance(row.get("issue"), dict) else {}
-            issue_id = row.get("issue_id") or issue.get("id")
-            number = row.get("issue_number") or issue.get("number")
-            ticket = None
-            if issue_id:
-                ticket = conn.execute(
-                    "SELECT id, number, assignee_name, csat_responses FROM tickets WHERE id = ?",
-                    (str(issue_id),),
-                ).fetchone()
-            if ticket is None and number is not None:
-                ticket = conn.execute(
-                    "SELECT id, number, assignee_name, csat_responses FROM tickets WHERE number = ?",
-                    (number,),
-                ).fetchone()
-            assignee = (ticket["assignee_name"] if ticket else None) or "Unassigned"
-            tid = ticket["id"] if ticket else issue_id
+            ticket = _ticket_for_csat(conn, row)
+            account_id = (
+                row.get("account_id")
+                or (issue.get("account") or {}).get("id")
+                or (ticket["account_id"] if ticket else None)
+            )
+            assignee = _display_agent(ticket["assignee_name"] if ticket else None) or ""
+            tid = ticket["id"] if ticket else (row.get("issue_id") or issue.get("id"))
+            number = (ticket["number"] if ticket else None) or row.get("issue_number") or issue.get("number")
             for j, item in enumerate(items):
                 eid = str(row.get("id") or f"{tid or 'orphan'}-{item.get('submitted_at')}-{j}-{i}")
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO csat_events
                         (id, issue_id, ticket_number, assignee, score, comment,
-                         submitted_at, fetched_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         submitted_at, fetched_at, account_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        eid, tid, ticket["number"] if ticket else number,
+                        eid, tid, number,
                         assignee, item["score"], item.get("comment") or "",
                         item.get("submitted_at") or "", now,
+                        str(account_id) if account_id else None,
                     ),
                 )
                 written += 1
@@ -660,14 +714,24 @@ def _csat_events_from_store(tz) -> list[dict]:
     seen = set()
     try:
         with db.get_conn() as conn:
-            survey_rows = conn.execute(
-                """
-                SELECT e.id, e.issue_id, e.score, e.submitted_at, e.assignee,
-                       t.assignee_name AS ticket_assignee
-                FROM csat_events e
-                LEFT JOIN tickets t ON t.id = e.issue_id
-                """
-            ).fetchall()
+            try:
+                survey_rows = conn.execute(
+                    """
+                    SELECT e.id, e.issue_id, e.account_id, e.score, e.submitted_at,
+                           e.assignee, t.assignee_name AS ticket_assignee
+                    FROM csat_events e
+                    LEFT JOIN tickets t ON t.id = e.issue_id
+                    """
+                ).fetchall()
+            except Exception:
+                survey_rows = conn.execute(
+                    """
+                    SELECT e.id, e.issue_id, e.score, e.submitted_at,
+                           e.assignee, t.assignee_name AS ticket_assignee
+                    FROM csat_events e
+                    LEFT JOIN tickets t ON t.id = e.issue_id
+                    """
+                ).fetchall()
             ticket_rows = conn.execute(
                 """
                 SELECT id, assignee_name, csat_responses
@@ -679,35 +743,51 @@ def _csat_events_from_store(tz) -> list[dict]:
                   AND csat_responses != '[]'
                 """
             ).fetchall()
+            for row in survey_rows:
+                day = _local_date(_parse_ts(row["submitted_at"]), tz)
+                if day is None:
+                    continue
+                seen.add((str(row["issue_id"] or ""), row["submitted_at"] or "", row["score"]))
+                assignee = (
+                    _display_agent(row["ticket_assignee"])
+                    or _display_agent(row["assignee"])
+                )
+                if not assignee:
+                    account_id = None
+                    try:
+                        account_id = row["account_id"]
+                    except (IndexError, KeyError):
+                        account_id = None
+                    if account_id:
+                        ticket = _ticket_for_csat(conn, {
+                            "account_id": account_id,
+                            "submitted_at": row["submitted_at"] or "",
+                        })
+                        assignee = _display_agent(
+                            ticket["assignee_name"] if ticket else None)
+                events.append({
+                    "score": row["score"],
+                    "day": day,
+                    "assignee": assignee or "",
+                })
+            for row in ticket_rows:
+                assignee = _display_agent(row["assignee_name"]) or ""
+                for item in normalize_csat_items(row["csat_responses"]):
+                    submitted = item.get("submitted_at") or ""
+                    day = _local_date(_parse_ts(submitted), tz)
+                    if day is None:
+                        continue
+                    key = (str(row["id"]), submitted, item["score"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    events.append({
+                        "score": item["score"],
+                        "day": day,
+                        "assignee": assignee,
+                    })
     except Exception:
         return []
-    for row in survey_rows:
-        day = _local_date(_parse_ts(row["submitted_at"]), tz)
-        if day is None:
-            continue
-        seen.add((str(row["issue_id"] or ""), row["submitted_at"] or "", row["score"]))
-        events.append({
-            "score": row["score"],
-            "day": day,
-            "assignee": (row["ticket_assignee"] or row["assignee"] or "Unassigned").strip()
-                        or "Unassigned",
-        })
-    for row in ticket_rows:
-        assignee = (row["assignee_name"] or "Unassigned").strip() or "Unassigned"
-        for item in normalize_csat_items(row["csat_responses"]):
-            submitted = item.get("submitted_at") or ""
-            day = _local_date(_parse_ts(submitted), tz)
-            if day is None:
-                continue
-            key = (str(row["id"]), submitted, item["score"])
-            if key in seen:
-                continue
-            seen.add(key)
-            events.append({
-                "score": item["score"],
-                "day": day,
-                "assignee": assignee,
-            })
     return events
 
 
@@ -736,7 +816,9 @@ def _csat_pack(events: list[dict]) -> dict:
     pos = star5 + star4
     by_agent: dict[str, list[int]] = defaultdict(list)
     for e in events:
-        by_agent[e["assignee"]].append(e["score"])
+        name = _display_agent(e.get("assignee"))
+        if name:
+            by_agent[name].append(e["score"])
     agents = []
     for name, xs in sorted(by_agent.items(), key=lambda kv: (-statistics.fmean(kv[1]), kv[0])):
         a5 = sum(1 for s in xs if s == 5)

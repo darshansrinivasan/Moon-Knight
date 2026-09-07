@@ -269,6 +269,25 @@ check("custom From/To uses submitted dates",
       custom["csatCurr"]["total"] >= dated["csatCurr"]["total"], True)
 
 print()
+print("=== CSAT agents come from the ticket, not Unassigned ===")
+add("acct_t", created="2026-08-10T04:00:00+00:00", state="closed",
+    updated="2026-08-12T04:00:00+00:00", assignee="Chitra", account="Gamma Co")
+weekly.store_csat_responses([{
+    "id": "surv-gamma",
+    "account_id": "acc-gamma-co",
+    "submitted_at": "2026-08-19T12:00:00+00:00",
+    "answers": [{"question_type": "score", "value": "5"}],
+}])
+named = weekly.build(CURR, now=NOW)
+curr_names = [a["name"] for a in named["csatCurr"]["agents"]]
+check("account-matched survey names the agent", "Chitra" in curr_names, True)
+check("Unassigned is not a CSAT agent", "Unassigned" not in curr_names, True)
+check("blank is not a CSAT agent", "" not in curr_names, True)
+check("Chitra has the matched score",
+      next(a for a in named["csatCurr"]["agents"] if a["name"] == "Chitra")["total"] >= 1,
+      True)
+
+print()
 print("=== custom dates ===")
 P = weekly.build(start="2026-08-18", end="2026-08-20", now=NOW)
 check("custom period_start", P["period_start"], "2026-08-18")

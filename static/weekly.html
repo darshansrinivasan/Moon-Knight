@@ -843,6 +843,12 @@ function initCharts() {
   }
   makeCsatDonut("cCSAT-pv-donut", D.csatPrev);
   makeCsatDonut("cCSAT-cv-donut", D.csatCurr);
+  function namedAgents(list) {
+    return (list || []).filter(a => {
+      const n = (a && a.name ? String(a.name) : "").trim();
+      return n && n.toLowerCase() !== "unassigned";
+    });
+  }
   function makeCsatBar(id, agents) {
     dC(id);
     CH[id] = new Chart($(id), { type: "bar", data: { labels: agents.map(a => clip(a.name, 14)), datasets: [{
@@ -850,9 +856,9 @@ function initCharts() {
       backgroundColor: agents.map(a => a.avg >= 4.5 ? p.pass : a.avg >= 4 ? p.accent : p.fail), borderRadius: 4,
     }] }, options: { ...base, scales: { ...base.scales, y: { ...base.scales.y, min: 0, max: 5.5 } } } });
   }
-  makeCsatBar("cCSAT-pv-bar", D.csatPrev.agents || []);
-  makeCsatBar("cCSAT-cv-bar", D.csatCurr.agents || []);
-  const wowAg = [...new Set([...(D.csatPrev.agents || []).map(a => a.name), ...(D.csatCurr.agents || []).map(a => a.name)])];
+  makeCsatBar("cCSAT-pv-bar", namedAgents(D.csatPrev.agents));
+  makeCsatBar("cCSAT-cv-bar", namedAgents(D.csatCurr.agents));
+  const wowAg = [...new Set([...namedAgents(D.csatPrev.agents).map(a => a.name), ...namedAgents(D.csatCurr.agents).map(a => a.name)])];
   const pvM = {}, cvM = {};
   (D.csatPrev.agents || []).forEach(a => pvM[a.name] = a.avg);
   (D.csatCurr.agents || []).forEach(a => cvM[a.name] = a.avg);
@@ -933,11 +939,11 @@ function renderCSAT() {
   $("pv-avg").textContent = pv.avg != null ? pv.avg.toFixed(2) + " / 5" : "—";
   $("pv-pos").textContent = pv.positivePct != null ? pv.positivePct + "%" : "—";
   $("pv-tot").textContent = pv.total;
-  $("pv-nag").textContent = (pv.agents || []).length;
+  $("pv-nag").textContent = (pv.agents || []).filter(a => a.name && String(a.name).trim() && String(a.name).trim().toLowerCase() !== "unassigned").length;
   $("cv-avg").textContent = cv.avg != null ? cv.avg.toFixed(2) + " / 5" : "—";
   $("cv-pos").textContent = cv.positivePct != null ? cv.positivePct + "%" : "—";
   $("cv-tot").textContent = cv.total;
-  $("cv-nag").textContent = (cv.agents || []).length;
+  $("cv-nag").textContent = (cv.agents || []).filter(a => a.name && String(a.name).trim() && String(a.name).trim().toLowerCase() !== "unassigned").length;
   const ranks = ["1", "2", "3"];
   function renderCsatTbl(id, agents) {
     if (!agents.length) {
@@ -951,8 +957,8 @@ function renderCSAT() {
        <td><span class="${awCls(a.award)}">${QC.esc(a.award || "")}</span></td></tr>`
     ).join("");
   }
-  renderCsatTbl("csat-pv-tbody", pv.agents || []);
-  renderCsatTbl("csat-cv-tbody", cv.agents || []);
+  renderCsatTbl("csat-pv-tbody", (pv.agents || []).filter(a => a.name && String(a.name).trim() && String(a.name).trim().toLowerCase() !== "unassigned"));
+  renderCsatTbl("csat-cv-tbody", (cv.agents || []).filter(a => a.name && String(a.name).trim() && String(a.name).trim().toLowerCase() !== "unassigned"));
 }
 
 function renderQuality() {
