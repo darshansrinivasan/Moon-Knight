@@ -33,9 +33,11 @@ copy:
    colour). Chart colours come from Nocturne tokens via
    `getComputedStyle`.
 
-CSAT is fetched from Pylon (`issue.csat_responses` on ticket persist, plus
-`GET /surveys` → `GET /surveys/{id}/responses` on `/api/weekly`) and stored
-on `tickets.csat_responses`. Reopen history is still not in the store.
+CSAT is fetched from Pylon: `GET /surveys` lists templates, Admin saves
+`csat_survey_id`, and `/api/weekly/csat` pages
+`GET /surveys/{id}/responses` for every submission. Scores are stored on
+`csat_events` / `tickets.csat_responses`. Reopen history is still not in
+the store.
 
 ---
 
@@ -270,7 +272,7 @@ name a person, account, or category.
 | Surface | Work |
 |---|---|
 | `weekly.py` | `build(week_start=None, *, start=None, end=None, now=None) -> D` |
-| `app.py` | `GET /weekly`, `GET /api/weekly?week=&start=&end=` |
+| `app.py` | `GET /weekly`, `GET /api/weekly?week=&start=&end=`, `GET /api/weekly/csat` |
 | `static/weekly.html` | page + render + live filters + CSV |
 | `static/shell.js` | nav entry + `currentPage` path |
 | `tests/t_weekly.py` | generator contract |

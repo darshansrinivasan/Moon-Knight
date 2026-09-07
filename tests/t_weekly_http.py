@@ -24,6 +24,8 @@ def check(name, ok, detail=""):
 
 print("=== unauthenticated ===")
 check("/api/weekly -> 401", client.get("/api/weekly").status_code == 401)
+check("/api/weekly/csat -> 401", client.get("/api/weekly/csat").status_code == 401)
+check("/api/admin/surveys -> 401", client.get("/api/admin/surveys").status_code == 401)
 r = client.get("/weekly")
 check("/weekly -> redirect to login",
       r.status_code == 302 and "/login" in r.headers.get("location", ""))
@@ -64,6 +66,13 @@ check("reversed dates -> 400",
       client.get("/api/weekly?start=2026-08-20&end=2026-08-18").status_code == 400)
 check("start without end -> 400",
       client.get("/api/weekly?start=2026-08-18").status_code == 400)
+r = client.get("/api/weekly/csat?start=2026-08-18&end=2026-08-20")
+check("csat slice -> 200", r.status_code == 200, str(r.status_code))
+if r.status_code == 200:
+    check("csat slice has csatCurr", "csatCurr" in r.json())
+    check("csat slice does not block on missing Pylon",
+          r.json().get("error") in (None, "pylon_not_configured")
+          or isinstance(r.json().get("csatCurr"), dict))
 
 print()
 print("=== page renders ===")
@@ -78,6 +87,14 @@ check("original KPI and chart ids",
       'id="k-vol"' in r.text and 'id="cTrend"' in r.text and 'id="agTBody"' in r.text)
 check("title is Support weekly Dashboard",
       "Support weekly Dashboard" in r.text)
+
+r = client.get("/admin")
+check("admin has CSAT section",
+      r.status_code == 200 and 'id="csat_survey_id"' in r.text
+      and 'data-section="csat"' in r.text)
+r = client.get("/api/admin/surveys")
+check("surveys list is reachable",
+      r.status_code in (200, 502, 503), str(r.status_code))
 
 print()
 if fails:

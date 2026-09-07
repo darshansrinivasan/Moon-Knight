@@ -558,9 +558,20 @@ async def fetch_day(target: date) -> FetchedDay:
     )
 
 
+def _is_csat_survey(survey: dict) -> bool:
+    kind = str(survey.get("type") or "").lower()
+    name = str(survey.get("name") or "").lower()
+    if kind == "csat":
+        return True
+    if "csat" in name or "satisfaction" in name:
+        return True
+    # SpotDraft's live survey is often a custom template, not type=csat.
+    return kind == "custom"
+
+
 async def fetch_surveys() -> list[dict]:
     """Every survey defined for the org (CSAT, NPS, custom)."""
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=12) as client:
         r = await _with_retry(
             lambda: client.get(f"{BASE_URL}/surveys", headers=_headers())
         )
@@ -569,50 +580,95 @@ async def fetch_surveys() -> list[dict]:
     return body.get("data") or []
 
 
-async def fetch_csat_responses(start: date, end: date) -> list[dict]:
-    """CSAT survey submissions in the IST window [start, end].
+async def _survey_pages(client, sid: str, params: dict, *, max_pages: int = 8) -> list[dict]:
+    out: list[dict] = []
+    cursor = None
+    pages = 0
+    while True:
+        page = dict(params)
+        if cursor:
+            page["cursor"] = cursor
+        try:
+            r = await _with_retry(
+                lambda p=page, survey_id=sid: client.get(
+                    f"{BASE_URL}/surveys/{survey_id}/responses",
+                    headers=_headers(),
+                    params=p,
+                )
+            )
+            r.raise_for_status()
+            body = r.json()
+        except Exception as e:
+            logger.warning("CSAT responses unavailable for %s: %s", sid, e)
+            break
+        out.extend(body.get("data") or [])
+        pages += 1
+        pag = body.get("pagination") or {}
+        if pages >= max_pages or not pag.get("has_next_page"):
+            break
+        cursor = pag.get("cursor")
+        if not cursor:
+            break
+    return out
 
-    Uses GET /surveys then GET /surveys/{id}/responses. Failures on one
-    survey are logged and skipped so a single broken survey cannot empty
-    the weekly dashboard.
-    """
+
+def _in_submitted_window(row: dict, after: str, before: str) -> bool:
+    raw = row.get("submitted_at") or row.get("created_at") or ""
+    if not raw:
+        return True
+    ts = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+    try:
+        submitted = datetime.fromisoformat(ts)
+        lo = datetime.fromisoformat(after.replace("Z", "+00:00"))
+        hi = datetime.fromisoformat(before.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if submitted.tzinfo is None:
+        submitted = submitted.replace(tzinfo=timezone.utc)
+    return lo <= submitted <= hi
+
+
+def configured_csat_survey_id() -> str:
+    """Admin-chosen survey id, or empty when the weekly tab should discover."""
+    import vault
+    return (vault.get_setting("csat_survey_id") or "").strip()
+
+
+async def resolve_csat_survey_ids() -> list[str]:
+    """The survey(s) to page. Configured id wins; otherwise GET /surveys."""
+    chosen = configured_csat_survey_id()
+    if chosen:
+        return [chosen]
     surveys = await fetch_surveys()
-    csat_ids = [s["id"] for s in surveys if s.get("type") == "csat" and s.get("id")]
+    csat_ids = [s["id"] for s in surveys if s.get("id") and _is_csat_survey(s)]
+    if csat_ids:
+        return csat_ids
+    return [s["id"] for s in surveys if s.get("id")]
+
+
+async def fetch_csat_responses(start: date, end: date) -> list[dict]:
+    """Every response on the configured (or discovered) CSAT survey.
+
+    GET /surveys/{id}/responses, paginated to the end. Date query params on
+    Pylon have been empty for this org, so we page the full survey and keep
+    rows whose submitted_at falls in [start, end].
+    """
+    csat_ids = await resolve_csat_survey_ids()
     if not csat_ids:
+        logger.info("No Pylon CSAT survey id configured or discovered")
         return []
 
     after, before = _ist_range(start, end)
     out: list[dict] = []
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=20) as client:
         for sid in csat_ids:
-            cursor = None
-            while True:
-                params = {
-                    "submitted_after": after,
-                    "submitted_before": before,
-                    "limit": 200,
-                }
-                if cursor:
-                    params["cursor"] = cursor
-                try:
-                    r = await _with_retry(
-                        lambda p=params, survey_id=sid: client.get(
-                            f"{BASE_URL}/surveys/{survey_id}/responses",
-                            headers=_headers(),
-                            params=p,
-                        )
-                    )
-                    r.raise_for_status()
-                    body = r.json()
-                except Exception as e:
-                    logger.warning("CSAT responses unavailable for %s: %s", sid, e)
-                    break
-                out.extend(body.get("data") or [])
-                pag = body.get("pagination") or {}
-                if not pag.get("has_next_page"):
-                    break
-                cursor = pag.get("cursor")
-                if not cursor:
-                    break
+            raw = await _survey_pages(
+                client, sid, {"limit": 200}, max_pages=100,
+            )
+            rows = [r for r in raw if _in_submitted_window(r, after, before)]
+            out.extend(rows)
+
+    logger.info("Pylon CSAT pull: survey=%s responses_in_window=%s",
+                ",".join(csat_ids), len(out))
     return out
