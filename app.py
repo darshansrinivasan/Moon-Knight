@@ -302,8 +302,10 @@ async def me(user: dict = Depends(auth.require_user)):
         # Sent so the dashboard can disable Refetch and Run QC rather than
         # offering buttons that come back 403.
         "can_run_qc": auth.can_run_qc(user),
-        # Separate right, separate flag: operators own the rubric, admins do not.
-        # A page that inferred one from the other would offer a dead Save button.
+        # Separate right, separate flag: editing the rubric and spending the
+        # budget to apply it are two questions with the same answer today. A page
+        # that inferred one from the other would offer a dead Save button the day
+        # they diverge.
         "can_edit_rules": auth.can_edit_rules(user),
     }
 
@@ -1522,8 +1524,7 @@ async def rules_suggestions(days: int = 30,
     is based on, but never applies one. Auto-tuning a grading rubric from its own
     past disagreements is a feedback loop with no human in it, and the failure
     mode is silent drift in what "Pass" means with nobody able to say when it
-    changed. Accepting a suggestion goes through the normal operator-gated
-    rules save.
+    changed. Accepting a suggestion goes through the normal gated rules save.
     """
     if not 1 <= days <= 365:
         raise HTTPException(400, "days must be between 1 and 365")
@@ -1539,7 +1540,7 @@ async def rules_dry_run(request: Request,
     quota, not because it changes anything — it deliberately cannot. The draft
     never reaches `app_settings`, no `ai_checks` row is touched, and no run is
     recorded. What comes back is a side-by-side of the stored grade and the
-    grade the draft produced, so an operator can see the effect of a rubric edit
+    grade the draft produced, so an editor can see the effect of a rubric edit
     before making it everyone's grades.
 
     The response labels its own cost. Token counts come from the API for this

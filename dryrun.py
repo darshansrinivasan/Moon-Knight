@@ -5,14 +5,14 @@ way to know what an edit does is to run it. The alternative — save, re-run a
 date, read the diff, revert if it was wrong — costs a full day of AI calls and
 overwrites real grades in the meantime.
 
-Three properties make this safe to hand to an operator:
+Three properties make this safe to hand to an admin:
 
   * **Nothing is written.** No `ai_checks` row, no run record, no rules change.
     The draft text reaches the model through an override parameter and is never
     persisted; a dry-run cannot alter a grade a reviewer is looking at.
   * **The sample is graded tickets only.** A ticket with no stored grade has
     nothing to compare against, so including it would pad the sample and the
-    bill while telling the operator nothing.
+    bill while telling the admin nothing.
   * **The spend is bounded and stated.** At most `MAX_LIMIT` tickets per call,
     and the reported cost is the real token usage from the call, labelled as an
     estimate of what the same edit would cost across a whole run.
@@ -58,7 +58,7 @@ def _sample(limit: int, date: str | None = None) -> list[dict]:
     """The most recently graded tickets, newest first.
 
     Recency rather than randomness: a dry-run run twice on the same draft should
-    compare the same tickets, or the operator cannot tell a rubric change from a
+    compare the same tickets, or the admin cannot tell a rubric change from a
     sampling change.
     """
     where = "WHERE ac.overall_result IS NOT NULL AND t.deleted_at IS NULL"
@@ -107,12 +107,12 @@ def _draft_grades(t: dict, result: dict) -> dict:
 
     The overall verdict is recomputed through the same function a real run uses,
     against the ticket's existing R-checks, so the comparison shows the verdict
-    the operator would actually get — not the A-grades alone.
+    the admin would actually get — not the A-grades alone.
     """
     grades = {k: result.get(k) for k in prompts.A_CHECK_KEYS}
     # Every R-check the real verdict depends on, or the comparison lies: a
     # missing column reads as "not Fail" and the draft verdict comes out kinder
-    # than the one the operator would actually get. _sample must select all of
+    # than the one the admin would actually get. _sample must select all of
     # R_CHECK_KEYS for this to hold.
     missing = [k for k in qc_runner.R_CHECK_KEYS if k not in t]
     if missing:

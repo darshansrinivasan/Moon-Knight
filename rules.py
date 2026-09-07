@@ -8,7 +8,7 @@ from AI scoring, and workspace-specific grading guidance appended to the AI
 rubric.
 
 Defaults come from the constants in scorer.py, so behaviour is unchanged until
-an operator edits something. Overrides are stored as one JSON document in
+an admin edits something. Overrides are stored as one JSON document in
 app_settings and validated before they are accepted. Each run's config snapshot
 records the rules hash, so a grade change is attributable to a rules change.
 """
@@ -31,7 +31,7 @@ _cache: dict | None = None
 #
 # Thread-local rather than a swapped cache because this runs inside a live
 # server: the fetch loop scores tickets and *writes* the result, so a global
-# override would grade production tickets against an operator's unsaved draft.
+# override would grade production tickets against an admin's unsaved draft.
 _scope = threading.local()
 
 RULES_KEY = "qc_rules_json"
@@ -94,7 +94,7 @@ def defaults() -> dict:
 
         # R8's conditions, each required only while it is listed here. The
         # `does_rootly_exist` field is still defined in Pylon but has stopped
-        # being filled, so dropping `rootly_yes` is how an operator says that
+        # being filled, so dropping `rootly_yes` is how an admin says that
         # without waiting for a deploy.
         "r8_conditions":        list(scorer.R8_CONDITIONS),
 
@@ -125,7 +125,7 @@ def defaults() -> dict:
         "a_guidance": "",
 
         # The grading prompt itself, section by section. Defaults are the exact
-        # text that used to be a string literal in qc_runner, so an operator who
+        # text that used to be a string literal in qc_runner, so an admin who
         # never touches these gets byte-identical grading. Clearing a section
         # restores its default rather than sending the model an empty rubric —
         # see prompts._section. The fixed half of the prompt (the idx
@@ -155,7 +155,7 @@ def _load() -> dict:
 def _fold_legacy_group_states(stored: dict, base: dict) -> None:
     """Carry a customised `r5_group_states` into the status matrix.
 
-    Before the matrix, `r5_group_states` was the one status behaviour an operator
+    Before the matrix, `r5_group_states` was the one status behaviour an admin
     could change — a map of state to the literal tags that satisfy a handoff.
     The matrix seeds its `tags` from the shipped constant, so without this fold
     a workspace that had customised that key would silently lose it on deploy:
@@ -285,7 +285,7 @@ def excluded_states() -> list:
 
 
 def disabled_checks() -> set:
-    """Checks the operator has switched off. Only toggleable keys count."""
+    """Checks the admin has switched off. Only toggleable keys count."""
     import scorer
     allowed = set(scorer.TOGGLEABLE_CHECKS)
     return {str(k).strip().lower() for k in current().get("disabled_checks", [])
@@ -319,7 +319,7 @@ def field(name: str) -> str:
 
     Falls back to the shipped default rather than returning empty: a blank
     mapping would make the check read a field called "", which fails every
-    ticket silently. A mapping an operator has actually cleared is treated as
+    ticket silently. A mapping an admin has actually cleared is treated as
     "use the default", the same convention the prompt sections use.
     """
     import scorer
@@ -602,7 +602,7 @@ def save(candidate: dict, updated_by: str) -> list:
     The candidate is merged over what is already stored, not written in its
     place. This used to be a straight replace, which meant any key absent from
     the payload silently reverted to its default — no error, no trace, and the
-    only thing standing between an operator's rubric and a reset was every client
+    only thing standing between an admin's rubric and a reset was every client
     remembering to send all of it back. That is an invariant living in the
     wrong place. Now a save can only change the keys it actually carries.
 
@@ -641,7 +641,7 @@ def save(candidate: dict, updated_by: str) -> list:
     # An empty document when nothing was stored yet, rather than skipping: the
     # state before the first-ever save is "everything at its default", and
     # `_load` treats an empty document exactly that way. Skipping it left the
-    # first save — often the one an operator most wants to take back — as the only
+    # first save — often the one an admin most wants to take back — as the only
     # save with no way out.
     existing = vault.get_raw_setting(RULES_KEY) or "{}"
     vault.set_raw_setting(PREV_KEY, existing, updated_by)

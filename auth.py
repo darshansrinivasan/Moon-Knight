@@ -46,43 +46,39 @@ GOOGLE_AUTH_URL  = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # ── roles ────────────────────────────────────────────────────────────────────
-# Three levels, split by two different questions rather than by seniority.
+# Three levels, and the middle one exists because running QC is not a read and
+# not an act of configuration. It spends real money on the workspace's Vertex
+# quota and it overwrites grades people are reviewing, so it cannot sit behind
+# `require_user` with the dashboard. But it is also routine daily work that
+# should not require handing someone the credential vault and the user list.
 #
-# Running QC is neither a read nor an act of configuration. It spends real money
-# on the workspace's Vertex quota and it overwrites grades people are reviewing,
-# so it cannot sit behind `require_user` with the dashboard. But it is also
-# routine daily work that should not require handing someone the credential
-# vault and the user list.
+# The grading rubric sits with the work rather than with the plumbing: operators
+# own it, and admins keep it too. Restricting the rubric to operators was tried
+# and reverted — admins control the user list, so an admin who wanted the rubric
+# could simply grant someone Operator. It bought no real boundary and cost a
+# locked-out administrator.
 #
-# The grading rubric is a third thing again. It is not infrastructure — it is the
-# definition of what "Pass" means, and it belongs to the people who read tickets
-# against it every day. So the rubric is owned by operators, and administrators
-# see it read-only: whoever holds the credential vault does not also get to
-# silently redefine the standard everyone is measured by.
-#
-# So: operators grade and define grading, admins hold the plumbing, members read.
+# So: admins hold the plumbing, admins and operators grade and define grading,
+# members read.
 ROLE_ADMIN    = "admin"
 ROLE_OPERATOR = "operator"
 ROLE_MEMBER   = "member"
 
 ROLES = (ROLE_ADMIN, ROLE_OPERATOR, ROLE_MEMBER)
 
-# Who may spend money and overwrite grades. Admins keep this even though they no
-# longer own the rubric: a run applies the standard as it currently stands, it
-# does not restate what the standard is. Triggering one still bills the Vertex
-# quota and replaces grades reviewers are reading, which is why it is not a
-# member right.
+# Who may spend money and overwrite grades. Admins are included because an admin
+# who can rewrite the grading rubric can already change every grade; withholding
+# the button that applies it would be theatre.
 CAN_RUN_QC = (ROLE_ADMIN, ROLE_OPERATOR)
 
 # Who may change the rubric — the R-check thresholds, the AI prompt sections, the
-# field mappings, the enabled-check mask. Deliberately *not* admins.
+# field mappings, the enabled-check mask.
 #
-# Operational trap: this is a separation of duties, not a wall. Admins own the
-# user list, so an admin who needs rubric access gets it by having someone made
-# an Operator — and `update_user` refuses self-edits, so they cannot grant it to
-# themselves. The consequence to know about: with no active operator, nobody can
-# edit the rules until an admin promotes someone. That is the intended cost.
-CAN_EDIT_RULES = (ROLE_OPERATOR,)
+# Identical to CAN_RUN_QC today, and kept as its own name anyway: these answer
+# two different questions ("may you redefine the standard?" and "may you spend
+# the budget applying it?") that merely happen to have the same answer. Collapse
+# them and the next role change has to rediscover that they were ever distinct.
+CAN_EDIT_RULES = (ROLE_ADMIN, ROLE_OPERATOR)
 
 ROLE_LABELS = {
     ROLE_ADMIN:    "Administrator",
@@ -91,9 +87,8 @@ ROLE_LABELS = {
 }
 
 ROLE_DESCRIPTIONS = {
-    ROLE_ADMIN:    "Credentials, statuses, schedule, people — and can run QC. "
-                   "Sees the grading rules read-only.",
-    ROLE_OPERATOR: "Owns the grading rules, and can fetch tickets and run or "
+    ROLE_ADMIN:    "Full access: credentials, rules, statuses, people — and can run QC.",
+    ROLE_OPERATOR: "Can edit the grading rules, and fetch tickets and run or "
                    "re-run QC. Cannot change credentials or people.",
     ROLE_MEMBER:   "Read-only. Can see every page and sign off tickets in their coverage.",
 }
@@ -446,20 +441,17 @@ def require_operator(request: Request) -> dict:
 def require_rules_editor(request: Request) -> dict:
     """For changing the grading rubric, or spending money to trial a change.
 
-    Not `require_admin`, and the difference is the point: the rubric defines what
-    "Pass" means, so it is owned by the people who grade against it rather than by
-    whoever holds the credential vault. An administrator reading this 403 has not
-    hit a bug — they are on the wrong side of a deliberate split, and the message
-    has to say so or they will go looking for one.
+    Separate from `require_operator` despite the same membership: that one guards
+    spending, this one guards the definition of a grade. A future change to either
+    should not silently move the other.
     """
     user = require_user(request)
     if user["role"] not in CAN_EDIT_RULES:
         raise HTTPException(
             403,
-            "Changing the grading rules is limited to operators, because the "
-            "rubric defines what every grade means and belongs to the people "
-            "who apply it. Administrators get a read-only view. Ask another "
-            "administrator to make you an Operator.",
+            "Changing the grading rules is limited to operators and "
+            "administrators, because the rubric defines what every stored grade "
+            "means. Ask an administrator to make you an Operator.",
         )
     return user
 

@@ -885,18 +885,11 @@ async function load() {
     $("sug-days").querySelectorAll("button").forEach(b => b.disabled = true);
     $("save").style.display = "none";
     $("load-defaults").style.display = "none";
-    // Two different read-only situations, and one message cannot serve both. An
-    // administrator is not missing a permission they can ask for — they are on
-    // the far side of a deliberate split, and telling them to "ask an admin"
-    // would send them in a circle.
-    $("mode-note").innerHTML = (QC.me && QC.me.role === "admin")
-      ? `<div class="banner info"><b>Read-only view.</b>
-         These are the rules every run is scored against. The rubric is owned by
-         Operators, so administrators see it but do not change it — ask an Operator,
-         or have another administrator grant you the Operator role.</div>`
-      : `<div class="banner info"><b>Read-only view.</b>
-         These are the rules every run is scored against. Changing them needs the
-         Operator role — ask an administrator for it.</div>`;
+    // Only a member reaches this: admins and operators both edit, so there is one
+    // read-only situation left and one message serves it.
+    $("mode-note").innerHTML = `<div class="banner info"><b>Read-only view.</b>
+      These are the rules every run is scored against. Changing them needs the
+      Operator role — ask an administrator for it.</div>`;
   }
 }
 
@@ -1103,7 +1096,7 @@ function renderPromptFixed() {
     || `<p class="hint">None reported by the server.</p>`;
 }
 
-// Every editable prompt field as the operator has it right now. Used by the dry-run
+// Every editable prompt field as the editor has it right now. Used by the dry-run
 // (which grades against it) and by collect() (which saves it).
 function draftPrompt() {
   const draft = {a_guidance: $("a_guidance").value.trim()};
