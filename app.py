@@ -446,14 +446,20 @@ async def fetch_and_store(target: date) -> FetchResult:
                 ext_issues = issue.get("external_issues") or []
 
                 cpv = issue.get("customer_portal_visible")
+                prior = conn.execute(
+                    "SELECT csat_responses FROM tickets WHERE id = ?",
+                    (issue["id"],),
+                ).fetchone()
+                csat_json = weekly.csat_json_for_store(
+                    issue, prior["csat_responses"] if prior else None)
                 conn.execute("""
                     INSERT OR REPLACE INTO tickets
                         (id, number, fetch_date, title, link, state, source, type,
                          priority, assignee_id, assignee_name, account_id,
                          custom_fields, external_issues, body_html,
                          created_at, updated_at, latest_message_time,
-                         customer_portal_visible, fetched_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         customer_portal_visible, fetched_at, csat_responses)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     issue["id"], issue.get("number"), date_str,
                     issue.get("title"), issue.get("link"),
@@ -462,7 +468,7 @@ async def fetch_and_store(target: date) -> FetchResult:
                     json.dumps(cf), json.dumps(ext_issues), issue.get("body_html"),
                     issue.get("created_at"), issue.get("updated_at"),
                     issue.get("latest_message_time"),
-                    1 if cpv else 0, now,
+                    1 if cpv else 0, now, csat_json,
                 ))
 
                 # Skip messages and scoring for archived tickets — state is
@@ -991,12 +997,40 @@ async def weekly_page(user: dict = Depends(auth.require_user)):
 
 
 @app.get("/api/weekly")
-async def get_weekly(week: str | None = None, user: dict = Depends(auth.require_user)):
-    """Week-over-week support operations. `week` is the current week's Monday."""
+async def get_weekly(week: str | None = None,
+                    start: str | None = None,
+                    end: str | None = None,
+                    user: dict = Depends(auth.require_user)):
+    """Period-over-period support operations.
+
+    `start`+`end` select the current window (previous is the same length
+    immediately before). `week` is the Monday fallback. CSAT is pulled
+    from Pylon surveys when a token is configured, then stored on tickets.
+    """
     if week:
         _require_date(week)
+    if start:
+        _require_date(start)
+    if end:
+        _require_date(end)
     try:
-        return await asyncio.to_thread(weekly.build, week)
+        curr_start, curr_end, prev_start, _prev_end = weekly.resolve_period(
+            week, start, end)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    try:
+        rows = await pylon.fetch_csat_responses(prev_start, curr_end)
+        if rows:
+            await asyncio.to_thread(weekly.store_csat_responses, rows)
+    except pylon.PylonNotConfigured:
+        pass
+    except Exception as e:
+        logger.warning("Weekly CSAT fetch skipped: %s", e)
+
+    try:
+        return await asyncio.to_thread(
+            weekly.build, week, start=start, end=end)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 

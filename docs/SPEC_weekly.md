@@ -33,9 +33,9 @@ copy:
    colour). Chart colours come from Nocturne tokens via
    `getComputedStyle`.
 
-CSAT and reopen history are not in the QC store. The keys stay on `D`
-(empty / zero) so the contract holds; the UI says they are unavailable
-rather than inventing awards or reopen counts.
+CSAT is fetched from Pylon (`issue.csat_responses` on ticket persist, plus
+`GET /surveys` → `GET /surveys/{id}/responses` on `/api/weekly`) and stored
+on `tickets.csat_responses`. Reopen history is still not in the store.
 
 ---
 
@@ -50,10 +50,11 @@ Tickets.
 below, generated from `tickets` + `messages` + `accounts`. No 249 KB
 `data.js`. Regeneration is a page load.
 
-**D3 — Weeks are Monday–Sunday in the schedule timezone.** Same clock
-as `leaderboard.week_bounds()`. Query `week` is the Monday of the
-*current* week (`YYYY-MM-DD`). A non-Monday snaps to that week's
-Monday. A future Monday clamps to this week's Monday.
+**D3 — Dates are chosen by the operator.** Default is this Monday–Sunday
+in the schedule timezone. Query `start`+`end` set the current period
+(max 31 days); the previous period is the same length immediately
+before `start`. Query `week` still snaps to that week's Monday when
+dates are omitted. A future `start` is rejected.
 
 **D4 — Cohort vs flow.**
 
@@ -81,7 +82,7 @@ is an operations dashboard.
 
 **D6 — Filters re-aggregate `allRows`.** Changing a filter rebuilds
 KPIs, daily series, breakdowns, the agent table (from rows), and the
-ticket list. CSAT stays the empty stored object. `#clearFilters` resets
+ticket list. CSAT stays the stored object for the loaded period. `#clearFilters` resets
 to both weeks, all agents/priorities/categories/statuses, escalations
 unrestricted.
 
@@ -212,7 +213,7 @@ pv_assigned, cv_assigned
 pv_resolved, cv_resolved     resolved-in-week, by current assignee
 pv_frt, cv_frt               minutes (mean); null if none
 pv_res, cv_res               hours (mean); null if none
-pv_csat_avg, cv_csat_avg     always null
+pv_csat_avg, cv_csat_avg     mean score or null
 ```
 
 ### agentTable (objects, same people, same order)
@@ -229,7 +230,7 @@ pv_escalations  cv_escalations
 pv_sla_breaches cv_sla_breaches
 pv_reopened     cv_reopened                 (0)
 cv_backlog                                  created this week, still open
-pv_csat_* / cv_csat_*                       null / 0
+pv_csat_* / cv_csat_*                       from stored responses
 ```
 
 Nulls are expected. The percentile chart drops agents whose p75/p90
@@ -238,8 +239,8 @@ are null. CSV export reads this array (current filter, if any).
 ### csatPrev / csatCurr
 
 ```
-total, avg, star5, star4, low, positivePct   all 0 / null
-agents []
+total, avg, star5, star4, low, positivePct
+agents [{name, total, scores, star5, star4, low, positivePct, avg, award}]
 ```
 
 ### allRows
@@ -268,8 +269,8 @@ name a person, account, or category.
 
 | Surface | Work |
 |---|---|
-| `weekly.py` | `build(week_start=None, *, now=None) -> D` |
-| `app.py` | `GET /weekly`, `GET /api/weekly?week=` |
+| `weekly.py` | `build(week_start=None, *, start=None, end=None, now=None) -> D` |
+| `app.py` | `GET /weekly`, `GET /api/weekly?week=&start=&end=` |
 | `static/weekly.html` | page + render + live filters + CSV |
 | `static/shell.js` | nav entry + `currentPage` path |
 | `tests/t_weekly.py` | generator contract |
@@ -286,8 +287,9 @@ as every other tab.
 
 * Porting the original inline CSS palette or light-mode toggle. The
   app is Nocturne-dark.
-* Storing or fetching CSAT / reopen history.
-* Calling Pylon or Gemini from this tab.
+* Storing or fetching reopen history.
+* Calling Gemini from this tab. CSAT survey pull on `/api/weekly` is
+  allowed and is skipped when Pylon is not configured.
 * Changing R-checks, overall, or the leaderboard.
 * Baking a weekly dump into git.
 

@@ -34,7 +34,7 @@ def check(name, got, want):
 def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
         priority="High", account="Acme", category="Salesforce (SFDC)",
         cat_slug="salesforce_sfdc", extra_cf=None, messages=(),
-        deleted=None, link=None):
+        deleted=None, link=None, csat=None):
     _num[0] += 1
     cf = {
         "request_category": {
@@ -53,12 +53,14 @@ def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
         c.execute(
             "INSERT OR REPLACE INTO tickets "
             "(id,number,fetch_date,title,link,state,priority,assignee_name,"
-            "account_id,custom_fields,created_at,updated_at,deleted_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "account_id,custom_fields,created_at,updated_at,deleted_at,"
+            "csat_responses)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, _num[0], created[:10], f"Ticket {tid}",
              link or f"https://app.usepylon.com/issues?issueNumber={_num[0]}",
              state, priority, assignee, acc_id, json.dumps(cf),
-             created, updated or created, deleted),
+             created, updated or created, deleted,
+             json.dumps(csat) if csat else None),
         )
         for i, m in enumerate(messages):
             c.execute(
@@ -88,7 +90,8 @@ def reply_pair(created, hours, *, customer_first=True):
 
 
 add("c1", created="2026-08-18T04:00:00+00:00", state="investigating",
-    messages=reply_pair("2026-08-18T04:00:00+00:00", 2))
+    messages=reply_pair("2026-08-18T04:00:00+00:00", 2),
+    csat=[{"score": 5, "submitted_at": "2026-08-18T10:00:00+00:00"}])
 add("c2", created="2026-08-19T04:00:00+00:00", state="waiting_on_engg",
     category="Integrations", cat_slug="integrations",
     messages=reply_pair("2026-08-19T04:00:00+00:00", 1))
@@ -102,11 +105,13 @@ add("c4", created="2026-08-21T04:00:00+00:00", state="closed",
     messages=reply_pair("2026-08-21T04:00:00+00:00", 30))
 add("c5", created="2026-08-18T06:00:00+00:00", state="investigating",
     assignee="Bob", account="Acme",
-    messages=reply_pair("2026-08-18T06:00:00+00:00", 3))
+    messages=reply_pair("2026-08-18T06:00:00+00:00", 3),
+    csat=[{"score": 4, "submitted_at": "2026-08-18T12:00:00+00:00"}])
 
 add("p1", created="2026-08-11T04:00:00+00:00", state="closed",
     updated="2026-08-12T04:00:00+00:00",
-    messages=reply_pair("2026-08-11T04:00:00+00:00", 2))
+    messages=reply_pair("2026-08-11T04:00:00+00:00", 2),
+    csat=[{"score": 3, "submitted_at": "2026-08-11T16:00:00+00:00"}])
 add("p2", created="2026-08-12T04:00:00+00:00", state="closed",
     updated="2026-08-18T08:00:00+00:00",  # resolved in current week (flow)
     messages=reply_pair("2026-08-12T04:00:00+00:00", 2))
@@ -195,7 +200,12 @@ check("Ann and Bob present", set(names) >= {"Ann", "Bob"}, True)
 ann = next(a for a in D["agentTable"] if a["agent"] == "Ann")
 bob = next(a for a in D["agentTable"] if a["agent"] == "Bob")
 check("Bob assigned 1 this week", bob["cv_assigned"], 1)
-check("CSAT empty", D["csatCurr"]["total"], 0)
+check("CSAT current total", D["csatCurr"]["total"], 2)
+check("CSAT current avg", D["csatCurr"]["avg"], 4.5)
+check("CSAT previous total", D["csatPrev"]["total"], 1)
+check("CSAT path is wired", D["coverage"]["csat"], True)
+check("Bob CSAT is 4",
+      next(a for a in D["agentTable"] if a["agent"] == "Bob")["cv_csat_avg"], 4.0)
 check("reopen is zero and flagged unavailable",
       (M["cv_reopen"], D["coverage"]["reopen"]), (0, False))
 
@@ -217,6 +227,30 @@ check("weekday labels", DD["currDays"],
       ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
 check("daily resolved does not overwrite KPI scalar",
       isinstance(M["cv_resolved"], int) and isinstance(DD["cv_resolved"], list), True)
+
+print()
+print("=== custom dates ===")
+P = weekly.build(start="2026-08-18", end="2026-08-20", now=NOW)
+check("custom period_start", P["period_start"], "2026-08-18")
+check("custom period_end", P["period_end"], "2026-08-20")
+check("custom current created (c1 c2 c3 c5)", P["metrics"]["cv_total"], 4)
+check("custom daily length is 3", len(P["dailyData"]["cv_created"]), 3)
+check("previous is the 3 days before", P["period_start"] > "2026-08-14", True)
+try:
+    weekly.build(start="2026-08-01", end="2026-09-05", now=NOW)
+    check("32-day range rejected", False, True)
+except ValueError:
+    check("32-day range rejected", True, True)
+try:
+    weekly.build(start="2026-08-20", end="2026-08-18", now=NOW)
+    check("reversed range rejected", False, True)
+except ValueError:
+    check("reversed range rejected", True, True)
+try:
+    weekly.build(start="2026-08-25", end="2026-08-27", now=NOW)
+    check("future start rejected", False, True)
+except ValueError:
+    check("future start rejected", True, True)
 
 print()
 if fails:

@@ -65,6 +65,7 @@ WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 CAT_LIMIT = 12
 CUST_LIMIT = 10
 ESC_CAT_LIMIT = 8
+MAX_PERIOD_DAYS = 31
 
 
 def _tz():
@@ -97,6 +98,87 @@ def resolve_week_start(week: str | None, *, now: datetime | None = None) -> date
     if monday > this_monday:
         return this_monday
     return monday
+
+
+def resolve_period(
+    week: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> tuple[date, date, date, date]:
+    """Current [start, end] and the equal-length previous period.
+
+    `start`+`end` win when both are set. Otherwise `week` (or today) selects
+    a Monday–Sunday. End is clamped to today; a range longer than
+    MAX_PERIOD_DAYS is rejected.
+    """
+    today = _now(now).date()
+    if start or end:
+        if not start or not end:
+            raise ValueError("start and end are required together")
+        try:
+            curr_start = date.fromisoformat(start)
+            curr_end = date.fromisoformat(end)
+        except ValueError:
+            raise ValueError("start and end must be YYYY-MM-DD") from None
+        if curr_start > curr_end:
+            raise ValueError("start must not be after end")
+        if curr_start > today:
+            raise ValueError("start cannot be in the future")
+    else:
+        monday = resolve_week_start(week, now=now)
+        curr_start = monday
+        curr_end = monday + timedelta(days=6)
+
+    span = (curr_end - curr_start).days + 1
+    if span < 1:
+        raise ValueError("period must include at least one day")
+    if span > MAX_PERIOD_DAYS:
+        raise ValueError(f"period cannot exceed {MAX_PERIOD_DAYS} days")
+
+    prev_end = curr_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=span - 1)
+    return curr_start, curr_end, prev_start, prev_end
+
+
+def _range_label(start: date, end: date) -> str:
+    if start == end:
+        try:
+            return start.strftime("%b %-d, %Y")
+        except ValueError:
+            return start.strftime("%b %d, %Y").replace(" 0", " ")
+    if (end - start).days == 6 and start.weekday() == 0:
+        return _week_label(start)
+    try:
+        left = start.strftime("%b %-d")
+        if start.month == end.month and start.year == end.year:
+            right = end.strftime("%-d, %Y")
+        elif start.year == end.year:
+            right = end.strftime("%b %-d, %Y")
+        else:
+            right = end.strftime("%b %-d, %Y")
+            left = start.strftime("%b %-d, %Y")
+    except ValueError:
+        left = start.strftime("%b %d").replace(" 0", " ")
+        if start.month == end.month and start.year == end.year:
+            right = f"{end.day}, {end.year}"
+        else:
+            right = end.strftime("%b %d, %Y").replace(" 0", " ")
+    return f"{left}-{right}"
+
+
+def _day_labels(start: date, n: int) -> list[str]:
+    if n == 7 and start.weekday() == 0:
+        return list(WEEKDAYS)
+    labels = []
+    for i in range(n):
+        day = start + timedelta(days=i)
+        try:
+            labels.append(day.strftime("%b %-d"))
+        except ValueError:
+            labels.append(day.strftime("%b %d").replace(" 0", " "))
+    return labels
 
 
 def _week_label(monday: date) -> str:
@@ -248,10 +330,10 @@ def _load_tickets(since: date) -> tuple[list[dict], dict[str, list[dict]]]:
     bound = since.isoformat()
     with db.get_conn() as conn:
         rows = conn.execute(
-            """
+                """
             SELECT t.id, t.number, t.title, t.link, t.state, t.type, t.priority,
                    t.assignee_name, t.account_id, t.custom_fields, t.created_at,
-                   t.updated_at, t.fetch_date, t.deleted_at,
+                   t.updated_at, t.fetch_date, t.deleted_at, t.csat_responses,
                    a.name AS account_name
             FROM tickets t
             LEFT JOIN accounts a ON a.id = t.account_id
@@ -332,6 +414,17 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
         age = (clock - created).total_seconds()
         sla_breached = age > sla_secs
 
+    assignee = (row.get("assignee_name") or "").strip() or "Unassigned"
+    created_day = _local_date(created, tz)
+    csat_events = []
+    for item in normalize_csat_items(row.get("csat_responses")):
+        day = _local_date(_parse_ts(item.get("submitted_at")), tz) or created_day
+        csat_events.append({
+            "score": item["score"],
+            "day": day,
+            "assignee": assignee,
+        })
+
     return {
         "id": row["id"],
         "number": row.get("number"),
@@ -341,11 +434,11 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
         "status": _status_label(state) or (row.get("state") or "").replace("_", " ").title(),
         "type": row.get("type") or "",
         "priority": _priority(row.get("priority")),
-        "assignee": (row.get("assignee_name") or "").strip() or "Unassigned",
+        "assignee": assignee,
         "account": (row.get("account_name") or "").strip() or "Unknown",
         "category": _humanize(_cf(cf, "request_category")),
         "created": created,
-        "created_day": _local_date(created, tz),
+        "created_day": created_day,
         "resolved_day": resolved_day,
         "frt_secs": frt,
         "res_secs": res_secs,
@@ -354,6 +447,7 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
         "is_escalated": _is_escalated(state, cf),
         "is_reopened": False,
         "sla_breached": sla_breached,
+        "csat_events": csat_events,
     }
 
 
@@ -366,6 +460,157 @@ def _empty_csat() -> dict:
         "low": 0,
         "positivePct": None,
         "agents": [],
+    }
+
+
+def _int_score(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    if 1 <= n <= 5:
+        return n
+    return None
+
+
+def normalize_csat_items(raw) -> list[dict]:
+    """Issue-level or survey-shaped CSAT into {score, comment, submitted_at}."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        score = _int_score(item.get("score"))
+        if score is None:
+            for ans in item.get("answers") or []:
+                if not isinstance(ans, dict):
+                    continue
+                qtype = str(ans.get("question_type") or "").lower()
+                if qtype in {"score", "csat", "rating"}:
+                    score = _int_score(ans.get("value"))
+                    if score is not None:
+                        break
+        if score is None:
+            continue
+        comment = item.get("comment")
+        if not comment:
+            for ans in item.get("answers") or []:
+                if not isinstance(ans, dict):
+                    continue
+                if str(ans.get("question_type") or "").lower() == "comment":
+                    comment = ans.get("value")
+                    break
+        out.append({
+            "score": score,
+            "comment": comment or "",
+            "submitted_at": item.get("submitted_at") or item.get("created_at") or "",
+        })
+    return out
+
+
+def csat_json_for_store(issue: dict, existing_json: str | None = None) -> str:
+    incoming = normalize_csat_items(issue.get("csat_responses"))
+    if incoming:
+        return json.dumps(incoming)
+    return existing_json or "[]"
+
+
+def store_csat_responses(rows: list[dict]) -> int:
+    """Write survey responses onto matching tickets. Returns tickets touched."""
+    by_issue: dict[str, list[dict]] = defaultdict(list)
+    for row in rows or []:
+        issue_id = row.get("issue_id")
+        if not issue_id:
+            continue
+        items = normalize_csat_items(row)
+        if items:
+            by_issue[issue_id].extend(items)
+    if not by_issue:
+        return 0
+    touched = 0
+    with db.get_conn() as conn:
+        for issue_id, items in by_issue.items():
+            existing = conn.execute(
+                "SELECT csat_responses FROM tickets WHERE id = ?",
+                (issue_id,),
+            ).fetchone()
+            if existing is None:
+                continue
+            merged = {json.dumps(x, sort_keys=True): x
+                      for x in normalize_csat_items(existing["csat_responses"])}
+            for item in items:
+                merged[json.dumps(item, sort_keys=True)] = item
+            conn.execute(
+                "UPDATE tickets SET csat_responses = ? WHERE id = ?",
+                (json.dumps(list(merged.values())), issue_id),
+            )
+            touched += 1
+    return touched
+
+
+def _csat_award(avg: float | None, n: int) -> str | None:
+    if avg is None or n <= 0:
+        return None
+    if avg >= 4.8 and n >= 2:
+        return "Champion"
+    if avg >= 4.5:
+        return "Top Performer"
+    if avg >= 4.0:
+        return "Good"
+    if avg >= 3.5:
+        return "Needs Improvement"
+    return "Needs Attention"
+
+
+def _csat_pack(events: list[dict]) -> dict:
+    if not events:
+        return _empty_csat()
+    scores = [e["score"] for e in events]
+    star5 = sum(1 for s in scores if s == 5)
+    star4 = sum(1 for s in scores if s == 4)
+    low = sum(1 for s in scores if s <= 3)
+    avg = round(statistics.fmean(scores), 2)
+    pos = star5 + star4
+    by_agent: dict[str, list[int]] = defaultdict(list)
+    for e in events:
+        by_agent[e["assignee"]].append(e["score"])
+    agents = []
+    for name, xs in sorted(by_agent.items(), key=lambda kv: (-statistics.fmean(kv[1]), kv[0])):
+        a5 = sum(1 for s in xs if s == 5)
+        a4 = sum(1 for s in xs if s == 4)
+        alow = sum(1 for s in xs if s <= 3)
+        aavg = round(statistics.fmean(xs), 2)
+        agents.append({
+            "name": name,
+            "total": len(xs),
+            "scores": xs,
+            "star5": a5,
+            "star4": a4,
+            "low": alow,
+            "positivePct": round(100 * (a5 + a4) / len(xs), 1),
+            "avg": aavg,
+            "award": _csat_award(aavg, len(xs)),
+        })
+    return {
+        "total": len(scores),
+        "avg": avg,
+        "star5": star5,
+        "star4": star4,
+        "low": low,
+        "positivePct": round(100 * pos / len(scores), 1),
+        "agents": agents,
     }
 
 
@@ -425,13 +670,15 @@ def _stat_block(prefix: str, xs: list[float]) -> dict:
     }
 
 
-def _daily(rows: list[dict], start: date) -> dict:
-    created = [0] * 7
-    resolved = [0] * 7
-    esc = [0] * 7
-    frt_buckets: list[list[float]] = [[] for _ in range(7)]
-    res_buckets: list[list[float]] = [[] for _ in range(7)]
-    end = start + timedelta(days=6)
+def _daily(rows: list[dict], start: date, end: date | None = None) -> dict:
+    if end is None:
+        end = start + timedelta(days=6)
+    n = (end - start).days + 1
+    created = [0] * n
+    resolved = [0] * n
+    esc = [0] * n
+    frt_buckets: list[list[float]] = [[] for _ in range(n)]
+    res_buckets: list[list[float]] = [[] for _ in range(n)]
 
     for r in rows:
         if r["created_day"] and start <= r["created_day"] <= end:
@@ -542,14 +789,13 @@ def _insights(metrics: dict, categories: dict, customers: dict) -> list[dict]:
     return out
 
 
-def build(week_start: str | None = None, *, now: datetime | None = None) -> dict:
-    """Return the Support Weekly Dashboard payload for one current week."""
+def build(week_start: str | None = None, *, start: str | None = None,
+          end: str | None = None, now: datetime | None = None) -> dict:
+    """Return the Support Weekly Dashboard payload for a current period."""
     tz = _tz()
     current = _now(now)
-    curr_monday = resolve_week_start(week_start, now=current)
-    prev_monday = curr_monday - timedelta(weeks=1)
-    curr_sunday = curr_monday + timedelta(days=6)
-    prev_sunday = prev_monday + timedelta(days=6)
+    curr_monday, curr_sunday, prev_monday, prev_sunday = resolve_period(
+        week_start, start, end, now=current)
     sla = qc_rules.sla_hours()
 
     raw_rows, msgs = _load_tickets(prev_monday)
@@ -626,8 +872,11 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
     metrics["frt_pct"] = _pct(metrics["cv_frt_avg"], metrics["pv_frt_avg"])
     metrics["res_pct"] = _pct(metrics["cv_res_avg"], metrics["pv_res_avg"])
 
-    d_curr = _daily(tickets, curr_monday)
-    d_prev = _daily(tickets, prev_monday)
+    d_curr = _daily(tickets, curr_monday, curr_sunday)
+    d_prev = _daily(tickets, prev_monday, prev_sunday)
+    day_n = (curr_sunday - curr_monday).days + 1
+    curr_labels = _day_labels(curr_monday, day_n)
+    prev_labels = _day_labels(prev_monday, day_n)
 
     created_either = curr_created + prev_created
     priorities = _top_breakdown(
@@ -682,13 +931,27 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
         "pv_resolved": [], "cv_resolved": [],
         "pv_frt": [], "cv_frt": [],
         "pv_res": [], "cv_res": [],
-        "pv_csat_avg": [None] * len(names),
-        "cv_csat_avg": [None] * len(names),
+        "pv_csat_avg": [],
+        "cv_csat_avg": [],
     }
+    def csat_in(start, end):
+        events = []
+        for r in tickets:
+            for e in r.get("csat_events") or []:
+                if e["day"] and start <= e["day"] <= end:
+                    events.append(e)
+        return events
+
+    csat_curr = _csat_pack(csat_in(curr_monday, curr_sunday))
+    csat_prev = _csat_pack(csat_in(prev_monday, prev_sunday))
+    csat_curr_by = {a["name"]: a for a in csat_curr["agents"]}
+    csat_prev_by = {a["name"]: a for a in csat_prev["agents"]}
+
     agent_table = []
     for name in names:
         a_c = agent_slice(name, curr_created, curr_resolved)
         a_p = agent_slice(name, prev_created, prev_resolved)
+        cca, pca = csat_curr_by.get(name), csat_prev_by.get(name)
         agents["pv_assigned"].append(a_p["assigned"])
         agents["cv_assigned"].append(a_c["assigned"])
         agents["pv_resolved"].append(a_p["resolved"])
@@ -697,6 +960,8 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
         agents["cv_frt"].append(_secs_to_mins(_mean(a_c["frt"])))
         agents["pv_res"].append(_secs_to_hrs(_mean(a_p["res"])))
         agents["cv_res"].append(_secs_to_hrs(_mean(a_c["res"])))
+        agents["pv_csat_avg"].append(pca["avg"] if pca else None)
+        agents["cv_csat_avg"].append(cca["avg"] if cca else None)
         agent_table.append({
             "agent": name,
             "pv_assigned": a_p["assigned"], "cv_assigned": a_c["assigned"],
@@ -716,19 +981,27 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
             "pv_sla_breaches": a_p["sla"], "cv_sla_breaches": a_c["sla"],
             "pv_reopened": 0, "cv_reopened": 0,
             "cv_backlog": a_c["backlog"],
-            "pv_csat_avg": None, "pv_csat_pos_pct": None,
-            "pv_csat_total": 0, "pv_csat_award": None,
-            "cv_csat_avg": None, "cv_csat_pos_pct": None,
-            "cv_csat_total": 0, "cv_csat_award": None,
+            "pv_csat_avg": pca["avg"] if pca else None,
+            "pv_csat_pos_pct": pca["positivePct"] if pca else None,
+            "pv_csat_total": pca["total"] if pca else 0,
+            "pv_csat_award": pca["award"] if pca else None,
+            "cv_csat_avg": cca["avg"] if cca else None,
+            "cv_csat_pos_pct": cca["positivePct"] if cca else None,
+            "cv_csat_total": cca["total"] if cca else 0,
+            "cv_csat_award": cca["award"] if cca else None,
         })
 
-    def row_out(r, week):
+    def row_out(r, week, labels, period_start):
         created_str = r["created"].astimezone(tz).strftime("%Y-%m-%d %H:%M")
         resolved_str = ""
         if r["resolved_day"] and r["is_resolved"]:
             resolved_str = r["resolved_day"].isoformat()
         day = r["created_day"]
-        created_day = WEEKDAYS[day.weekday()] if day else ""
+        created_day = ""
+        if day is not None:
+            idx = (day - period_start).days
+            if 0 <= idx < len(labels):
+                created_day = labels[idx]
         return {
             "issue": r["number"] if r["number"] is not None else r["id"],
             "account": r["account"],
@@ -740,6 +1013,7 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
             "created_str": created_str,
             "resolved_str": resolved_str,
             "created_day": created_day,
+            "created_date": day.isoformat() if day else "",
             "frt_secs": r["frt_secs"],
             "res_secs": r["res_secs"],
             "is_resolved": r["is_resolved"],
@@ -752,8 +1026,8 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
         }
 
     all_rows = (
-        [row_out(r, WEEK_PREV) for r in prev_created]
-        + [row_out(r, WEEK_CURR) for r in curr_created]
+        [row_out(r, WEEK_PREV, prev_labels, prev_monday) for r in prev_created]
+        + [row_out(r, WEEK_CURR, curr_labels, curr_monday) for r in curr_created]
     )
     all_rows.sort(key=lambda x: (x["week"], str(x["issue"])))
 
@@ -766,12 +1040,12 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
     # and cv_esc — a KPI number and a 7-day array cannot share a key.
     payload = {
         "generatedAt": generated,
-        "prevWeekLabel": _week_label(prev_monday),
-        "currWeekLabel": _week_label(curr_monday),
+        "prevWeekLabel": _range_label(prev_monday, prev_sunday),
+        "currWeekLabel": _range_label(curr_monday, curr_sunday),
         "metrics": metrics,
         "dailyData": {
-            "currDays": list(WEEKDAYS),
-            "prevDays": list(WEEKDAYS),
+            "currDays": curr_labels,
+            "prevDays": prev_labels,
             "cv_created": d_curr["created"],
             "pv_created": d_prev["created"],
             "cv_resolved": d_curr["resolved"],
@@ -789,14 +1063,16 @@ def build(week_start: str | None = None, *, now: datetime | None = None) -> dict
         "escCategories": esc_categories,
         "agents": agents,
         "agentTable": agent_table,
-        "csatPrev": _empty_csat(),
-        "csatCurr": _empty_csat(),
+        "csatPrev": csat_prev,
+        "csatCurr": csat_curr,
         "allRows": all_rows,
         "insights": _insights(metrics, categories, customers),
         "week_start": curr_monday.isoformat(),
+        "period_start": curr_monday.isoformat(),
+        "period_end": curr_sunday.isoformat(),
         "timezone": str(tz),
         "coverage": {
-            "csat": False,
+            "csat": True,
             "reopen": False,
             "resolved_proxy": "updated_at on closed tickets",
             "sla_hours": sla,

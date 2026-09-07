@@ -53,6 +53,8 @@ _ADDED_COLUMNS = [
     # absence is only an inference, and it takes messages, grades and human
     # sign-offs with it if it is wrong. NULL means live.
     "ALTER TABLE tickets ADD COLUMN deleted_at TEXT",
+    # Pylon CSAT on the issue, plus survey responses we attach later.
+    "ALTER TABLE tickets ADD COLUMN csat_responses TEXT",
 ]
 
 
@@ -83,7 +85,9 @@ def init_db():
             -- Set when the ticket stops coming back from Pylon; NULL = live.
             -- Soft because absence is an inference, and every read path filters
             -- on it rather than the row being destroyed.
-            deleted_at    TEXT
+            deleted_at    TEXT,
+            -- JSON list of {score, comment, submitted_at} from Pylon CSAT.
+            csat_responses TEXT
         );
 
         CREATE TABLE IF NOT EXISTS messages (

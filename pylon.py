@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from dataclasses import dataclass, field
-from datetime import date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 
 import httpx
@@ -85,9 +85,19 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 
 def _ist_window(target: date) -> tuple[str, str]:
     """Return (start, end) as UTC ISO strings for the full IST calendar day."""
-    from datetime import datetime
     start_ist = datetime(target.year, target.month, target.day, 0,  0,  0,  tzinfo=_IST)
     end_ist   = datetime(target.year, target.month, target.day, 23, 59, 59, tzinfo=_IST)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        start_ist.astimezone(timezone.utc).strftime(fmt),
+        end_ist.astimezone(timezone.utc).strftime(fmt),
+    )
+
+
+def _ist_range(start: date, end: date) -> tuple[str, str]:
+    """UTC ISO bounds covering start 00:00 IST through end 23:59:59 IST."""
+    start_ist = datetime(start.year, start.month, start.day, 0, 0, 0, tzinfo=_IST)
+    end_ist = datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=_IST)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return (
         start_ist.astimezone(timezone.utc).strftime(fmt),
@@ -525,3 +535,63 @@ async def fetch_day(target: date) -> FetchedDay:
         failed_accounts=failed_accounts,
         issues_complete=issues_complete,
     )
+
+
+async def fetch_surveys() -> list[dict]:
+    """Every survey defined for the org (CSAT, NPS, custom)."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await _with_retry(
+            lambda: client.get(f"{BASE_URL}/surveys", headers=_headers())
+        )
+        r.raise_for_status()
+        body = r.json()
+    return body.get("data") or []
+
+
+async def fetch_csat_responses(start: date, end: date) -> list[dict]:
+    """CSAT survey submissions in the IST window [start, end].
+
+    Uses GET /surveys then GET /surveys/{id}/responses. Failures on one
+    survey are logged and skipped so a single broken survey cannot empty
+    the weekly dashboard.
+    """
+    surveys = await fetch_surveys()
+    csat_ids = [s["id"] for s in surveys if s.get("type") == "csat" and s.get("id")]
+    if not csat_ids:
+        return []
+
+    after, before = _ist_range(start, end)
+    out: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for sid in csat_ids:
+            cursor = None
+            while True:
+                params = {
+                    "submitted_after": after,
+                    "submitted_before": before,
+                    "limit": 200,
+                }
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    r = await _with_retry(
+                        lambda p=params, survey_id=sid: client.get(
+                            f"{BASE_URL}/surveys/{survey_id}/responses",
+                            headers=_headers(),
+                            params=p,
+                        )
+                    )
+                    r.raise_for_status()
+                    body = r.json()
+                except Exception as e:
+                    logger.warning("CSAT responses unavailable for %s: %s", sid, e)
+                    break
+                out.extend(body.get("data") or [])
+                pag = body.get("pagination") or {}
+                if not pag.get("has_next_page"):
+                    break
+                cursor = pag.get("cursor")
+                if not cursor:
+                    break
+    return out

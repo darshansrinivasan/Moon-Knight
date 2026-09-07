@@ -38,7 +38,7 @@ check("no week -> 200", r.status_code == 200, str(r.status_code))
 body = r.json()
 for key in ("generatedAt", "prevWeekLabel", "currWeekLabel", "metrics",
             "dailyData", "allRows", "agentTable", "insights", "week_start",
-            "priorities"):
+            "period_start", "period_end", "priorities"):
     check(f"payload has {key}", key in body)
 check("metrics.cv_total is a scalar", isinstance(body["metrics"].get("cv_total"), int))
 check("dailyData.cv_resolved is a week array",
@@ -55,6 +55,15 @@ print()
 print("=== validation ===")
 check("bad week -> 400",
       client.get("/api/weekly?week=nope").status_code == 400)
+r = client.get("/api/weekly?start=2026-08-18&end=2026-08-20")
+check("custom dates -> 200", r.status_code == 200, str(r.status_code))
+if r.status_code == 200:
+    check("custom period_start", r.json()["period_start"] == "2026-08-18")
+    check("custom period_end", r.json()["period_end"] == "2026-08-20")
+check("reversed dates -> 400",
+      client.get("/api/weekly?start=2026-08-20&end=2026-08-18").status_code == 400)
+check("start without end -> 400",
+      client.get("/api/weekly?start=2026-08-18").status_code == 400)
 
 print()
 print("=== page renders ===")
@@ -63,6 +72,8 @@ check("/weekly -> 200", r.status_code == 200, str(r.status_code))
 check("page has the nav host", 'id="app-nav"' in r.text)
 check("page marks itself", 'data-page="weekly"' in r.text)
 check("filters are wired", 'id="fWeek"' in r.text and 'id="clearFilters"' in r.text)
+check("date inputs are present",
+      'id="period-start"' in r.text and 'id="period-end"' in r.text)
 check("original KPI and chart ids",
       'id="k-vol"' in r.text and 'id="cTrend"' in r.text and 'id="agTBody"' in r.text)
 check("title is Support weekly Dashboard",

@@ -9,36 +9,61 @@
 <link rel="stylesheet" href="/static/shell.css">
 <style>
   .content-pane { padding: 18px 22px 48px; }
-  .week-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
-  .week-nav { display: flex; align-items: center; gap: 6px; }
-  .week-nav button {
+  .period-bar, .filter-card {
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--muted); border-radius: 8px; padding: 4px 10px; cursor: pointer;
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;
   }
-  .week-nav button:hover { border-color: var(--color-accent); color: var(--color-accent); }
-  .week-nav h2 { font-size: 14px; font-weight: 600; min-width: 220px; text-align: center; }
-  .ts-lbl { font-size: 11px; color: var(--muted); }
-  .filter-bar {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;
-    display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap;
+  .period-bar {
+    display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end;
   }
-  .flbl { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-  .fsel {
+  .period-fields { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+  .ffield { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .ffield label, .flbl {
+    font-size: 10px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .period-bar input[type="date"], .fsel {
     background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 8px; padding: 6px 9px; font-size: 11px; color: var(--text);
-    min-width: 115px; font-family: inherit;
+    border-radius: 8px; padding: 6px 9px; font-size: 12px; color: var(--text);
+    font-family: inherit; color-scheme: dark; min-height: 32px;
   }
-  .fbtn {
+  .period-bar input[type="date"] { min-width: 148px; }
+  .fsel { min-width: 160px; width: 100%; }
+  .period-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-left: auto; }
+  .ts-lbl { font-size: 11px; color: var(--muted); }
+  .period-compare { font-size: 12px; color: var(--muted); padding-bottom: 6px; }
+  .filter-card { display: grid; gap: 12px; }
+  .filter-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  }
+  .filter-head h2 { font-size: 13px; font-weight: 600; }
+  .filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    gap: 10px 12px;
+    align-items: end;
+  }
+  .filter-actions { display: flex; justify-content: flex-end; }
+  .fbtn, .period-bar button {
     background: transparent; border: 1px solid var(--border); color: var(--muted);
-    border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: 600;
-    cursor: pointer; font-family: inherit;
+    border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+    cursor: pointer; font-family: inherit; min-height: 32px;
   }
-  .fbtn:hover, .fpt-btn.act {
+  .fbtn.primary, #apply-period {
     border-color: var(--color-accent); color: var(--color-accent);
     background: color-mix(in srgb, var(--color-accent) 16%, transparent);
   }
-  .fdiv { height: 20px; width: 1px; background: var(--border); }
+  .fbtn:hover, .period-bar button:hover, .fpt-btn.act {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+  .fchips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 0; }
+  .fchip {
+    font-size: 11px; color: var(--color-accent-300);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    border: 1px solid var(--color-accent); border-radius: 999px;
+    padding: 3px 10px;
+  }
   .g6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
   .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
   .mb18 { margin-bottom: 16px; }
@@ -193,32 +218,69 @@
 <div class="app-main">
   <header class="app-header">
     <h1>Support weekly Dashboard</h1>
-    <span class="muted">Week-over-week operations from the QC ticket store.</span>
+    <span class="muted">Period-over-period operations from the QC ticket store and Pylon CSAT.</span>
     <div class="spacer"></div>
     <span class="ts-lbl" id="genAt">—</span>
   </header>
   <div class="app-body">
     <div class="content-pane">
 
-      <div class="week-bar">
-        <div class="week-nav">
-          <button type="button" id="prev-week" aria-label="Previous week">‹</button>
-          <h2 id="week-title">This week</h2>
-          <button type="button" id="next-week" aria-label="Next week">›</button>
+      <div class="period-bar">
+        <div class="period-fields">
+          <div class="ffield">
+            <label for="period-start">From</label>
+            <input type="date" id="period-start">
+          </div>
+          <div class="ffield">
+            <label for="period-end">To</label>
+            <input type="date" id="period-end">
+          </div>
+          <button type="button" class="fbtn primary" id="apply-period">Apply dates</button>
+          <button type="button" id="this-week">This week</button>
+          <button type="button" id="prev-week" aria-label="Previous period">‹</button>
+          <button type="button" id="next-week" aria-label="Next period">›</button>
         </div>
-        <span class="ts-lbl" id="week-compare"></span>
+        <div class="period-actions">
+          <h2 id="week-title" class="period-compare" style="font-size:14px;font-weight:600;color:var(--text);margin:0">This week</h2>
+          <span class="period-compare" id="week-compare"></span>
+        </div>
       </div>
 
-      <div class="filter-bar">
-        <span class="flbl">Filter</span>
-        <select class="fsel" id="fWeek"><option value="">All Weeks</option><option value="Previous Week">Previous</option><option value="Current Week">Current</option></select>
-        <select class="fsel" id="fAgent"><option value="">All Agents</option></select>
-        <select class="fsel" id="fPriority"><option value="">All Priorities</option><option>Urgent</option><option>High</option><option>Medium</option><option>Low</option><option>Unknown</option></select>
-        <select class="fsel" id="fCategory"><option value="">All Categories</option></select>
-        <select class="fsel" id="fStatus"><option value="">All Statuses</option><option>Closed</option><option>On customer</option><option>Waiting on Engg</option><option>Investigating</option><option>On you</option><option>Waiting on CSM</option></select>
-        <select class="fsel" id="fEsc"><option value="">All</option><option value="true">Escalated</option><option value="false">Not Escalated</option></select>
-        <div class="fdiv"></div>
-        <button type="button" class="fbtn" id="clearFilters">Clear</button>
+      <div class="filter-card">
+        <div class="filter-head">
+          <h2>Filters</h2>
+          <span class="ts-lbl">Charts and the agent table follow these.</span>
+        </div>
+        <div class="filter-grid">
+          <div class="ffield">
+            <label for="fWeek">Period</label>
+            <select class="fsel" id="fWeek"><option value="">Both periods</option><option value="Previous Week">Previous</option><option value="Current Week">Current</option></select>
+          </div>
+          <div class="ffield">
+            <label for="fAgent">Agent</label>
+            <select class="fsel" id="fAgent"><option value="">All agents</option></select>
+          </div>
+          <div class="ffield">
+            <label for="fPriority">Priority</label>
+            <select class="fsel" id="fPriority"><option value="">All priorities</option><option>Urgent</option><option>High</option><option>Medium</option><option>Low</option><option>Unknown</option></select>
+          </div>
+          <div class="ffield">
+            <label for="fCategory">Category</label>
+            <select class="fsel" id="fCategory"><option value="">All categories</option></select>
+          </div>
+          <div class="ffield">
+            <label for="fStatus">Status</label>
+            <select class="fsel" id="fStatus"><option value="">All statuses</option><option>Closed</option><option>On customer</option><option>Waiting on Engg</option><option>Investigating</option><option>On you</option><option>Waiting on CSM</option><option>On hold</option><option>Waiting on Legal</option><option>Waiting on Product</option></select>
+          </div>
+          <div class="ffield">
+            <label for="fEsc">Escalation</label>
+            <select class="fsel" id="fEsc"><option value="">All tickets</option><option value="true">Escalated</option><option value="false">Not escalated</option></select>
+          </div>
+        </div>
+        <div class="fchips" id="filter-chips"></div>
+        <div class="filter-actions">
+          <button type="button" class="fbtn" id="clearFilters">Clear filters</button>
+        </div>
       </div>
 
       <div class="g6" id="kpis">
@@ -328,7 +390,7 @@
 
       <div class="card mb18">
         <div class="sttl">CSAT — Customer Satisfaction</div>
-        <div class="warn-note" id="csat-note">CSAT is not stored in the QC database, so scores and awards are empty until that source is wired.</div>
+        <div class="warn-note" id="csat-note" hidden></div>
         <div class="csat-tabs">
           <div class="csat-tab act" data-csat-tab="pv" id="csat-tab-pv">Previous week</div>
           <div class="csat-tab" data-csat-tab="cv" id="csat-tab-cv">Current week</div>
@@ -443,7 +505,7 @@
 <script src="/static/shell.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-let RAW = null, D = null, weekStart = null;
+let RAW = null, D = null, weekStart = null, periodStart = null, periodEnd = null;
 let CH = {};
 let sortK = "cv_assigned", sortD = "desc", agPg = 1;
 const PG = 10;
@@ -511,9 +573,9 @@ function pct(c, p) { return p ? Math.round((c - p) / p * 1000) / 10 : null; }
 function fromRows(rows) {
   const curr = rows.filter(r => r.week === "Current Week");
   const prev = rows.filter(r => r.week === "Previous Week");
-  const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  const DAYS = (RAW.dailyData && RAW.dailyData.currDays) || ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
   function daily(list, key) {
-    const out = [0,0,0,0,0,0,0];
+    const out = DAYS.map(() => 0);
     for (const r of list) {
       const i = DAYS.indexOf(r.created_day);
       if (i >= 0) out[i] += key ? (r[key] ? 1 : 0) : 1;
@@ -647,9 +709,11 @@ function initKPIs() {
   $("k-vol-i").textContent = "WoW change: " + fP(m.total_pct) + ". " + m.cv_total + " tickets in " + cl + " vs " + m.pv_total + " in " + pl + ".";
   $("k-csat").textContent = cv.avg != null ? cv.avg.toFixed(2) + " / 5" : "—";
   $("k-csat-m").innerHTML = '<span class="kpi-prev">Prev: <b>' + (pv.avg != null ? pv.avg.toFixed(2) + "/5" : "—") + "</b></span>";
-  $("k-csat-i").textContent = D.coverage && D.coverage.csat === false
-    ? "CSAT is not in the QC store."
-    : (pl + ": " + pv.total + " responses. " + cl + ": " + cv.total + " responses.");
+  $("k-csat-i").textContent = cv.total
+    ? cv.total + " responses · " + (cv.positivePct != null ? cv.positivePct + "% positive" : "—")
+    : (D.coverage && D.coverage.csat === false
+      ? "No CSAT on these tickets yet — refetch or wait for the next Pylon pull."
+      : "No CSAT responses in this period.");
   $("k-frt").textContent = fM(m.cv_frt_avg);
   $("k-frt-p").textContent = fM(m.pv_frt_avg);
   const fb = $("k-frt-b");
@@ -872,7 +936,7 @@ function renderCSAT() {
   const ranks = ["1", "2", "3"];
   function renderCsatTbl(id, agents) {
     if (!agents.length) {
-      $(id).innerHTML = '<tr><td colspan="10" class="empty">No CSAT responses in the QC store.</td></tr>';
+      $(id).innerHTML = '<tr><td colspan="10" class="empty">No CSAT responses in this period.</td></tr>';
       return;
     }
     $(id).innerHTML = agents.map((a, i) =>
@@ -989,15 +1053,39 @@ function populateFilters() {
   $("fWeek").options[2].textContent = RAW.currWeekLabel;
 }
 
+function renderFilterChips() {
+  const chips = [];
+  const add = (id, label) => { const v = $(id).value; if (v) chips.push(label + ": " + ($(id).selectedOptions[0]?.textContent || v)); };
+  add("fWeek", "Period");
+  add("fAgent", "Agent");
+  add("fPriority", "Priority");
+  add("fCategory", "Category");
+  add("fStatus", "Status");
+  add("fEsc", "Escalation");
+  $("filter-chips").innerHTML = chips.map(c => `<span class="fchip">${QC.esc(c)}</span>`).join("");
+}
+
 function paint() {
   D = view();
-  $("week-title").textContent = D.currWeekLabel || "This week";
+  $("week-title").textContent = D.currWeekLabel || "This period";
   $("week-compare").textContent = D.prevWeekLabel ? "vs " + D.prevWeekLabel : "";
   $("genAt").textContent = D.generatedAt ? "Updated: " + D.generatedAt : "";
   $("csat-tab-pv").textContent = D.prevWeekLabel;
   $("csat-tab-cv").textContent = D.currWeekLabel;
   $("fpt-pv").textContent = D.prevWeekLabel;
   $("fpt-cv").textContent = D.currWeekLabel;
+  if (D.period_start) $("period-start").value = D.period_start;
+  if (D.period_end) $("period-end").value = D.period_end;
+  const note = $("csat-note");
+  if (D.csatCurr && D.csatCurr.total) {
+    note.hidden = true;
+  } else {
+    note.hidden = false;
+    note.textContent = D.coverage && D.coverage.csat === false
+      ? "No CSAT scores on these tickets yet. They arrive with the next Pylon fetch, and this page also pulls survey responses when a token is configured."
+      : "No CSAT responses were submitted in this period.";
+  }
+  renderFilterChips();
   initKPIs();
   initCharts();
   initFRTPercChart(document.querySelector(".fpt-btn.act")?.dataset.w || "both");
@@ -1023,29 +1111,57 @@ function exportCsv() {
   a.click();
 }
 
-function shiftWeek(days) {
-  if (!weekStart) return;
-  const [y, m, d] = weekStart.split("-").map(Number);
-  const dt = new Date(y, m - 1, d + days);
-  load(dt.toISOString().slice(0, 10));
+function isoDay(d) {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0");
+  return y + "-" + m + "-" + String(d.getDate()).padStart(2, "0");
 }
 
-async function load(week) {
+function shiftPeriod(dir) {
+  if (!periodStart || !periodEnd) return;
+  const s = new Date(periodStart + "T00:00:00");
+  const e = new Date(periodEnd + "T00:00:00");
+  const span = Math.round((e - s) / 86400000) + 1;
+  const delta = dir * span;
+  const ns = new Date(s); ns.setDate(s.getDate() + delta);
+  const ne = new Date(e); ne.setDate(e.getDate() + delta);
+  load({ start: isoDay(ns), end: isoDay(ne) });
+}
+
+function applyDates() {
+  const start = $("period-start").value;
+  const end = $("period-end").value;
+  if (!start || !end) return;
+  load({ start, end });
+}
+
+async function load(opts) {
   // KPI tiles keep their ids (initKPIs writes into them). The table and
   // insight grid take the period-change shimmer.
   $("insGrid").innerHTML = QC.skeleton.kpis(6);
   $("agTBody").innerHTML = QC.skeleton.tableRows(17, 6);
   try {
-    const q = week ? `?week=${encodeURIComponent(week)}` : "";
-    RAW = await QC.api("/api/weekly" + q);
+    const q = new URLSearchParams();
+    if (opts && opts.start && opts.end) {
+      q.set("start", opts.start);
+      q.set("end", opts.end);
+    } else if (opts && opts.week) {
+      q.set("week", opts.week);
+    }
+    const qs = q.toString();
+    RAW = await QC.api("/api/weekly" + (qs ? "?" + qs : ""));
     weekStart = RAW.week_start;
+    periodStart = RAW.period_start || RAW.week_start;
+    periodEnd = RAW.period_end;
     const url = new URL(location);
-    if (weekStart) url.searchParams.set("week", weekStart);
+    url.searchParams.delete("week");
+    if (periodStart && periodEnd) {
+      url.searchParams.set("start", periodStart);
+      url.searchParams.set("end", periodEnd);
+    }
     history.replaceState(null, "", url);
     populateFilters();
     paint();
   } catch (e) {
-    $("kpis").innerHTML = "";
     $("agTBody").innerHTML = `<tr><td colspan="17" class="empty">${QC.esc(e.message)}</td></tr>`;
   }
 }
@@ -1057,8 +1173,12 @@ $("clearFilters").addEventListener("click", () => {
   ["fWeek","fAgent","fPriority","fCategory","fStatus","fEsc"].forEach(id => { $(id).value = ""; });
   paint();
 });
-$("prev-week").addEventListener("click", () => shiftWeek(-7));
-$("next-week").addEventListener("click", () => shiftWeek(7));
+$("prev-week").addEventListener("click", () => shiftPeriod(-1));
+$("next-week").addEventListener("click", () => shiftPeriod(1));
+$("apply-period").addEventListener("click", applyDates);
+$("this-week").addEventListener("click", () => load({}));
+$("period-start").addEventListener("change", applyDates);
+$("period-end").addEventListener("change", applyDates);
 $("agSearch").addEventListener("input", renderAgentTable);
 $("expBtn").addEventListener("click", exportCsv);
 $("agPag").addEventListener("click", e => {
@@ -1098,8 +1218,11 @@ document.querySelectorAll(".fpt-btn").forEach(b => {
 });
 
 QC.ready.then(() => {
-  const week = new URLSearchParams(location.search).get("week");
-  load(week);
+  const q = new URLSearchParams(location.search);
+  const start = q.get("start"), end = q.get("end"), week = q.get("week");
+  if (start && end) load({ start, end });
+  else if (week) load({ week });
+  else load({});
 });
 </script>
 </body>

@@ -35,6 +35,7 @@ import db
 import qc_runner
 import resync_overall
 import scorer
+import weekly
 from drilldown import _require_iso_date, safe_link
 from leaderboard import EFFECTIVE_GRADE_SQL, LATEST_REVIEW_SQL
 
@@ -295,14 +296,20 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
 
             ext_issues = issue.get("external_issues") or []
             cpv = issue.get("customer_portal_visible")
+            prior = conn.execute(
+                "SELECT csat_responses FROM tickets WHERE id = ?",
+                (issue["id"],),
+            ).fetchone()
+            csat_json = weekly.csat_json_for_store(
+                issue, prior["csat_responses"] if prior else None)
             conn.execute("""
                 INSERT OR REPLACE INTO tickets
                     (id, number, fetch_date, title, link, state, source, type,
                      priority, assignee_id, assignee_name, account_id,
                      custom_fields, external_issues, body_html,
                      created_at, updated_at, latest_message_time,
-                     customer_portal_visible, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     customer_portal_visible, fetched_at, csat_responses)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 issue["id"], issue.get("number"), fetch_date,
                 issue.get("title"), issue.get("link"),
@@ -311,7 +318,7 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                 json.dumps(cf), json.dumps(ext_issues), issue.get("body_html"),
                 issue.get("created_at"), issue.get("updated_at"),
                 issue.get("latest_message_time"),
-                1 if cpv else 0, now,
+                1 if cpv else 0, now, csat_json,
             ))
             stored += 1
 
