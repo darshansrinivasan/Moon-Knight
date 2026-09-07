@@ -103,11 +103,11 @@
      a fill: this grid is the primary signal on the page, and roughly 8% of men
      have red-green colour blindness, so colour alone would not be readable. */
   .mx {
-    display: grid; grid-template-columns: repeat(13, 16px); gap: 3px;
+    display: grid; grid-template-columns: repeat(14, 16px); gap: 3px;
     flex: none;
   }
   .mx-head {
-    display: grid; grid-template-columns: repeat(13, 16px); gap: 3px;
+    display: grid; grid-template-columns: repeat(14, 16px); gap: 3px;
     font-size: 9px; text-align: center;
     color: color-mix(in srgb, var(--color-text) 42%, transparent);
   }
@@ -1909,6 +1909,7 @@ const CHECKS = {
   r7: { label: "Rootly/Jira",    desc: "R7: Rootly or Jira link present for engineering tickets" },
   r8: { label: "Oncall Check",    desc: "R8: when escalated to oncall or Rootly ref present — does_rootly_exist=Yes, Rootly ref filled, Jira linked, and request_category is an oncall category" },
   r10: { label: "SpotAssist",    desc: "R10 (advisory): Slack ticket answered by hand without SpotAssist — add the ticket emoji so the agent gets the first attempt. Never affects the overall grade" },
+  r11: { label: "Follow-through", desc: "R11: support has the last word in an active status but has gone publicly silent past the update window (working hours, weekends excluded) — the customer is waiting on a promised update" },
   a1: { label: "Cat. Accuracy",  desc: "A1 (AI): functionality & category match the actual customer ask" },
   a2: { label: "Sentiment",      desc: "A2 (AI): customer sentiment — Positive/Neutral/Concerned/Frustrated/Urgent" },
   a3: { label: "Response",       desc: "A3 (AI): quality of support responses — Good/Needs Improvement/Poor" },
@@ -1922,7 +1923,7 @@ const CHECKS = {
 // like any check, never counted into the overall.
 const MATRIX = [
   ["r1", "Fn"], ["r2", "Ct"], ["r3", "Ac"], ["r4", "RT"],
-  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"], ["r10", "SA"],
+  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"], ["r10", "SA"], ["r11", "FT"],
   ["a1", "CA"], ["a2", "Sn"], ["a3", "Rs"], ["a4", "SC"], ["a5", "Cl"],
 ];
 

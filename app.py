@@ -522,13 +522,13 @@ async def fetch_and_store(target: date) -> FetchResult:
                 conn.execute("""
                     INSERT OR REPLACE INTO rule_checks
                         (ticket_id, fetch_date, r1, r2, r3, r4, r5, r7, r8, r9,
-                         r10, checked_at, rules_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         r10, r11, checked_at, rules_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     issue["id"], date_str,
                     scores["r1"], scores["r2"], scores["r3"],
                     scores["r4"], scores["r5"], scores["r7"],
-                    scores["r8"], scores["r9"], scores["r10"],
+                    scores["r8"], scores["r9"], scores["r10"], scores["r11"],
                     now, rules_hash,
                 ))
 
@@ -1509,6 +1509,7 @@ RULE_DESCRIPTIONS = {
     "r7": ("R7 — Rootly/Jira link", "Engineering tickets must reference a Rootly incident or Jira issue. No parameters."),
     "r8": ("R8 — Oncall completeness", "When escalated to oncall, the required fields must be consistent."),  # conditions filled in live
     "r10": ("R10 — SpotAssist trigger (advisory)", "Slack tickets should engage SpotAssist."),  # bot name filled in live
+    "r11": ("R11 — Follow-through", "Support must not go silent after taking the last word."),  # hours filled in live
     "a":  ("A1–A5 — AI grading", "Category accuracy, customer sentiment, response quality, status-vs-conversation, and premature closure — graded by Gemini against a fixed rubric with pinned generation."),
 }
 
@@ -1544,6 +1545,13 @@ def live_rule_descriptions() -> dict:
                     f"{bot} only engages when someone adds the ticket emoji; if a "
                     f"rep answers by hand without {bot} ever appearing in the "
                     f"thread, the emoji was skipped and this check flags it.")
+        elif key == "r11":
+            desc = (f"In {', '.join(sorted(qc_rules.r11_states()))}, support may "
+                    f"hold the last public word for at most "
+                    f"{qc_rules.r11_update_hours():g} working hours (weekends "
+                    f"skipped) before the customer is owed an update. The mirror "
+                    f"of R4: R4 times the first reply, this times the follow-up "
+                    f"after \"I'm checking, will update you\".")
         if key in off:
             desc = ("Switched off — stored verdicts are kept but no longer "
                     "count towards any grade. " + desc)

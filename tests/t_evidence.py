@@ -49,7 +49,7 @@ def ticket(**over):
         "custom_fields": {}, "external_issues": [], "body_html": "",
         "source": "email",
         "r1": "Pass", "r2": "Pass", "r3": "Pass", "r4": "Pass",
-        "r5": "Pass", "r7": "Pass", "r8": "Pass", "r10": "N/A",
+        "r5": "Pass", "r7": "Pass", "r8": "Pass", "r10": "N/A", "r11": "N/A",
     }
     row.update(over)
     for key in ("custom_fields", "external_issues"):

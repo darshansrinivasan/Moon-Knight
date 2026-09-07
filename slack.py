@@ -27,6 +27,7 @@ RULE_LABELS = {
     "r4": "Response >24h",
     "r5": "Status/owner mismatch",
     "r7": "Rootly/Jira missing",
+    "r11": "Silent after promising update",
     "r8": "Oncall incomplete",
 }
 

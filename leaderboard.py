@@ -51,7 +51,7 @@ _EFFECTIVE_GRADE = EFFECTIVE_GRADE_SQL
 # r10 is advisory (never flips a grade) but is counted here on purpose:
 # the per-check tallies and the assignee bifurcation are exactly where a
 # skipped-SpotAssist habit is meant to be visible.
-RULE_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10")
+RULE_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")
 
 
 def _keys() -> tuple:

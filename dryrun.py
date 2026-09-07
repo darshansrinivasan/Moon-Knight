@@ -74,6 +74,7 @@ def _sample(limit: int, date: str | None = None) -> list[dict]:
                    t.fetch_date,
                    a.name AS account_name, a.type AS account_type,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
+                   rc.r11,
                    ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.overall_result
             FROM tickets t
             LEFT JOIN accounts    a  ON t.account_id = a.id

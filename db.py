@@ -42,6 +42,8 @@ _ADDED_COLUMNS = [
     "ALTER TABLE rule_checks ADD COLUMN r9 TEXT",
     # r10: advisory SpotAssist-trigger check on Slack tickets.
     "ALTER TABLE rule_checks ADD COLUMN r10 TEXT",
+    # r11: follow-through — support silent after promising progress.
+    "ALTER TABLE rule_checks ADD COLUMN r11 TEXT",
     "ALTER TABLE tickets ADD COLUMN customer_portal_visible INTEGER",
     # Reasoning tokens bill at the output rate but are reported separately;
     # cached input bills at a discount. Both were missing from the estimate.
@@ -138,6 +140,7 @@ def init_db():
             fetch_date TEXT,
             r1 TEXT, r2 TEXT, r3 TEXT, r4 TEXT,
             r5 TEXT, r6 TEXT, r7 TEXT, r8 TEXT, r9 TEXT, r10 TEXT,
+            r11 TEXT,
             checked_at TEXT,
             -- Which rules document produced these verdicts. The existing hash
             -- is recorded in qc_runs.config_json at AI-run time, but R-verdicts
@@ -548,7 +551,7 @@ def get_day_tickets(date_str: str):
                 a.type  AS account_type,
                 a.domain AS account_domain,
                 rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r6, rc.r7, rc.r8, rc.r9,
-                rc.r10,
+                rc.r10, rc.r11,
                 ac.a1, ac.a2, ac.a3, ac.a4, ac.a5,
                 ac.ai_notes, ac.overall_result, ac.checked_at AS ai_checked_at
             FROM tickets t

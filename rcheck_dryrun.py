@@ -126,7 +126,7 @@ UNKNOWN_CLOCK = ("no recorded scoring time to pin the SLA clock to, so the age "
 # r10 is advisory (never in the recomputed overall) but IS re-checked: the
 # dry-run exists to show what a rules edit changes, and editing
 # spotassist_author/sources changes exactly these verdicts.
-RECHECKED_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10")
+RECHECKED_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")
 
 NOTHING_TO_COMPARE = (
     "No stored R-check verdicts in range. Fetch a date first, then dry-run "
@@ -317,6 +317,16 @@ def _recheck(t: _StoredTicket) -> tuple[dict, dict]:
     verdicts["r7"] = scorer.r7(issue, msgs, ext)
     verdicts["r8"] = scorer.r8(issue, msgs, ext)
     verdicts["r10"] = scorer.r10(issue, msgs)
+
+    # r11 is a clock check like r4: without the original scoring moment, any
+    # verdict computed "as of now" would be the wall clock's opinion, not the
+    # draft rules' — so it gets the same honest UNKNOWN, and it reads the same
+    # aged message list r4 does (messages that arrived later must not exist).
+    if t.messages_at_scoring_time is None:
+        verdicts["r11"], reasons["r11"] = UNKNOWN, UNKNOWN_CLOCK
+    else:
+        verdicts["r11"] = scorer.r11(issue, t.messages_at_scoring_time,
+                                     now=t.pinned_at)
     return verdicts, reasons
 
 
@@ -399,7 +409,7 @@ def _load(limit: int, start: str | None, end: str | None) -> list[dict]:
                    t.custom_fields, t.external_issues, t.body_html, t.fetched_at,
                    a.name AS account_name, a.type AS account_type,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
-                   rc.r10,
+                   rc.r10, rc.r11,
                    rc.checked_at AS rc_checked_at,
                    ac.a1, ac.a2, ac.a3, ac.a4, ac.a5,
                    ac.overall_result, ac.checked_at AS ai_checked_at

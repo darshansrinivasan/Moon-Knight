@@ -49,13 +49,21 @@ MAX_TICKET_CHARS  = 24000
 # The R-checks that feed the overall verdict, in one place. r6 is never computed
 # and r9 always returns N/A (both dead per SPEC.md's R1–R8 rule set), but they
 # stay in the tuple because existing rows carry values for them.
-R_CHECK_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9")
+# FROZEN: exactly the keys hashed into every stored qc_fingerprint. Extending
+# this tuple changes every stored fingerprint and re-bills the whole archive on
+# the next run — a new graded check goes into R_CHECK_KEYS below, never here.
+FP_CHECK_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9")
+
+# The graded set: feeds _compute_overall, persistence and the notes. r11 grades
+# tickets like the rest but is deliberately absent from FP_CHECK_KEYS — it is
+# time-based (silence ages a ticket into Fail with no content change), so
+# hashing it would re-bill byte-identical prompts every day.
+R_CHECK_KEYS = FP_CHECK_KEYS + ("r11",)
 
 # Advisory checks ride every display surface but stay OUT of R_CHECK_KEYS on
-# purpose: R_CHECK_KEYS feeds _compute_overall (advisory must not flip a grade)
-# and qc_fingerprint (adding a key there would change every stored fingerprint
-# and re-bill the whole archive on the next run). scorer.ADVISORY_CHECKS is the
-# semantic source; this tuple is its bookkeeping shadow here.
+# purpose: R_CHECK_KEYS feeds _compute_overall (advisory must not flip a grade).
+# scorer.ADVISORY_CHECKS is the semantic source; this tuple is its bookkeeping
+# shadow here.
 ADVISORY_CHECK_KEYS = ("r10",)
 ALL_CHECK_KEYS = R_CHECK_KEYS + ADVISORY_CHECK_KEYS
 
@@ -596,6 +604,15 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
                                    if c in required))
         parts.append(f"R8 Fail: oncall completeness incomplete — {action}")
 
+    if r_checks.get("r11") == "Fail":
+        hours = qc_rules.r11_update_hours()
+        window = f"{hours:g} working hours" if hours != 1 else "1 working hour"
+        parts.append(
+            f"R11 Fail: support has the last word but has been publicly "
+            f"silent for over {window} (weekends excluded) — update the "
+            f"customer, or move the ticket to a status that reflects who "
+            f"actually owns it")
+
     if r_checks.get("r10") == "Fail":
         bot = qc_rules.spotassist_author()
         parts.append(
@@ -668,8 +685,9 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
         "func":      _cf_val(cf.get(qc_rules.field("functionality"))),
         "cat":       _cf_val(cf.get(qc_rules.field("request_category"))),
         # R-checks are printed into the prompt, so a changed rule verdict is a
-        # changed prompt even when the ticket itself is untouched.
-        "r":         {k: r_checks.get(k) for k in R_CHECK_KEYS},
+        # changed prompt even when the ticket itself is untouched. FP_CHECK_KEYS,
+        # never R_CHECK_KEYS: the frozen set is what stored fingerprints hash.
+        "r":         {k: r_checks.get(k) for k in FP_CHECK_KEYS},
         # The rubric decides the grade as much as the ticket does. Without this,
         # an admin could rewrite what "Poor" means, re-run the date, and get the
         # old grades straight back from the skip path — the edit would look like
@@ -1017,7 +1035,7 @@ def _snapshot_and_compare(conn, run_id: int, label: str,
     excl_sql = f"AND {excl}" if excl else ""
     rows = conn.execute(f"""
         SELECT t.id, t.number, ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.overall_result,
-               rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8
+               rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r11
         FROM tickets t
         LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
         LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
@@ -1027,7 +1045,7 @@ def _snapshot_and_compare(conn, run_id: int, label: str,
     # Only checks that are switched on: recording a disabled check's Fail
     # beside a Pass overall makes the run history contradict the dashboard.
     live_keys = qc_rules.enabled_rule_keys(
-        ("r1", "r2", "r3", "r4", "r5", "r7", "r8"))
+        ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r11"))
     for r in rows:
         d = dict(r)
         r_fails = ",".join(k.upper() for k in live_keys
@@ -1082,7 +1100,7 @@ def _load_in_scope_where(scope_clause: str, scope_params: list) -> list[dict]:
                    t.account_id, t.custom_fields, t.source, t.customer_portal_visible,
                    a.name AS account_name, a.type AS account_type,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
-                   rc.r10,
+                   rc.r10, rc.r11,
                    ac.ticket_id AS scored_id, ac.qc_fingerprint AS scored_fingerprint
             FROM tickets t
             LEFT JOIN accounts    a  ON t.account_id = a.id

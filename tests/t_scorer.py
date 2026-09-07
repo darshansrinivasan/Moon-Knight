@@ -157,6 +157,82 @@ vault.set_raw_setting("qc_rules_json", "{}", "t")
 qc_rules.invalidate()
 
 print()
+print("=== R11 follow-through: support went silent after taking the last word ===")
+# Deterministic weekend math: pin the workspace tz to UTC for the test.
+vault.set_settings({"schedule_tz": "UTC"}, "t")
+
+INV = {"state": "investigating"}
+
+
+def at(iso):
+    return datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
+
+
+def pub(iso, customer):
+    return {"timestamp": iso, "is_customer": 1 if customer else 0,
+            "is_private": 0, "author_name": "X"}
+
+
+# Tue 09:00 → Thu 15:00 = 54 raw hours, no weekend involved.
+check("silent past the 24h limit -> Fail",
+      scorer.r11(INV, [pub("2026-09-01T09:00:00", True),
+                       pub("2026-09-01T10:00:00", False)],
+                 now=at("2026-09-03T15:00:00")), "Fail")
+# Fri 18:00 → Mon 10:00 is 64 raw hours but only 16 working hours:
+# Sat+Sun contribute nothing, so the weekend must not fail anyone.
+check("weekend hours do not count",
+      scorer.r11(INV, [pub("2026-09-04T09:00:00", True),
+                       pub("2026-09-04T18:00:00", False)],   # Friday
+                 now=at("2026-09-07T10:00:00")), "Pass")     # Monday
+check("customer has the last word -> N/A (that is R4's clock)",
+      scorer.r11(INV, [pub("2026-09-01T10:00:00", False),
+                       pub("2026-09-01T11:00:00", True)],
+                 now=at("2026-09-03T15:00:00")), "N/A")
+check("customer-owned state -> N/A",
+      scorer.r11({"state": "waiting_on_customer"},
+                 [pub("2026-09-01T10:00:00", False)],
+                 now=at("2026-09-03T15:00:00")), "N/A")
+# A private note is invisible to the customer, so it must not reset the clock.
+late_note = {"timestamp": "2026-09-03T09:00:00", "is_customer": 0,
+             "is_private": 1, "author_name": "X"}
+check("an internal note does not reset the silence clock",
+      scorer.r11(INV, [pub("2026-09-01T09:00:00", True),
+                       pub("2026-09-01T10:00:00", False), late_note],
+                 now=at("2026-09-03T15:00:00")), "Fail")
+check("no public message at all -> N/A",
+      scorer.r11(INV, [late_note], now=at("2026-09-03T15:00:00")), "N/A")
+
+# Threshold and states are configuration, not literals.
+vault.set_raw_setting("qc_rules_json",
+                      json.dumps({"r11_update_hours": 100,
+                                  "r11_states": ["on_hold"]}), "t")
+qc_rules.invalidate()
+check("a raised limit passes the same silence",
+      scorer.r11({"state": "on_hold"},
+                 [pub("2026-09-01T09:00:00", True),
+                  pub("2026-09-01T10:00:00", False)],
+                 now=at("2026-09-03T15:00:00")), "Pass")
+check("a state removed from the list stops being judged",
+      scorer.r11(INV, [pub("2026-09-01T09:00:00", True),
+                       pub("2026-09-01T10:00:00", False)],
+                 now=at("2026-09-03T15:00:00")), "N/A")
+vault.set_raw_setting("qc_rules_json", "{}", "t")
+qc_rules.invalidate()
+
+print()
+print("=== R11 grades tickets; the fingerprint still never moves ===")
+_t = {"state": "closed", "title": "x", "custom_fields": "{}"}
+check("r11 Fail fails the overall (unlike advisory r10)",
+      __import__("qc_runner")._compute_overall(
+          {"r1": "Pass", "r11": "Fail"}, {"a1": "Good"}), "Fail")
+check("r11 is in the graded key set",
+      "r11" in __import__("qc_runner").R_CHECK_KEYS, True)
+check("fingerprint ignores r11 — silence must not re-bill a prompt",
+      __import__("qc_runner").qc_fingerprint(_t, [], {"r1": "Pass"}),
+      __import__("qc_runner").qc_fingerprint(_t, [],
+                                             {"r1": "Pass", "r11": "Fail"}))
+
+print()
 print("=== R10 is advisory: it can never flip a grade or a fingerprint ===")
 import qc_runner
 check("r10 stays out of the overall verdict",

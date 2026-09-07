@@ -80,7 +80,7 @@ FIELD_USED_BY = {
 # does nothing — see t_rulecfg for the assertion that keeps this in step with
 # what `score_all` actually produces.
 DEAD_CHECKS = ("r6", "r9")
-TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10")
+TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")
 
 # Advisory checks are visible everywhere a check is visible — matrix, evidence,
 # notes, analytics, leaderboard tallies — but never flip the ticket's overall
@@ -896,6 +896,77 @@ def r9(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     return "N/A"
 
 
+def _weekday_hours(start: datetime, end: datetime, tz) -> float:
+    """Elapsed hours between two instants, skipping Saturdays and Sundays.
+
+    Weekends are calendar days in `tz` (the workspace's schedule timezone), so
+    "went silent Friday evening" does not fail Monday morning: Sat+Sun simply
+    do not count. Walks day by day — spans here are days to weeks, never years.
+    """
+    if end <= start:
+        return 0.0
+    total = timedelta(0)
+    cur = start.astimezone(tz)
+    end_local = end.astimezone(tz)
+    while cur < end_local:
+        day_end = (cur + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        seg_end = min(day_end, end_local)
+        if cur.weekday() < 5:              # Mon..Fri
+            total += seg_end - cur
+        cur = seg_end
+    return total.total_seconds() / 3600
+
+
+def _schedule_tz():
+    """The workspace timezone (Admin → schedule_tz); UTC when unset/invalid."""
+    from zoneinfo import ZoneInfo
+    import vault
+    try:
+        return ZoneInfo(vault.get_setting("schedule_tz") or "Asia/Kolkata")
+    except Exception:
+        return timezone.utc
+
+
+def r11(issue: dict, messages: list[dict],
+        now: datetime | None = None) -> str:
+    """Follow-through: support spoke last and then went silent on the customer.
+
+    The mirror image of r4. r4's clock runs while the CUSTOMER's message is the
+    last word; the moment support replies, r4 passes forever — which makes
+    "I'm checking, will update you" followed by days of silence invisible
+    (ticket #75945 sat 4 days exactly this way). Here the clock runs while
+    SUPPORT's public message is the last word, in a state where support still
+    owns progress (rules.r11_states). Internal notes never count as updates —
+    the customer cannot see them.
+
+    Weekend-aware: elapsed time skips Sat/Sun in the workspace timezone, so the
+    threshold (rules.r11_update_hours, default 24) means working hours of
+    silence. `now` is injectable for the rules dry-run, which re-judges the
+    ticket as of its original scoring moment rather than today.
+    """
+    state = (issue.get("state") or "").strip().lower()
+    if state not in qc_rules.r11_states():
+        return "N/A"
+    last = None
+    for m in messages:
+        if m.get("is_private"):
+            continue
+        ts = _parse_ts(m.get("timestamp"))
+        if ts is None:
+            continue
+        if last is None or ts > last[0]:
+            last = (ts, m)
+    if last is None:
+        return "N/A"                      # nothing public yet — r4's territory
+    ts, m = last
+    if _msg_is_customer(m):
+        return "N/A"                      # customer spoke last — r4's clock
+    now = now or datetime.now(timezone.utc)
+    silent = _weekday_hours(ts, now, _schedule_tz())
+    return "Fail" if silent > qc_rules.r11_update_hours() else "Pass"
+
+
 def _msg_author_name(m: dict) -> str:
     """Author name from either message shape.
 
@@ -966,4 +1037,5 @@ def score_all(
         "r8": r8(issue, messages, external_issues),
         "r9": r9(issue, messages, external_issues),
         "r10": r10(issue, messages),
+        "r11": r11(issue, messages),
     }

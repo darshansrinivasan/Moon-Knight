@@ -28,30 +28,47 @@ def _rules_hash() -> str:
     except Exception:      # never let bookkeeping break a resync
         return ""
 
-R_KEYS = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9"]
+R_KEYS = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9", "r11"]
 
 
-def _recompute_r10(t: dict) -> str | None:
-    """scorer.r10 over the ticket's stored messages, or None to leave as-is.
+def _recompute_live_checks(t: dict) -> dict:
+    """scorer.r10 / scorer.r11 over the ticket's stored messages.
 
-    Only tickets in a SpotAssist-relevant source are worth a messages query;
-    for everything else the verdict is N/A by definition and is written once.
-    scorer.r10 is the single definition — this loads its inputs, nothing more.
+    Both are deterministic over stored data, so a resync can (back)fill them
+    for tickets fetched before the checks existed — no refetch, no AI call.
+    r11 is additionally time-based: silence ages a ticket into Fail, and this
+    recompute is what keeps stored verdicts honest between fetches. Only
+    tickets a check actually applies to are worth the messages query; the
+    scorer functions are the single definition — this loads inputs, nothing
+    more. Returns {} on any error so a bad ticket never breaks the resync.
     """
     try:
         import rules as qc_rules
         import scorer
         source = (t.get("source") or "").strip().lower()
-        if source not in qc_rules.spotassist_sources():
-            return "N/A"
-        with db.get_conn() as conn:
-            msgs = [dict(m) for m in conn.execute(
-                "SELECT author_name, is_customer, is_private FROM messages"
-                " WHERE ticket_id = ?", (t["ticket_id"],)).fetchall()]
-        return scorer.r10({"source": source}, msgs)
-    except Exception:      # never let the advisory check break a resync
-        logger.exception("Could not recompute r10 for %s", t.get("ticket_id"))
-        return None
+        state = (t.get("state") or "").strip().lower()
+        need_r10 = source in qc_rules.spotassist_sources()
+        need_r11 = state in qc_rules.r11_states()
+        out = {}
+        if not need_r10:
+            out["r10"] = "N/A"
+        if not need_r11:
+            out["r11"] = "N/A"
+        if need_r10 or need_r11:
+            with db.get_conn() as conn:
+                msgs = [dict(m) for m in conn.execute(
+                    "SELECT author_name, is_customer, is_private, timestamp"
+                    " FROM messages WHERE ticket_id = ?",
+                    (t["ticket_id"],)).fetchall()]
+            issue = {"source": source, "state": state}
+            if need_r10:
+                out["r10"] = scorer.r10(issue, msgs)
+            if need_r11:
+                out["r11"] = scorer.r11(issue, msgs)
+        return out
+    except Exception:      # never let the recompute break a resync
+        logger.exception("Could not recompute r10/r11 for %s", t.get("ticket_id"))
+        return {}
 
 
 def run(date_str: str | None = None) -> dict:
@@ -72,7 +89,7 @@ def run(date_str: str | None = None) -> dict:
                    ac.a1, ac.a3, ac.a4, ac.a5,
                    ac.ai_notes, ac.overall_result,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
-                   rc.r10, t.custom_fields, t.state, t.source,
+                   rc.r10, rc.r11, t.custom_fields, t.state, t.source,
                    a.name AS account_name
             FROM ai_checks ac
             JOIN rule_checks rc ON ac.ticket_id = rc.ticket_id
@@ -85,6 +102,7 @@ def run(date_str: str | None = None) -> dict:
     overall_updates: list = []
     notes_updates: list = []
     r10_updates: list = []
+    r11_updates: list = []
     overall_changes: dict = defaultdict(int)
 
     for row in rows:
@@ -96,15 +114,20 @@ def run(date_str: str | None = None) -> dict:
         except json.JSONDecodeError:
             cf = {}
 
-        # r10 is deterministic over stored data (source + message authors), so
-        # a resync can compute it for tickets fetched before the check existed
-        # — the backfill that makes the month's analytics meaningful on day
-        # one, with no refetch and no AI call. Advisory: recomputed and stored,
-        # fed to the notes below, never to _compute_overall.
-        new_r10 = _recompute_r10(t)
-        if new_r10 != t["r10"]:
+        # Backfill + refresh the message-derived checks. r10 (advisory) feeds
+        # only the notes; r11 is a graded check, so its recomputed value joins
+        # r_checks BEFORE the overall is derived — that is what lets a ticket
+        # that has aged into silence fail here without any refetch.
+        live = _recompute_live_checks(t)
+        new_r10 = live.get("r10")
+        if new_r10 is not None and new_r10 != t["r10"]:
             r10_updates.append((new_r10, t["ticket_id"]))
         r10_value = new_r10 if new_r10 is not None else t["r10"]
+        new_r11 = live.get("r11")
+        if new_r11 is not None and new_r11 != t["r11"]:
+            r11_updates.append((new_r11, t["ticket_id"]))
+        if new_r11 is not None:
+            r_checks["r11"] = new_r11
 
         new_overall = _compute_overall(r_checks, a_checks)
         if new_overall != t["overall_result"]:
@@ -128,6 +151,11 @@ def run(date_str: str | None = None) -> dict:
             conn.executemany(
                 "UPDATE rule_checks SET r10 = ? WHERE ticket_id = ?",
                 r10_updates,
+            )
+        if r11_updates:
+            conn.executemany(
+                "UPDATE rule_checks SET r11 = ? WHERE ticket_id = ?",
+                r11_updates,
             )
         if overall_updates:
             conn.executemany(
@@ -153,6 +181,7 @@ def run(date_str: str | None = None) -> dict:
         "overall_updated": len(overall_updates),
         "notes_updated": len(notes_updates),
         "r10_updated": len(r10_updates),
+        "r11_updated": len(r11_updates),
         "changes": dict(overall_changes),
         # Which rules document produced this pass. A resync rewrites stored
         # grades with no run record of its own, so without this the only trace
