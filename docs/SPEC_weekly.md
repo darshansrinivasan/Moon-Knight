@@ -69,6 +69,7 @@ dates are omitted. A future `start` is rejected.
 | SLA breach | FRT > `rules.sla_hours()`, or no first reply and age > SLA while a customer reply is still owed |
 | FRT | created → first public non-bot support (`is_customer=0`) message, seconds |
 | resolution time | created → `updated_at` on closed tickets, seconds |
+| CSAT | survey `submitted_at` falls in the period. Ticket `created_at` does not apply. Every stored response in that window counts. |
 
 Deleted (`deleted_at`) and `archived` tickets are out. QC
 `excluded_states` is a scoring scope and does **not** apply here — this

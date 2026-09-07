@@ -248,6 +248,27 @@ again = weekly.build(CURR, now=NOW)
 check("orphan survey score is counted", again["csatCurr"]["total"] >= 3, True)
 
 print()
+print("=== CSAT period is submitted_at, not ticket created ===")
+before = again["csatCurr"]["total"]
+add("old_july", created="2026-07-01T04:00:00+00:00", state="closed",
+    updated="2026-07-02T04:00:00+00:00",
+    csat=[{"score": 5, "submitted_at": "2026-08-19T11:00:00+00:00"}])
+dated = weekly.build(CURR, now=NOW)
+check("old ticket, submitted this week, counts now",
+      dated["csatCurr"]["total"], before + 1)
+check("that response is not in the previous week",
+      dated["csatPrev"]["total"], again["csatPrev"]["total"])
+add("created_only_csat", created="2026-07-03T08:00:00+00:00",
+    updated="2026-07-03T09:00:00+00:00",
+    csat=[{"score": 1, "created_at": "2026-08-18T09:00:00+00:00"}])
+no_created = weekly.build(CURR, now=NOW)
+check("score without submitted_at is not bucketed by created",
+      no_created["csatCurr"]["total"], dated["csatCurr"]["total"])
+custom = weekly.build(start="2026-08-18", end="2026-08-20", now=NOW)
+check("custom From/To uses submitted dates",
+      custom["csatCurr"]["total"] >= dated["csatCurr"]["total"], True)
+
+print()
 print("=== custom dates ===")
 P = weekly.build(start="2026-08-18", end="2026-08-20", now=NOW)
 check("custom period_start", P["period_start"], "2026-08-18")

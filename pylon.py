@@ -613,9 +613,9 @@ async def _survey_pages(client, sid: str, params: dict, *, max_pages: int = 8) -
 
 
 def _in_submitted_window(row: dict, after: str, before: str) -> bool:
-    raw = row.get("submitted_at") or row.get("created_at") or ""
+    raw = row.get("submitted_at") or ""
     if not raw:
-        return True
+        return False
     ts = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
     try:
         submitted = datetime.fromisoformat(ts)

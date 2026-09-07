@@ -431,11 +431,15 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
     if not csat_raw:
         csat_raw = _csat_from_custom_fields(cf)
     for item in csat_raw:
-        day = _local_date(_parse_ts(item.get("submitted_at")), tz) or created_day
+        day = _local_date(_parse_ts(item.get("submitted_at")), tz)
+        if day is None:
+            continue
         csat_events.append({
             "score": item["score"],
             "day": day,
             "assignee": assignee,
+            "submitted_at": item.get("submitted_at") or "",
+            "ticket_id": row["id"],
         })
 
     return {
@@ -539,7 +543,7 @@ def normalize_csat_items(raw) -> list[dict]:
         out.append({
             "score": score,
             "comment": comment or "",
-            "submitted_at": item.get("submitted_at") or item.get("created_at") or "",
+            "submitted_at": item.get("submitted_at") or "",
         })
     return out
 
@@ -646,30 +650,64 @@ def store_csat_responses(rows: list[dict]) -> int:
 
 
 def _csat_events_from_store(tz) -> list[dict]:
-    """Survey rows that may not have landed on a ticket yet."""
+    """Every stored CSAT response, dated only by submitted_at.
+
+    Ticket created/updated is ignored — a July ticket whose survey was
+    filled this week belongs in this week. Rows without submitted_at are
+    dropped rather than bucketed by created_at.
+    """
+    events = []
+    seen = set()
     try:
         with db.get_conn() as conn:
-            rows = conn.execute(
+            survey_rows = conn.execute(
                 """
-                SELECT e.score, e.submitted_at, e.assignee,
+                SELECT e.id, e.issue_id, e.score, e.submitted_at, e.assignee,
                        t.assignee_name AS ticket_assignee
                 FROM csat_events e
                 LEFT JOIN tickets t ON t.id = e.issue_id
                 """
             ).fetchall()
+            ticket_rows = conn.execute(
+                """
+                SELECT id, assignee_name, csat_responses
+                FROM tickets
+                WHERE deleted_at IS NULL
+                  AND COALESCE(state, '') != 'archived'
+                  AND csat_responses IS NOT NULL
+                  AND csat_responses != ''
+                  AND csat_responses != '[]'
+                """
+            ).fetchall()
     except Exception:
         return []
-    events = []
-    for row in rows:
+    for row in survey_rows:
         day = _local_date(_parse_ts(row["submitted_at"]), tz)
         if day is None:
             continue
+        seen.add((str(row["issue_id"] or ""), row["submitted_at"] or "", row["score"]))
         events.append({
             "score": row["score"],
             "day": day,
             "assignee": (row["ticket_assignee"] or row["assignee"] or "Unassigned").strip()
                         or "Unassigned",
         })
+    for row in ticket_rows:
+        assignee = (row["assignee_name"] or "Unassigned").strip() or "Unassigned"
+        for item in normalize_csat_items(row["csat_responses"]):
+            submitted = item.get("submitted_at") or ""
+            day = _local_date(_parse_ts(submitted), tz)
+            if day is None:
+                continue
+            key = (str(row["id"]), submitted, item["score"])
+            if key in seen:
+                continue
+            seen.add(key)
+            events.append({
+                "score": item["score"],
+                "day": day,
+                "assignee": assignee,
+            })
     return events
 
 
@@ -1048,22 +1086,10 @@ def build(week_start: str | None = None, *, start: str | None = None,
         "cv_csat_avg": [],
     }
     def csat_in(start, end):
-        events = []
-        seen = set()
-        for r in tickets:
-            for e in r.get("csat_events") or []:
-                if e["day"] and start <= e["day"] <= end:
-                    key = (e["assignee"], e["score"], e["day"].isoformat())
-                    if key not in seen:
-                        seen.add(key)
-                        events.append(e)
-        for e in _csat_events_from_store(tz):
-            if e["day"] and start <= e["day"] <= end:
-                key = (e["assignee"], e["score"], e["day"].isoformat())
-                if key not in seen:
-                    seen.add(key)
-                    events.append(e)
-        return events
+        return [
+            e for e in _csat_events_from_store(tz)
+            if e["day"] and start <= e["day"] <= end
+        ]
 
     csat_curr = _csat_pack(csat_in(curr_monday, curr_sunday))
     csat_prev = _csat_pack(csat_in(prev_monday, prev_sunday))
