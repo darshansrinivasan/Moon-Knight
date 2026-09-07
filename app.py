@@ -302,6 +302,9 @@ async def me(user: dict = Depends(auth.require_user)):
         # Sent so the dashboard can disable Refetch and Run QC rather than
         # offering buttons that come back 403.
         "can_run_qc": auth.can_run_qc(user),
+        # Separate right, separate flag: operators own the rubric, admins do not.
+        # A page that inferred one from the other would offer a dead Save button.
+        "can_edit_rules": auth.can_edit_rules(user),
     }
 
 
@@ -1464,9 +1467,9 @@ async def get_rules(user: dict = Depends(auth.require_user)):
         ],
         "states_seen":  await asyncio.to_thread(states_seen),
         "meta":         vault.get_setting_meta(qc_rules.RULES_KEY),
-        "can_edit":     user["role"] == "admin",
+        "can_edit":     auth.can_edit_rules(user),
         # The prompt as it will actually be sent on the next run, not a
-        # hardcoded literal — an admin reading this needs to see their own edits
+        # hardcoded literal — whoever reads this needs to see their own edits
         # reflected, or the read-only view is a lie.
         "rubric":         prompts.system_prompt(current),
         "prompt_sections": [
@@ -1519,8 +1522,8 @@ async def rules_suggestions(days: int = 30,
     is based on, but never applies one. Auto-tuning a grading rubric from its own
     past disagreements is a feedback loop with no human in it, and the failure
     mode is silent drift in what "Pass" means with nobody able to say when it
-    changed. Accepting a suggestion goes through the normal admin-gated rules
-    save.
+    changed. Accepting a suggestion goes through the normal operator-gated
+    rules save.
     """
     if not 1 <= days <= 365:
         raise HTTPException(400, "days must be between 1 and 365")
@@ -1529,14 +1532,14 @@ async def rules_suggestions(days: int = 30,
 
 @app.post("/api/rules/dry-run")
 async def rules_dry_run(request: Request,
-                        user: dict = Depends(auth.require_admin)):
+                        user: dict = Depends(auth.require_rules_editor)):
     """Grade a few real tickets with unsaved rubric text. Writes nothing.
 
-    Admin-gated because it spends money on the workspace's Vertex quota, not
-    because it changes anything — it deliberately cannot. The draft never
-    reaches `app_settings`, no `ai_checks` row is touched, and no run is
+    Gated to rubric editors because it spends money on the workspace's Vertex
+    quota, not because it changes anything — it deliberately cannot. The draft
+    never reaches `app_settings`, no `ai_checks` row is touched, and no run is
     recorded. What comes back is a side-by-side of the stored grade and the
-    grade the draft produced, so an admin can see the effect of a rubric edit
+    grade the draft produced, so an operator can see the effect of a rubric edit
     before making it everyone's grades.
 
     The response labels its own cost. Token counts come from the API for this
@@ -1577,7 +1580,7 @@ async def rules_dry_run(request: Request,
 
 @app.post("/api/rules/preview")
 async def rules_preview(request: Request,
-                        user: dict = Depends(auth.require_admin)):
+                        user: dict = Depends(auth.require_rules_editor)):
     """What a draft rules change would do to the R-checks. Writes nothing.
 
     Deterministic and local — no AI call and no Slack call — so unlike the
@@ -1686,7 +1689,8 @@ async def directory_accounts(q: str = "", user: dict = Depends(auth.require_user
 
 
 @app.put("/api/rules")
-async def put_rules(request: Request, user: dict = Depends(auth.require_admin)):
+async def put_rules(request: Request,
+                    user: dict = Depends(auth.require_rules_editor)):
     import rules as qc_rules
     body = await request.json()
     candidate = body.get("rules")
@@ -1723,7 +1727,7 @@ async def put_rules(request: Request, user: dict = Depends(auth.require_admin)):
 
 
 @app.post("/api/rules/undo")
-async def undo_rules(user: dict = Depends(auth.require_admin)):
+async def undo_rules(user: dict = Depends(auth.require_rules_editor)):
     """Put the previous rules document back, and resync what it changes.
 
     One step, not a history. `set_raw_setting` is INSERT OR REPLACE and the

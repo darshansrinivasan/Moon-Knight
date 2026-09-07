@@ -1,15 +1,21 @@
-"""Who may spend money, who may configure, who may only look.
+"""Who may spend money, who may configure, who owns the rubric, who may only look.
 
 Running QC is neither a read nor an act of configuration. It bills the
 workspace's Vertex quota and overwrites grades reviewers are looking at, so it
 cannot sit behind `require_user` with the dashboard — every signed-in member
 could spend the AI budget. But it is also routine daily work that should not
-require handing someone the credential vault, the grading rules and the user
-list. Hence three roles: admins configure, operators run, members read.
+require handing someone the credential vault and the user list.
 
-The matrix below is the whole point of the change, so it is asserted endpoint by
-endpoint rather than by trusting the decorator. A permission bug is silent until
-it is expensive.
+The grading rules are a separate axis again, and the direction is the surprising
+part: the rubric is owned by **operators**, and administrators see it read-only.
+It defines what "Pass" means, so it belongs to the people who apply it daily
+rather than to whoever holds the credential vault. An admin who could rewrite
+the rubric could silently restate every grade in the system.
+
+Because that inversion reads like a bug, it is asserted in both directions here:
+the operator gets in, and the admin is refused with a message that explains it.
+The matrix is checked endpoint by endpoint rather than by trusting the
+dependency — a permission bug is silent until it is expensive.
 """
 from fastapi.testclient import TestClient
 
@@ -53,6 +59,10 @@ print("=== the roles are declared in one place ===")
 check("three roles", list(auth.ROLES),
       ["admin", "operator", "member"])
 check("only two may run QC", list(auth.CAN_RUN_QC), ["admin", "operator"])
+check("only operators may edit the rubric",
+      list(auth.CAN_EDIT_RULES), ["operator"])
+check("and admins are deliberately not among them",
+      auth.ROLE_ADMIN in auth.CAN_EDIT_RULES, False)
 check("every role has a label",
       all(r in auth.ROLE_LABELS for r in auth.ROLES), True)
 check("every role explains itself",
@@ -78,18 +88,36 @@ check("and says why it is restricted",
       "spends" in body and "budget" in body, True)
 
 print()
-print("=== configuring: admins only ===")
+print("=== the plumbing: admins only ===")
 for name, cl, denied in (("admin", ADMIN, False),
                          ("operator", OPERATOR, True),
                          ("member", MEMBER, True)):
-    r = cl.put("/api/rules", json={"rules": {"r4_sla_hours": 24}})
-    check(f"{name} edits rules", r.status_code == 403, denied)
     r = cl.put("/api/admin/settings", json={})
     check(f"{name} edits settings", r.status_code == 403, denied)
-    r = cl.post("/api/rules/dry-run", json={"limit": 1})
-    check(f"{name} spends on a dry-run", r.status_code == 403, denied)
     r = cl.post("/api/admin/users", json={"email": "x@spotdraft.com"})
     check(f"{name} invites people", r.status_code == 403, denied)
+
+print()
+print("=== the rubric: operators only, admins read-only ===")
+# The inversion. Every one of these was admin-only and is now operator-only, so
+# the admin row asserting 403 is the change, not a regression.
+for name, cl, denied in (("admin", ADMIN, True),
+                         ("operator", OPERATOR, False),
+                         ("member", MEMBER, True)):
+    r = cl.put("/api/rules", json={"rules": {"r4_sla_hours": 24}})
+    check(f"{name} saves rules", r.status_code == 403, denied)
+    r = cl.post("/api/rules/undo")
+    check(f"{name} undoes a rules save", r.status_code == 403, denied)
+    r = cl.post("/api/rules/dry-run", json={"limit": 1})
+    check(f"{name} spends on a dry-run", r.status_code == 403, denied)
+    r = cl.post("/api/rules/preview", json={"rules": {}})
+    check(f"{name} previews a draft", r.status_code == 403, denied)
+
+body = ADMIN.put("/api/rules", json={"rules": {}}).json().get("detail", "")
+check("the admin's refusal names the role that does own this",
+      "operator" in body.lower(), True)
+check("and says why, so it does not read as a bug",
+      "rubric" in body.lower() and "read-only" in body.lower(), True)
 
 print()
 print("=== reading: everyone signed in ===")
@@ -120,6 +148,18 @@ for name, cl, expected in (("admin", ADMIN, True),
     check(f"{name} can_run_qc", me["can_run_qc"], expected)
     check(f"{name} has a readable role label",
           me["role_label"], auth.ROLE_LABELS[me["role"]])
+
+print()
+print("=== the pages are told which way the rubric split falls ===")
+# A page that inferred rubric rights from admin-ness would render a Save button
+# that can only 403, which is how a permission change becomes a support ticket.
+for name, cl, expected in (("admin", ADMIN, False),
+                           ("operator", OPERATOR, True),
+                           ("member", MEMBER, False)):
+    check(f"{name} /api/me can_edit_rules",
+          cl.get("/api/me").json()["can_edit_rules"], expected)
+    check(f"{name} /api/rules can_edit",
+          cl.get("/api/rules").json()["can_edit"], expected)
 
 runs = OPERATOR.get("/api/runs").json()
 check("an operator may run but not reschedule",

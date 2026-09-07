@@ -878,11 +878,25 @@ async function load() {
     // a dry-run spends money and the window selector re-runs a query. Members
     // read the suggestions at the default window; they do not spend.
     $("dry-run").disabled = true;
+    // Preview costs nothing but is still gated server-side, because it exists to
+    // trial an edit. Leaving it live in a read-only view offers a button whose
+    // only possible outcome is a 403.
+    $("preview").disabled = true;
     $("sug-days").querySelectorAll("button").forEach(b => b.disabled = true);
     $("save").style.display = "none";
     $("load-defaults").style.display = "none";
-    $("mode-note").innerHTML = `<div class="banner info"><b>Read-only view.</b>
-      These are the rules every run is scored against. Changing them needs an administrator.</div>`;
+    // Two different read-only situations, and one message cannot serve both. An
+    // administrator is not missing a permission they can ask for — they are on
+    // the far side of a deliberate split, and telling them to "ask an admin"
+    // would send them in a circle.
+    $("mode-note").innerHTML = (QC.me && QC.me.role === "admin")
+      ? `<div class="banner info"><b>Read-only view.</b>
+         These are the rules every run is scored against. The rubric is owned by
+         Operators, so administrators see it but do not change it — ask an Operator,
+         or have another administrator grant you the Operator role.</div>`
+      : `<div class="banner info"><b>Read-only view.</b>
+         These are the rules every run is scored against. Changing them needs the
+         Operator role — ask an administrator for it.</div>`;
   }
 }
 
@@ -906,7 +920,9 @@ $("preview").addEventListener("click", async () => {
   } catch (e) {
     $("preview-out").innerHTML = `<div class="banner bad">${esc(e.message)}</div>`;
   } finally {
-    btn.disabled = false;
+    // Re-enable only for an editor: a read-only view must not get the button
+    // back just because one preview finished.
+    btn.disabled = !(DATA && DATA.can_edit);
   }
 });
 
@@ -1076,7 +1092,7 @@ function syncSection(key) {
   }
   const badge = $("prompt-sections").querySelector(`[data-edited="${key}"]`);
   if (badge) badge.hidden = el.value.trim() === String(s.default || "").trim();
-  // Grow to fit rather than making the admin scroll a 4-line window through a
+  // Grow to fit rather than making the editor scroll a 4-line window through a
   // 20-line rubric. Capped so one long section cannot own the page.
   el.rows = Math.min(16, Math.max(3, el.value.split("\n").length + 1));
 }
@@ -1087,7 +1103,7 @@ function renderPromptFixed() {
     || `<p class="hint">None reported by the server.</p>`;
 }
 
-// Every editable prompt field as the admin has it right now. Used by the dry-run
+// Every editable prompt field as the operator has it right now. Used by the dry-run
 // (which grades against it) and by collect() (which saves it).
 function draftPrompt() {
   const draft = {a_guidance: $("a_guidance").value.trim()};

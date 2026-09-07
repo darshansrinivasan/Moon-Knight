@@ -24,7 +24,7 @@ module reports two different, both-true numbers, and they must not be confused:
   `applied`   what saving actually rewrites today: `resync_overall` recomputes
               `overall_result` from the STORED verdicts under the new
               enabled-check mask. Exact, no reconstruction involved. If an
-              admin clicks save and watches the dashboard, this is the number
+              operator clicks save and watches the dashboard, this is the number
               they will see move.
 
 Reporting only the first would be honest-looking and wrong in the way D13
@@ -82,7 +82,7 @@ reads the enabled-check mask through `rules.enabled_rule_keys`, so it too has to
 run under the draft or the mask half of the diff is silently wrong. Swapping
 `rules._cache` for the duration would work and is not safe: this runs in a
 thread of a live server whose fetch loop *writes* the verdicts it computes, and
-it would compute them from an admin's unsaved draft.
+it would compute them from an operator's unsaved draft.
 
 So both seams are shimmed once, at import, with functions that consult a
 thread-local and delegate to the real implementation on every thread that is not
@@ -378,7 +378,7 @@ def _load(limit: int, start: str | None, end: str | None) -> list[dict]:
     hiding them would understate the very change this exists to preview.
 
     Recency rather than randomness, as `dryrun._sample`: the same draft run
-    twice must compare the same tickets or an admin cannot tell a rules change
+    twice must compare the same tickets or an operator cannot tell a rules change
     from a sampling change.
     """
     where  = ["t.deleted_at IS NULL"]
@@ -436,7 +436,7 @@ def run(draft: dict | None = None, limit=DEFAULT_LIMIT,
     `draft` is layered over the saved rules by `dryrun.draft_rules`, so a
     partial document never resets the keys it omits. It is validated as a whole
     before anything is scored: a draft that could not be saved must not be
-    previewed either, or the admin is shown the effect of a document the save
+    previewed either, or the operator is shown the effect of a document the save
     endpoint will reject.
 
     Raises `ValueError` on a draft that does not validate or an incoherent date
@@ -563,7 +563,7 @@ def run(draft: dict | None = None, limit=DEFAULT_LIMIT,
         "sample":        sample,
         "sample_truncated": moved_tickets > len(sample),
         "errors":        failed,
-        # Stated for the same reason `dryrun` states its bill: an admin should
+        # Stated for the same reason `dryrun` states its bill: an operator should
         # know what a button costs before pressing it. Here the answer is
         # nothing but CPU, and the honest version of that is the zeros.
         "cost_usd":      0.0,
