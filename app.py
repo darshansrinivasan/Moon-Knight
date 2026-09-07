@@ -870,6 +870,29 @@ async def get_catalog(user: dict = Depends(auth.require_user)):
     return await asyncio.to_thread(load)
 
 
+@app.post("/api/admin/catalog/sync")
+async def sync_catalog(user: dict = Depends(auth.require_admin)):
+    """Pull the option lists AND the value→label map from Pylon itself.
+
+    Pylon's API stores option values (slugs) on tickets while its UI shows
+    labels; this sync is what lets every page translate one into the other —
+    and it makes Pylon the catalog's source of truth in one click.
+    """
+    try:
+        counts = await funcheck.sync_catalog_from_pylon()
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Sync failed: {str(e)[:300]}")
+    vault.audit(user["email"], "catalog.sync",
+                f"functionality={counts['functionality']} "
+                f"category={counts['category']}")
+    current = await asyncio.to_thread(funcheck.options)
+    return {"ok": True, **counts,
+            "functionality_list": current["functionality"],
+            "category_list": current["category"]}
+
+
 @app.put("/api/admin/catalog")
 async def put_catalog(request: Request,
                       user: dict = Depends(auth.require_admin)):

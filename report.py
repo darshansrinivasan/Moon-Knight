@@ -31,6 +31,7 @@ import re
 from datetime import datetime, timezone
 
 import db
+import funcheck
 from funcheck import _require_month
 from qc_runner import RunStats, _call_gemini, _cf_val, _html_text, _parse_response, _utc_now
 
@@ -68,7 +69,7 @@ _DEMAND_GROUPS = [
     ("On-call / engineering escalations", ("oncall",)),
     ("Console ops done for customers", ("support_task", "support task",
                                         "workspace", "ws creation")),
-    ("Alerts relayed onward", ("alerts_",)),
+    ("Alerts relayed onward", ("alerts",)),
     ("Legal & template tasks", ("legal",)),
     ("Feature requests", ("feature",)),
     ("Outages", ("global",)),
@@ -93,9 +94,10 @@ def _low(t: dict, f: str) -> str:
 
 
 def _is_reauth(t):
+    # startswith("alerts") matches the legacy slug and the Pylon label alike.
     return bool(re.search(r"re-?auth|authenticat|authorization expir|credential",
                           _low(t, "title"))) \
-        or _low(t, "category") == "alerts_automated_tray_sentry_slack"
+        or _low(t, "category").startswith("alerts")
 
 
 def _is_toggle(t):
@@ -137,8 +139,12 @@ def _load(month: str) -> list[dict]:
     for r in rows:
         t = dict(r)
         cf = json.loads(t.pop("custom_fields") or "{}")
-        t["category"] = (_cf_val(cf.get("request_category")) or "").strip()
-        t["functionality"] = (_cf_val(cf.get("functionalities")) or "").strip()
+        # Through the Pylon label map: the API stores option VALUES (slugs),
+        # people chose LABELS — every chart, CSV and chat should read labels.
+        t["category"] = funcheck.canon(
+            "category", _cf_val(cf.get("request_category")))
+        t["functionality"] = funcheck.canon(
+            "functionality", _cf_val(cf.get("functionalities")))
         t["resolution_details"] = (_cf_val(cf.get("resolution_details")) or "").strip()
         t["resolution_category"] = (_cf_val(cf.get("resolution_category")) or "").strip()
         t["internal"] = (r["customer_portal_visible"] == 0) or (r["source"] == "manual")

@@ -457,7 +457,9 @@ async def fetch_custom_fields() -> list[dict]:
     between a setting to change and a week of wrong grades.
     """
     async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(f"{BASE_URL}/custom_fields", headers=_headers(),
+        # Hyphen, not underscore: /custom_fields is a 404 that hid the field
+        # list (and with it, drift detection) behind a warning for weeks.
+        r = await client.get(f"{BASE_URL}/custom-fields", headers=_headers(),
                              params={"object_type": "issue"})
         r.raise_for_status()
         body = r.json()

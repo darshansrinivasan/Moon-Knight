@@ -84,7 +84,8 @@
   body.readonly #coverage-form, body.readonly [data-coverage-del],
   body.readonly #ident-editor, body.readonly .ident-remove,
   body.readonly .ident-mute, body.readonly #share-folder-btn,
-  body.readonly [data-cat-save], body.readonly [data-cat-reset] { display: none !important; }
+  body.readonly [data-cat-save], body.readonly [data-cat-reset],
+  body.readonly #catalog-sync { display: none !important; }
 
   /* ── Slack mentions & identity map ── */
   .ident-list {
@@ -459,6 +460,15 @@
               a new option can change the right suggestion, so affected tickets
               re-bill on the next check run.
             </p>
+            <div class="actions">
+              <button type="button" id="catalog-sync"
+                      title="Pull the option lists and the value→label map straight from Pylon's field definitions">
+                Sync from Pylon</button>
+              <span class="hint" style="align-self:center">Pylon is the source of
+              truth: syncing replaces both lists below with its labels and teaches
+              every page to translate the machine values tickets actually carry
+              (e.g. general_question) into these names.</span>
+            </div>
             <div class="field">
               <label for="cat-func">Functionalities <span class="hint" id="cat-func-count" style="display:inline"></span></label>
               <textarea id="cat-func" rows="16" spellcheck="false"
@@ -1227,6 +1237,25 @@ function fillCatalog(d) {
 async function loadCatalog() {
   fillCatalog(await api("/api/admin/catalog"));
 }
+
+$("catalog-sync").addEventListener("click", async () => {
+  const btn = $("catalog-sync");
+  const msg = $("msg-catalog");
+  btn.disabled = true;
+  btn.textContent = "Syncing…";
+  try {
+    const d = await api("/api/admin/catalog/sync", { method: "POST" });
+    await loadCatalog();
+    show(msg, `Synced from Pylon — ${d.functionality} functionalities, `
+      + `${d.category} categories, and the value→label map is live. `
+      + "Existing check verdicts re-open on the next run.", "ok");
+  } catch (e) {
+    show(msg, e.message, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sync from Pylon";
+  }
+});
 
 document.querySelectorAll("[data-cat-save]").forEach(btn => {
   btn.addEventListener("click", async () => {

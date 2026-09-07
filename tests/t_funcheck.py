@@ -238,6 +238,57 @@ except ValueError:
     check("a bad month is rejected", "ValueError", "ValueError")
 
 print()
+print("=== Pylon stores values, people read labels — the map bridges them ===")
+import asyncio as _aio
+
+import pylon as _pylon
+
+check("without a synced map, values pass through verbatim",
+      funcheck.canon("category", "general_question"), "general_question")
+
+FAKE_FIELDS = [
+    {"slug": "functionalities", "select_metadata": {"options": [
+        {"slug": "salesforce_sfdc", "label": "Integrations : Salesforce (SFDC)"},
+        {"slug": "HubSpot", "label": "Integrations : HubSpot"},
+    ]}},
+    {"slug": "request_category", "select_metadata": {"options": [
+        {"slug": "general_question", "label": "General FAQ - How to questions"},
+        {"slug": "general_faq_misconfiguration",
+         "label": "General FAQ - Misconfiguration"},
+    ]}},
+]
+
+
+async def fake_fields():
+    return FAKE_FIELDS
+
+
+real_fields = _pylon.fetch_custom_fields
+_pylon.fetch_custom_fields = fake_fields
+try:
+    counts = _aio.run(funcheck.sync_catalog_from_pylon())
+finally:
+    _pylon.fetch_custom_fields = real_fields
+
+check("sync counts what Pylon offers", counts,
+      {"functionality": 2, "category": 2})
+check("the value now reads as its label",
+      funcheck.canon("category", "general_question"),
+      "General FAQ - How to questions")
+check("an unknown value still passes through, never blanks",
+      funcheck.canon("category", "retired_thing"), "retired_thing")
+check("the catalog lists became Pylon's labels",
+      funcheck.options()["category"],
+      ["General FAQ - How to questions", "General FAQ - Misconfiguration"])
+f2b = [t for t in funcheck._load_month(M) if t["id"] == "f2"][0]
+check("tagged values on tickets read as labels everywhere",
+      funcheck._tagged(f2b)[0], "Integrations : HubSpot")
+# Restore for anything after: clear the synced state.
+vault.set_raw_setting(funcheck.LABELS_SETTING, "", "t")
+vault.set_raw_setting(funcheck.CATALOG_SETTINGS["functionality"], "", "t")
+vault.set_raw_setting(funcheck.CATALOG_SETTINGS["category"], "", "t")
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

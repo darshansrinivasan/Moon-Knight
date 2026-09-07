@@ -80,6 +80,78 @@ def _field_slug(name: str) -> str:
 CATALOG_SETTINGS = {"functionality": "funcheck_functionalities_json",
                     "category": "funcheck_categories_json"}
 
+# Pylon's API stores an option's VALUE (a slug like 'general_question') on the
+# ticket, while its UI shows the LABEL ('General FAQ - How to questions').
+# This map — synced from Pylon's own field definitions — is the bridge, and
+# every surface that shows a tag translates through it so people read the
+# words they chose in the dropdown, never the machine name behind it.
+LABELS_SETTING = "pylon_option_labels_json"
+
+_LABEL_FIELDS = {"functionality": "functionalities",
+                 "category": "request_category"}
+
+
+def option_labels() -> dict:
+    """{'functionality': {value: label}, 'category': {...}} — or empty maps."""
+    import vault
+    out = {"functionality": {}, "category": {}}
+    raw = vault.get_raw_setting(LABELS_SETTING)
+    if not raw:
+        return out
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("Stored Pylon label map is not valid JSON — ignoring")
+        return out
+    for key in out:
+        m = data.get(key)
+        if isinstance(m, dict):
+            out[key] = {str(k): str(v) for k, v in m.items() if k and v}
+    return out
+
+
+def canon(kind: str, value: str | None) -> str:
+    """A tag as its Pylon LABEL when the map knows it, verbatim otherwise."""
+    value = (value or "").strip()
+    if not value:
+        return value
+    return option_labels()[kind].get(value, value)
+
+
+async def sync_catalog_from_pylon() -> dict:
+    """Pull the two fields' options from Pylon: labels become the catalog,
+    and the value→label map becomes the translation every page reads through.
+
+    Pylon is the source of truth for what the dropdowns offer — a catalog
+    maintained by hand drifts the day someone edits an option in Pylon only.
+    """
+    import pylon
+    import vault
+
+    fields = {f.get("slug"): f for f in await pylon.fetch_custom_fields()}
+    labels: dict = {}
+    lists: dict = {}
+    for kind, slug in _LABEL_FIELDS.items():
+        field = fields.get(slug)
+        if not field:
+            raise RuntimeError(f"Pylon no longer defines the '{slug}' field")
+        opts = (field.get("select_metadata") or {}).get("options") or []
+        labels[kind] = {o["slug"]: (o.get("label") or o["slug"]).strip()
+                        for o in opts if o.get("slug")}
+        seen = set()
+        lists[kind] = [v for v in labels[kind].values()
+                       if not (v.lower() in seen or seen.add(v.lower()))]
+        if not lists[kind]:
+            raise RuntimeError(f"Pylon returned no options for '{slug}'")
+
+    vault.set_raw_setting(LABELS_SETTING, json.dumps(labels), "pylon-sync")
+    vault.set_raw_setting(CATALOG_SETTINGS["functionality"],
+                          json.dumps(lists["functionality"]), "pylon-sync")
+    vault.set_raw_setting(CATALOG_SETTINGS["category"],
+                          json.dumps(lists["category"]), "pylon-sync")
+    return {"functionality": len(lists["functionality"]),
+            "category": len(lists["category"])}
+
 
 def options() -> dict:
     """{'functionality': [...], 'category': [...]} — the canonical vocabulary.
@@ -118,9 +190,16 @@ def options() -> dict:
 
 
 def _tagged(t: dict) -> tuple[str, str]:
+    """The ticket's tags as their Pylon LABELS, once the label map is synced.
+
+    Before a sync the raw values pass through verbatim, so nothing breaks —
+    they just read like machine names until Admin syncs the catalog.
+    """
     cf = json.loads(t.get("custom_fields") or "{}")
-    return ((_cf_val(cf.get(_field_slug("functionality"))) or "").strip(),
-            (_cf_val(cf.get(_field_slug("request_category"))) or "").strip())
+    return (canon("functionality",
+                  _cf_val(cf.get(_field_slug("functionality")))),
+            canon("category",
+                  _cf_val(cf.get(_field_slug("request_category")))))
 
 
 def _conversation(t: dict) -> str:
