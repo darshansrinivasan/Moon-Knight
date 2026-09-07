@@ -35,7 +35,8 @@ def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
         priority="High", account="Acme", category="Salesforce (SFDC)",
         cat_slug="salesforce_sfdc", extra_cf=None, messages=(),
         deleted=None, link=None, csat=None,
-        first_response_seconds=None, resolution_seconds=None):
+        first_response_seconds=None, resolution_seconds=None,
+        bh_first_response_seconds=None):
     _num[0] += 1
     cf = {
         "request_category": {
@@ -55,14 +56,16 @@ def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
             "INSERT OR REPLACE INTO tickets "
             "(id,number,fetch_date,title,link,state,priority,assignee_name,"
             "account_id,custom_fields,created_at,updated_at,deleted_at,"
-            "csat_responses,first_response_seconds,resolution_seconds)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "csat_responses,first_response_seconds,resolution_seconds,"
+            "business_hours_first_response_seconds)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, _num[0], created[:10], f"Ticket {tid}",
              link or f"https://app.usepylon.com/issues?issueNumber={_num[0]}",
              state, priority, assignee, acc_id, json.dumps(cf),
              created, updated or created, deleted,
              json.dumps(csat) if csat else None,
-             first_response_seconds, resolution_seconds),
+             first_response_seconds, resolution_seconds,
+             bh_first_response_seconds),
         )
         for i, m in enumerate(messages):
             c.execute(
@@ -348,7 +351,8 @@ check("numeric-string duration parses",
 # hours later. created → first support used to report 1 minute.
 n_pylon = add(
     "frt_pylon", created="2026-08-18T07:00:00+00:00",
-    first_response_seconds=4 * 3600, account="FRT Pylon Co",
+    first_response_seconds=4 * 3600, bh_first_response_seconds=0,
+    account="FRT Pylon Co",
     messages=[
         {"at": "2026-08-18T07:00:00+00:00", "customer": False,
          "html": "<p>thread opened</p>"},
@@ -384,6 +388,11 @@ clocked = weekly.build(CURR, now=NOW)
 by_n = {r["issue"]: r for r in clocked["allRows"]}
 check("Pylon first_response_seconds is the FRT",
       by_n[n_pylon]["frt_secs"], 4 * 3600)
+# Both clocks ride along per row so wall vs business hours can be compared
+# against whichever Pylon report the team reads; 0 is a value (a weekend
+# ticket answered before business hours resume), not absence.
+check("business-hours clock rides along, 0 kept as 0",
+      by_n[n_pylon]["bh_frt_secs"], 0)
 # Reconstruction from messages counted SpotAssist / chat auto-replies as first
 # responses (6-second FRTs in production while the issue page showed 39 min),
 # so no stored clock means no FRT — never an invented one.

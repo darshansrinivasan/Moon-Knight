@@ -372,6 +372,8 @@ def _load_tickets(since: date) -> list[dict]:
                    t.assignee_name, t.account_id, t.custom_fields, t.created_at,
                    t.updated_at, t.fetch_date, t.deleted_at, t.csat_responses,
                    t.first_response_seconds, t.resolution_seconds,
+                   t.business_hours_first_response_seconds,
+                   t.business_hours_resolution_seconds,
                    a.name AS account_name
             FROM tickets t
             LEFT JOIN accounts a ON a.id = t.account_id
@@ -482,6 +484,12 @@ def _annotate(row: dict, tz, sla: float, now: datetime) -> dict | None:
         "resolved_day": resolved_day,
         "frt_secs": frt,
         "res_secs": res_secs,
+        # The other clock, for comparing against a business-hours Pylon
+        # report. The reported metrics stay wall-clock until the team picks.
+        "bh_frt_secs": pylon_duration_seconds(
+            row, "business_hours_first_response_seconds"),
+        "bh_res_secs": pylon_duration_seconds(
+            row, "business_hours_resolution_seconds"),
         "is_resolved": closed,
         "is_open": state not in TERMINAL,
         "is_escalated": _is_escalated(state, cf),
@@ -1267,6 +1275,8 @@ def build(week_start: str | None = None, *, start: str | None = None,
             "created_date": day.isoformat() if day else "",
             "frt_secs": r["frt_secs"],
             "res_secs": r["res_secs"],
+            "bh_frt_secs": r["bh_frt_secs"],
+            "bh_res_secs": r["bh_res_secs"],
             "is_resolved": r["is_resolved"],
             "is_open": r["is_open"],
             "is_escalated": r["is_escalated"],
