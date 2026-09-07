@@ -1,0 +1,13 @@
+#!/bin/sh
+# Reject a commit message that does not match the repo convention.
+#
+# Installed by scripts/setup-dev.sh, which points core.hooksPath at this
+# directory. Hooks in .git/hooks are not versioned, so they cannot be shared;
+# a committed directory plus a one-time config can.
+#
+# This runs before the commit object exists, which is the whole reason it is the
+# primary gate: `git commit --amend` fixes a rejected message for free. The same
+# check in CI can only tell you after the fact, when the commit is already on
+# shared main and rewriting it would mean a force-push.
+set -e
+exec "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.sh" "$1"

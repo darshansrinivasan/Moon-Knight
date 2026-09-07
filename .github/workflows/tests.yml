@@ -1,0 +1,119 @@
+name: tests
+
+# Railway's "Wait for CI" watches the check suite on the pushed commit, so this
+# must trigger on push to main — otherwise Railway waits for a check that never
+# arrives. The pull_request trigger costs nothing now and is what makes the
+# switch to a PR workflow a one-line change later.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# No `concurrency` block on purpose. Cancelling a superseded run is the usual
+# economy, but Railway is waiting on *this* commit's checks: a cancelled run
+# reports failure, and the deploy for that commit gets skipped even though the
+# code was fine. Commits land every few minutes here, so that would misfire
+# often. Each run is ~2 minutes; let them queue.
+
+jobs:
+  # ── the gate ────────────────────────────────────────────────────────────────
+  # This job is what Railway's Wait for CI keys off. If it fails, the commit is
+  # not deployed.
+  tests:
+    name: suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.10+ is a hard floor, not a preference: db.py annotates
+          # `dict | None` at module scope, which 3.9 evaluates at import and
+          # rejects, so the suite dies at `import db` before any assertion.
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run the suite
+        env:
+          # Without this, run.sh sends each suite's stderr to /dev/null. A suite
+          # that dies on a traceback prints nothing to stdout, so the log would
+          # read "SUITES FAILED: t_x" with no cause and CI would be useless for
+          # the failures it exists to catch.
+          QC_TEST_STDERR: 1
+        # run.sh makes its own throwaway DB and master key per suite, and every
+        # outbound call in the suites is faked, so there are no secrets to inject.
+        run: ./tests/run.sh
+
+  # ── the advisory check ──────────────────────────────────────────────────────
+  # Deliberately cannot block a deploy. The commit-msg hook is the real gate for
+  # message format, because it runs before the commit exists and `--amend` fixes
+  # it for free. By the time CI sees a bad message the commit is already on shared
+  # main, where the only fix is a force-push — and force-pushing a branch three
+  # people are committing to is far worse than a badly named commit.
+  #
+  # So this reports, and does not gate. To make it gate anyway, delete the
+  # `continue-on-error` line below; be sure you have agreed how a bad message on
+  # main gets fixed before you do.
+  commit-messages:
+    name: commit messages (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the pushed range, not just the tip.
+          fetch-depth: 0
+
+      # The checker gates three people's commits, so verify it still behaves
+      # before trusting its verdict on real messages.
+      - name: Self-test the checker
+        run: ./scripts/check-commit-msg.test.sh
+
+      - name: Check the messages this push added
+        env:
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          # Only the commits this event introduced. Validating all of history
+          # would fail forever on commits that predate the convention.
+          if [ -n "${BASE:-}" ]; then
+            range="$BASE..$SHA"
+          elif [ -n "${BEFORE:-}" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..$SHA"
+          else
+            # First push, or a force-push whose old tip is gone: check the tip only.
+            range="$SHA~1..$SHA"
+          fi
+          echo "Checking $range"
+
+          failed=0
+          for sha in $(git rev-list --no-merges "$range"); do
+            short=$(git log -1 --format=%h "$sha")
+            subject=$(git log -1 --format=%s "$sha")
+            if git log -1 --format=%B "$sha" | ./scripts/check-commit-msg.sh -; then
+              echo "  ok   $short  $subject"
+            else
+              echo "  BAD  $short  $subject"
+              failed=$((failed + 1))
+            fi
+          done
+
+          if [ "$failed" -gt 0 ]; then
+            echo
+            echo "$failed commit message(s) do not match docs/CONVENTIONS.md."
+            echo "Run ./scripts/setup-dev.sh so the hook catches this before committing."
+            exit 1
+          fi
+          echo "All checked messages match the convention."
