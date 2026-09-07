@@ -460,8 +460,10 @@ async def fetch_and_store(target: date) -> FetchResult:
                          custom_fields, external_issues, body_html,
                          created_at, updated_at, latest_message_time,
                          customer_portal_visible, fetched_at, csat_responses,
-                         first_response_seconds, resolution_seconds)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         first_response_seconds, resolution_seconds,
+                         business_hours_first_response_seconds,
+                         business_hours_resolution_seconds)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     issue["id"], issue.get("number"), date_str,
                     issue.get("title"), issue.get("link"),
@@ -471,12 +473,17 @@ async def fetch_and_store(target: date) -> FetchResult:
                     issue.get("created_at"), issue.get("updated_at"),
                     issue.get("latest_message_time"),
                     1 if cpv else 0, now, csat_json,
-                    weekly.issue_duration_seconds(
-                        issue, "first_response_seconds",
-                        "business_hours_first_response_seconds"),
-                    weekly.issue_duration_seconds(
-                        issue, "resolution_seconds",
-                        "business_hours_resolution_seconds"),
+                    # Each clock in its own column: wall and business hours
+                    # disagree whenever a ticket spans off-hours, and a
+                    # coalesced value cannot be split apart afterwards.
+                    weekly.pylon_duration_seconds(
+                        issue, "first_response_seconds"),
+                    weekly.pylon_duration_seconds(
+                        issue, "resolution_seconds"),
+                    weekly.pylon_duration_seconds(
+                        issue, "business_hours_first_response_seconds"),
+                    weekly.pylon_duration_seconds(
+                        issue, "business_hours_resolution_seconds"),
                 ))
 
                 # Skip messages and scoring for archived tickets — state is
@@ -798,6 +805,38 @@ async def refetch_open_tickets(user: dict = Depends(auth.require_operator)):
         f" no_longer_open={res['no_longer_open_checked']}"
         f" deleted={res['deleted']}"
         + ("" if res["search_complete"] else " (search incomplete)"),
+    )
+    return res
+
+
+@app.post("/api/backfill")
+async def backfill_tickets(start: str, end: str,
+                           user: dict = Depends(auth.require_operator)):
+    """Refetch every stored ticket in a fetch-date range, closed included.
+
+    The open refetch never touches terminal states, so a ticket answered or
+    closed after its one day-fetch keeps a frozen state and NULL Pylon clocks;
+    this brings a range's history up to Pylon's current truth. By id, so the
+    first-response/resolution clocks are always in the payload. Rule scoring
+    on the refreshed content is local — no Vertex spend.
+    """
+    if _require_date(start) > _require_date(end):
+        raise HTTPException(400, "start must not be after end")
+    try:
+        with db.advisory_lock("fetch:backfill", user["email"],
+                              ttl_seconds=3600):
+            res = await openqc.backfill_range(start, end)
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Pylon backfill failed: {e}")
+
+    vault.audit(
+        user["email"], "fetch.backfill",
+        f"{start}..{end} requested={res['requested']} stored={res['stored']}"
+        f" deleted={res['deleted']} failed={res['failed']}",
     )
     return res
 

@@ -363,51 +363,7 @@ def pylon_duration_seconds(issue: dict, key: str) -> int | None:
     return n if n >= 0 else None
 
 
-def issue_duration_seconds(issue: dict, *keys: str) -> int | None:
-    """First present Pylon duration among `keys` (wall-clock, then business hours)."""
-    for key in keys:
-        n = pylon_duration_seconds(issue, key)
-        if n is not None:
-            return n
-    return None
-
-
-def _first_customer_at(messages: list[dict]) -> datetime | None:
-    dated = []
-    for m in messages:
-        if m.get("is_private") or not m.get("is_customer"):
-            continue
-        ts = _parse_ts(m.get("timestamp"))
-        if ts is not None:
-            dated.append(ts)
-    return min(dated) if dated else None
-
-
-def _reconstruct_frt(messages: list[dict]) -> float | None:
-    """Customer ask → first later public support reply.
-
-    created_at → first support is the 1-minute bug: Slack/chat tickets often
-    have a support-side line within seconds of open. Pylon starts the clock
-    on the customer's ask.
-    """
-    asked = _first_customer_at(messages)
-    if asked is None:
-        return None
-    dated = []
-    for m in messages:
-        if m.get("is_private") or m.get("is_customer"):
-            continue
-        if scorer._is_bot_ack(m):
-            continue
-        ts = _parse_ts(m.get("timestamp"))
-        if ts is not None and ts >= asked:
-            dated.append(ts)
-    if not dated:
-        return None
-    return (min(dated) - asked).total_seconds()
-
-
-def _load_tickets(since: date) -> tuple[list[dict], dict[str, list[dict]]]:
+def _load_tickets(since: date) -> list[dict]:
     bound = since.isoformat()
     with db.get_conn() as conn:
         rows = conn.execute(
@@ -429,20 +385,7 @@ def _load_tickets(since: date) -> tuple[list[dict], dict[str, list[dict]]]:
             """,
             (bound, bound, bound),
         ).fetchall()
-        ids = [r["id"] for r in rows]
-        msgs: dict[str, list[dict]] = defaultdict(list)
-        if ids:
-            q = ",".join("?" * len(ids))
-            for m in conn.execute(
-                f"""
-                SELECT ticket_id, message_html, timestamp, is_customer, is_private
-                FROM messages
-                WHERE ticket_id IN ({q})
-                """,
-                ids,
-            ):
-                msgs[m["ticket_id"]].append(dict(m))
-    return [dict(r) for r in rows], msgs
+    return [dict(r) for r in rows]
 
 
 def _created_at(row: dict, tz) -> datetime | None:
@@ -458,8 +401,7 @@ def _created_at(row: dict, tz) -> datetime | None:
         return None
 
 
-def _annotate(row: dict, messages: list[dict], tz, sla: float,
-              now: datetime) -> dict | None:
+def _annotate(row: dict, tz, sla: float, now: datetime) -> dict | None:
     created = _created_at(row, tz)
     if created is None:
         return None
@@ -472,19 +414,18 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
 
     state = (row.get("state") or "").strip().lower()
     updated = _parse_ts(row.get("updated_at"))
-    # Prefer Pylon's own clocks. Reconstructing from created_at → first
-    # support message is what made the weekly FRT read as 1 minute while
-    # the issue page showed hours.
+    # Pylon's own clocks, and nothing else. The old reconstruction counted
+    # SpotAssist / chat auto-greetings as first responses (6-second FRTs on
+    # tickets whose issue page showed 39 minutes), and updated_at − created_at
+    # is a wall-clock span while Pylon's resolution clock pauses on hold and
+    # waiting states. No stored clock means no number: absence is honest, an
+    # invented duration silently skews every percentile and SLA count.
     frt = pylon_duration_seconds(row, "first_response_seconds")
-    if frt is None:
-        frt = _reconstruct_frt(messages)
 
     closed = state == "closed"
     res_secs = pylon_duration_seconds(row, "resolution_seconds")
     resolved_day = None
     if closed:
-        if res_secs is None and updated is not None and updated >= created:
-            res_secs = (updated - created).total_seconds()
         resolved_day = _local_date(updated, tz) or _local_date(created, tz)
 
     owed = qc_rules.status_policy(state).get("r4_reply_owed", True)
@@ -1110,10 +1051,10 @@ def build(week_start: str | None = None, *, start: str | None = None,
         week_start, start, end, now=current)
     sla = qc_rules.sla_hours()
 
-    raw_rows, msgs = _load_tickets(prev_monday)
+    raw_rows = _load_tickets(prev_monday)
     tickets = []
     for row in raw_rows:
-        annotated = _annotate(row, msgs.get(row["id"], []), tz, sla, current)
+        annotated = _annotate(row, tz, sla, current)
         if annotated is None:
             continue
         tickets.append(annotated)
@@ -1384,7 +1325,9 @@ def build(week_start: str | None = None, *, start: str | None = None,
         "coverage": {
             "csat": True,
             "reopen": False,
-            "resolved_proxy": "updated_at on closed tickets",
+            # Durations are Pylon's wall-clock first-response/resolution
+            # clocks as stored at fetch; nothing stands in when absent.
+            "duration_clock": "pylon_wall_clock",
             "sla_hours": sla,
         },
     }

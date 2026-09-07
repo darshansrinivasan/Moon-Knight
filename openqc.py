@@ -309,8 +309,10 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                      custom_fields, external_issues, body_html,
                      created_at, updated_at, latest_message_time,
                      customer_portal_visible, fetched_at, csat_responses,
-                     first_response_seconds, resolution_seconds)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     first_response_seconds, resolution_seconds,
+                     business_hours_first_response_seconds,
+                     business_hours_resolution_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 issue["id"], issue.get("number"), fetch_date,
                 issue.get("title"), issue.get("link"),
@@ -320,12 +322,15 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                 issue.get("created_at"), issue.get("updated_at"),
                 issue.get("latest_message_time"),
                 1 if cpv else 0, now, csat_json,
-                weekly.issue_duration_seconds(
-                    issue, "first_response_seconds",
-                    "business_hours_first_response_seconds"),
-                weekly.issue_duration_seconds(
-                    issue, "resolution_seconds",
-                    "business_hours_resolution_seconds"),
+                # Same rule as the day fetch: each clock in its own column.
+                weekly.pylon_duration_seconds(
+                    issue, "first_response_seconds"),
+                weekly.pylon_duration_seconds(
+                    issue, "resolution_seconds"),
+                weekly.pylon_duration_seconds(
+                    issue, "business_hours_first_response_seconds"),
+                weekly.pylon_duration_seconds(
+                    issue, "business_hours_resolution_seconds"),
             ))
             stored += 1
 
@@ -412,25 +417,22 @@ def _mark_missing(missing_ids: set[str]) -> dict:
     return {"deleted": len(to_mark), "kept_reviewed": len(kept)}
 
 
-async def refresh_open(start: str | None = None, end: str | None = None,
-                       states: list[str] | None = None) -> dict:
-    """Refetch the open backlog from Pylon by id; rescore rules; sync grades.
+async def _refresh_by_id(date_by_id: dict[str, str]) -> dict:
+    """Refetch known tickets from Pylon by id and store what came back.
 
-    Returns counts, never raises for a partially failed refresh — a ticket
-    that could not be refreshed simply keeps its snapshot and is graded (or
-    skipped) on that, exactly as an incomplete day fetch behaves.
+    The shared core of the open-backlog refresh and the date-range backfill:
+    upsert issue/messages/account, soft-delete 404s (human reviews kept), and
+    resync overall verdicts for every touched date. Returns counts, never
+    raises for a partially failed refresh — a ticket that could not be
+    refreshed simply keeps its snapshot, exactly as an incomplete day fetch
+    behaves.
     """
     import pylon
 
-    where, params = _where(start, end, states)
-    with db.get_conn() as conn:
-        rows = conn.execute(
-            f"SELECT t.id, t.fetch_date FROM tickets t WHERE {where}",
-            params).fetchall()
-    date_by_id = {r["id"]: r["fetch_date"] for r in rows}
     if not date_by_id:
         return {"requested": 0, "stored": 0, "rescored": 0,
-                "deleted": 0, "kept_reviewed": 0, "failed": 0}
+                "deleted": 0, "kept_reviewed": 0, "failed": 0,
+                "scoring_failures": None}
 
     fetched = await pylon.fetch_tickets_by_id(sorted(date_by_id))
     result = await asyncio.to_thread(_store_refreshed, fetched, date_by_id)
@@ -454,6 +456,39 @@ async def refresh_open(start: str | None = None, end: str | None = None,
         "failed": len(fetched.failed_ids),
         "scoring_failures": result["failures"] or None,
     }
+
+
+async def refresh_open(start: str | None = None, end: str | None = None,
+                       states: list[str] | None = None) -> dict:
+    """Refetch the open backlog from Pylon by id; rescore rules; sync grades."""
+    where, params = _where(start, end, states)
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT t.id, t.fetch_date FROM tickets t WHERE {where}",
+            params).fetchall()
+    return await _refresh_by_id({r["id"]: r["fetch_date"] for r in rows})
+
+
+async def backfill_range(start: str, end: str) -> dict:
+    """Refetch every stored ticket in a fetch-date range — closed included.
+
+    The open sweeps stop at the non-terminal set, so a ticket answered or
+    closed after its one day-fetch kept a frozen state and NULL Pylon clocks
+    forever; this is the path that brings closed history up to Pylon's current
+    truth. Only ids the store already knows are refreshed — tickets created on
+    a day nobody fetched remain a day-fetch problem, not a backfill one.
+    """
+    s = _require_iso_date(start, "start")
+    e = _require_iso_date(end, "end")
+    if s > e:
+        raise ValueError("start must not be after end")
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t.id, t.fetch_date FROM tickets t"
+            " WHERE t.deleted_at IS NULL"
+            "   AND t.fetch_date >= ? AND t.fetch_date <= ?",
+            (s, e)).fetchall()
+    return await _refresh_by_id({r["id"]: r["fetch_date"] for r in rows})
 
 
 # ── re-fetch: discover the whole open backlog, not just the known ids ────────

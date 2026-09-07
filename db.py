@@ -66,6 +66,12 @@ _ADDED_COLUMNS = [
     # like a 1-minute FRT while the issue page showed hours.
     "ALTER TABLE tickets ADD COLUMN first_response_seconds INTEGER",
     "ALTER TABLE tickets ADD COLUMN resolution_seconds INTEGER",
+    # Wall-clock and business-hours are different clocks (a weekend ticket is
+    # 4011s wall / 0s business). The store used to coalesce them into the
+    # columns above, and a coalesced value cannot be split apart afterwards —
+    # each clock keeps its own column.
+    "ALTER TABLE tickets ADD COLUMN business_hours_first_response_seconds INTEGER",
+    "ALTER TABLE tickets ADD COLUMN business_hours_resolution_seconds INTEGER",
 ]
 
 
@@ -100,8 +106,11 @@ def init_db():
             -- JSON list of {score, comment, submitted_at} from Pylon CSAT.
             csat_responses TEXT,
             -- Pylon-computed durations (seconds). Preferred over reconstructing.
+            -- Wall-clock and business-hours are separate clocks; never coalesce.
             first_response_seconds INTEGER,
-            resolution_seconds INTEGER
+            resolution_seconds INTEGER,
+            business_hours_first_response_seconds INTEGER,
+            business_hours_resolution_seconds INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS csat_events (

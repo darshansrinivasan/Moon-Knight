@@ -93,6 +93,7 @@ def reply_pair(created, hours, *, customer_first=True):
 
 
 add("c1", created="2026-08-18T04:00:00+00:00", state="investigating",
+    first_response_seconds=2 * 3600,
     messages=reply_pair("2026-08-18T04:00:00+00:00", 2),
     csat=[{"score": 5, "submitted_at": "2026-08-18T10:00:00+00:00"}])
 add("c2", created="2026-08-19T04:00:00+00:00", state="waiting_on_engg",
@@ -102,10 +103,11 @@ add("c3", created="2026-08-20T04:00:00+00:00", state="waiting_on_you",
     category="Oncall Integration Issues", cat_slug="oncall_integration_issues",
     account="Beta Co",
     messages=reply_pair("2026-08-20T04:00:00+00:00", 1))
-add("c4", created="2026-08-21T04:00:00+00:00", state="closed",
-    updated="2026-08-21T10:00:00+00:00",
-    extra_cf={"resolution_category": {"value": "Escalated to Oncall"}},
-    messages=reply_pair("2026-08-21T04:00:00+00:00", 30))
+n_c4 = add("c4", created="2026-08-21T04:00:00+00:00", state="closed",
+           updated="2026-08-21T10:00:00+00:00",
+           first_response_seconds=30 * 3600,
+           extra_cf={"resolution_category": {"value": "Escalated to Oncall"}},
+           messages=reply_pair("2026-08-21T04:00:00+00:00", 30))
 add("c5", created="2026-08-18T06:00:00+00:00", state="investigating",
     assignee="Bob", account="Acme",
     messages=reply_pair("2026-08-18T06:00:00+00:00", 3),
@@ -325,20 +327,23 @@ except ValueError:
     check("future start rejected", True, True)
 
 print()
-print("=== Pylon clocks beat reconstructed 1-minute FRT ===")
-check("wall-clock wins over business hours",
-      weekly.issue_duration_seconds(
-          {"first_response_seconds": 3600,
-           "business_hours_first_response_seconds": 900},
-          "first_response_seconds",
-          "business_hours_first_response_seconds"),
-      3600)
-check("business hours used when wall-clock missing",
-      weekly.issue_duration_seconds(
-          {"business_hours_first_response_seconds": 900},
-          "first_response_seconds",
-          "business_hours_first_response_seconds"),
-      900)
+print("=== Pylon clocks are the only clocks ===")
+# Wall-clock and business-hours live in separate columns: they are different
+# clocks (weekend ticket: 4011s wall, 0s business) and a coalesced value
+# cannot be split apart afterwards.
+with db.get_conn() as c:
+    _cols = {r["name"] for r in c.execute("PRAGMA table_info(tickets)")}
+check("business-hours clocks have their own columns",
+      {"business_hours_first_response_seconds",
+       "business_hours_resolution_seconds"} <= _cols, True)
+check("negative duration is not a clock",
+      weekly.pylon_duration_seconds(
+          {"first_response_seconds": -5}, "first_response_seconds"),
+      None)
+check("numeric-string duration parses",
+      weekly.pylon_duration_seconds(
+          {"first_response_seconds": "120.4"}, "first_response_seconds"),
+      120)
 # Slack-style: a support-side line at create, customer 1m later, real reply
 # hours later. created → first support used to report 1 minute.
 n_pylon = add(
@@ -377,14 +382,22 @@ n_res = add(
     messages=reply_pair("2026-08-18T07:15:00+00:00", 1))
 clocked = weekly.build(CURR, now=NOW)
 by_n = {r["issue"]: r for r in clocked["allRows"]}
-check("Pylon first_response_seconds wins over 1-minute reconstruction",
+check("Pylon first_response_seconds is the FRT",
       by_n[n_pylon]["frt_secs"], 4 * 3600)
-check("fallback FRT is customer ask → support, not created → support",
-      by_n[n_recon]["frt_secs"], 3 * 3600)
-check("no customer ask and no Pylon field means no invented FRT",
+# Reconstruction from messages counted SpotAssist / chat auto-replies as first
+# responses (6-second FRTs in production while the issue page showed 39 min),
+# so no stored clock means no FRT — never an invented one.
+check("no Pylon clock means no reconstructed FRT",
+      by_n[n_recon]["frt_secs"], None)
+check("no messages and no Pylon field means no invented FRT",
       by_n[n_none]["frt_secs"], None)
-check("Pylon resolution_seconds wins over updated_at - created_at",
+check("Pylon resolution_seconds is the resolution time",
       by_n[n_res]["res_secs"], 2 * 3600)
+# updated_at − created_at is a wall-clock span; Pylon's resolution clock
+# pauses on hold/waiting (2.6h vs 52h on a real ticket). Closed without a
+# stored clock reports no duration rather than the wrong one.
+check("closed without Pylon resolution clock reports no duration",
+      by_n[n_c4]["res_secs"], None)
 
 print()
 if fails:

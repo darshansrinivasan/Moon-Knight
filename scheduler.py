@@ -36,6 +36,12 @@ RETRY_BACKOFF  = timedelta(minutes=15)
 # still holding its lock would be judged abandoned, retried into LockBusy, and
 # then duplicated the moment the TTL lapsed.
 STALE_RUN_AFTER = timedelta(minutes=db.STALE_RUN_MINUTES)
+
+# After the day pipeline, tickets fetched in this trailing window are refreshed
+# by id. A ticket is day-fetched exactly once, the morning after creation, so
+# responses and closures landing after that moment (most of them) froze at the
+# snapshot — NULL Pylon clocks, stale states — until this resync existed.
+RESYNC_DAYS = 14
 # 30 min. A real run takes about a minute, so this is generous; the old 2 hours
 # meant a lock whose holder died blocked every run for the rest of the morning.
 # Startup also deletes stale locks outright, since their holder cannot be alive.
@@ -364,6 +370,36 @@ async def _tick() -> None:
         await run_pipeline(target, "scheduler", trigger_date=trigger_date)
     except Exception as e:
         logger.error("Scheduled run error: %s", e)
+        return
+
+    await _trailing_resync(target)
+
+
+async def _trailing_resync(target: date) -> None:
+    """Refresh the last RESYNC_DAYS of tickets by id, best-effort.
+
+    Runs only after a successful scheduled pipeline (so it inherits the
+    schedule-enabled and deployed-instance guards) and never fails the day:
+    the pipeline's result stands whether or not the resync lands. Shares the
+    fetch:backfill lock with the manual backfill endpoint so the two cannot
+    interleave writes.
+    """
+    import openqc  # lazy, same as app in run_pipeline
+
+    start = (target - timedelta(days=RESYNC_DAYS - 1)).isoformat()
+    try:
+        with db.advisory_lock("fetch:backfill", "scheduler",
+                              ttl_seconds=LOCK_TTL_SECONDS):
+            res = await openqc.backfill_range(start, target.isoformat())
+        logger.info(
+            "Trailing resync %s..%s: requested=%d stored=%d deleted=%d failed=%d",
+            start, target, res["requested"], res["stored"],
+            res["deleted"], res["failed"],
+        )
+    except db.LockBusy as e:
+        logger.info("Trailing resync skipped, lock busy: %s", e)
+    except Exception:
+        logger.exception("Trailing resync failed for %s..%s", start, target)
 
 
 async def _loop() -> None:

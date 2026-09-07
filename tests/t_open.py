@@ -361,6 +361,61 @@ check("the LATEST review's note and reviewer are the ones shown",
       ("R2", "customer was misread", "Fail"))
 
 print()
+print("=== backfill refreshes a date range, closed tickets included ===")
+# The open sweeps stop at the non-terminal set, so a ticket that closed after
+# its one day-fetch kept a frozen state and NULL Pylon clocks forever. The
+# backfill is the path that reaches terminal states — and it must never ask
+# about soft-deleted tickets or dates outside the range.
+closed_issue = dict(fake_issue("o4", "closed"),
+                    first_response_seconds=930,
+                    business_hours_first_response_seconds=0,
+                    resolution_seconds=1213,
+                    business_hours_resolution_seconds=500)
+backfilled = pylon.FetchedTickets(
+    issues=[closed_issue],
+    messages_by_id={"o4": []},
+    accounts_by_id={},
+)
+
+
+async def fake_backfill_fetch(ids):
+    fake_backfill_fetch.asked = sorted(ids)
+    return backfilled
+
+
+fake_backfill_fetch.asked = None
+pylon.fetch_tickets_by_id = fake_backfill_fetch
+try:
+    out3 = asyncio.run(openqc.backfill_range(D1, D3))
+finally:
+    pylon.fetch_tickets_by_id = real_by_id
+
+check("terminal and excluded states are asked about too",
+      {"o2", "o4", "o5", "o6"} <= set(fake_backfill_fetch.asked), True)
+check("soft-deleted tickets are not asked about",
+      "o7" in fake_backfill_fetch.asked, False)
+check("dates outside the range are not asked about",
+      "n2" in fake_backfill_fetch.asked, False)
+check("requested counts the range's live tickets",
+      out3["requested"], len(fake_backfill_fetch.asked))
+with db.get_conn() as c:
+    o4c = c.execute(
+        "SELECT first_response_seconds, business_hours_first_response_seconds,"
+        "       resolution_seconds, business_hours_resolution_seconds"
+        " FROM tickets WHERE id='o4'").fetchone()
+check("each Pylon clock lands in its own column (0 is a value, not absence)",
+      dict(o4c),
+      {"first_response_seconds": 930,
+       "business_hours_first_response_seconds": 0,
+       "resolution_seconds": 1213,
+       "business_hours_resolution_seconds": 500})
+try:
+    asyncio.run(openqc.backfill_range(D3, D1))
+    check("reversed backfill range rejected", False, True)
+except ValueError:
+    check("reversed backfill range rejected", True, True)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)
