@@ -1,0 +1,235 @@
+<title>Pylon QC Code Review</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --surface2:#eef0f4;
+    --ink:#1c2430; --muted:#5b6675; --faint:#8a93a3;
+    --accent:#3d5a80; --accent-ink:#2e4664;
+    --pass:#2e7d4f; --warn:#a3652a; --fail:#b3443f;
+    --border:#dde1e8; --code-bg:#eef0f4;
+    --chip-fix:#e3ecdf; --chip-doc:#e9e6dd;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#151a21; --surface:#1d232d; --surface2:#242b37;
+      --ink:#e6eaf0; --muted:#a6afbd; --faint:#7b8494;
+      --accent:#8fb0d9; --accent-ink:#a9c4e6;
+      --pass:#6fbf8f; --warn:#d29a5b; --fail:#e08983;
+      --border:#323a47; --code-bg:#242b37;
+      --chip-fix:#2a3a2e; --chip-doc:#3a352a;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#151a21; --surface:#1d232d; --surface2:#242b37;
+    --ink:#e6eaf0; --muted:#a6afbd; --faint:#7b8494;
+    --accent:#8fb0d9; --accent-ink:#a9c4e6;
+    --pass:#6fbf8f; --warn:#d29a5b; --fail:#e08983;
+    --border:#323a47; --code-bg:#242b37;
+    --chip-fix:#2a3a2e; --chip-doc:#3a352a;
+  }
+  body{
+    background:var(--bg); color:var(--ink);
+    font:16px/1.62 "IBM Plex Sans",-apple-system,"Segoe UI",sans-serif;
+    margin:0; padding:0 20px 80px;
+  }
+  .wrap{max-width:860px;margin:0 auto}
+  header{padding:56px 0 8px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  h1{font-size:clamp(28px,4.5vw,40px);line-height:1.15;margin:.35em 0 .3em;font-weight:650;letter-spacing:-.015em;text-wrap:balance}
+  .lede{color:var(--muted);max-width:62ch;margin:0 0 26px}
+  .stats{display:flex;gap:12px;flex-wrap:wrap;margin:0 0 40px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;min-width:130px;flex:1}
+  .stat b{display:block;font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}
+  .stat span{color:var(--muted);font-size:13px}
+  .stat.pass b{color:var(--pass)}
+  h2{font-size:22px;margin:56px 0 6px;font-weight:650;letter-spacing:-.01em}
+  h2 + p.sub{color:var(--muted);margin:0 0 22px;max-width:66ch}
+  .fix{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:0 0 14px}
+  .fix h3{margin:0 0 6px;font-size:16.5px;font-weight:640;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .chip{font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;border-radius:99px;padding:2px 10px;white-space:nowrap}
+  .chip.fixed{background:var(--chip-fix);color:var(--pass)}
+  .chip.doc{background:var(--chip-doc);color:var(--warn)}
+  .files{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:12.5px;color:var(--faint);margin:0 0 8px}
+  .fix p{margin:.45em 0;color:var(--ink)}
+  .fix .why{color:var(--muted)}
+  .fix .why b{color:var(--ink);font-weight:600}
+  code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.88em;background:var(--code-bg);border-radius:4px;padding:1px 5px}
+  ul{padding-left:22px}
+  li{margin:.3em 0}
+  .doc-list li{margin:.7em 0;color:var(--muted)}
+  .doc-list li b{color:var(--ink)}
+  table{border-collapse:collapse;width:100%;font-size:14px}
+  .tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+  th,td{padding:9px 14px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+  th{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  .ok{color:var(--pass);font-weight:600}
+  footer{margin-top:64px;color:var(--faint);font-size:13px;border-top:1px solid var(--border);padding-top:18px}
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Full-codebase review · September 2026</div>
+  <h1>Pylon QC Code Review</h1>
+  <p class="lede">Every module, page and test in the QC app reviewed for bugs, contradictions and standards drift, with eleven independent review passes (correctness, efficiency, reuse, cross-file consistency, removed behaviour, and three deep module audits). Every fix below says what changed and why it mattered; findings deliberately left alone are documented with their reasons.</p>
+  <div class="stats">
+    <div class="stat"><b>31</b><span>fixes applied</span></div>
+    <div class="stat"><b>9</b><span>findings documented, not changed</span></div>
+    <div class="stat pass"><b>30 / 30</b><span>test suites green after the changes</span></div>
+    <div class="stat"><b>1</b><span>new contributor guide (CLAUDE.md)</span></div>
+  </div>
+</header>
+
+<h2>1 · Tags: classify on raw values, show labels</h2>
+<p class="sub">The most consequential cluster. Pylon stores option <em>values</em> (slugs) on tickets; its UI shows <em>labels</em>. The new label sync renames what every page displays — and several classifiers were keyed on the display wording, so the first sync would silently move tickets out of their buckets. Verified against real data: 64 alert tickets and 25 email-domain tickets would have dropped from the Product Report's clusters.</p>
+
+<div class="fix"><h3>Report classification now keys on raw slugs <span class="chip fixed">fixed</span></h3>
+  <div class="files">report.py — _load, _is_reauth/_is_toggle/_is_access, _group_of callers, snapshot, chat context</div>
+  <p><code>_load</code> now carries both views of every tag: <code>category_raw</code>/<code>functionality_raw</code> (the stable stored values) and the label-translated fields. All clusters, demand groups, FAQ predicates, <code>console_ops</code>, the compare snapshot and the chat rollup classify on raw; charts, CSVs and chat text keep showing labels.</p>
+  <p class="why"><b>Why:</b> a label is wording a Pylon admin can change any day. Logic written against wording fails silently on the next rename — the report would have shown a fabricated month-over-month "decline" in alert relays after the first sync. A regression pin in <code>t_report</code> now installs a label map mid-test and asserts the clusters don't move while the categories chart re-words.</p></div>
+
+<div class="fix"><h3>One catalog write path, atomic sync, honest field mapping <span class="chip fixed">fixed</span></h3>
+  <div class="files">funcheck.py (rewritten label/catalog layer) · app.py catalog endpoints · vault.py set_raw_settings</div>
+  <p>The label map is memoized with an explicit <code>invalidate_labels()</code>; cleaning rules live once in <code>clean_entries</code>; the Admin editor and the Pylon sync both go through <code>save_catalog</code>/<code>clear_catalog</code> (which also audit); the sync resolves field slugs through the same Admin mapping the checker reads, falls back to the slug when Pylon returns a blank label, and persists all four settings in <em>one</em> transaction via the new <code>vault.set_raw_settings</code>. Reset clears a kind's list <em>and</em> its slice of the label map together.</p>
+  <p class="why"><b>Why:</b> two cleaning definitions meant a synced entry could fail to round-trip through the Admin textarea; a torn multi-setting write would translate tags into a vocabulary the catalog no longer contains — which reads as data corruption, not a crash; and a sync that ignores the field mapping splits from the checker the day a field is repointed.</p></div>
+
+<div class="fix"><h3>Custom-field fetch now paginates <span class="chip fixed">fixed</span></h3>
+  <div class="files">pylon.py — fetch_custom_fields</div>
+  <p>Follows <code>pagination.cursor</code> with per-page retry instead of reading only the first page.</p>
+  <p class="why"><b>Why:</b> the catalog sync and the Slack field-drift warning are now built on this call. Page one alone would sync a partial vocabulary and report healthy fields as "removed from Pylon".</p></div>
+
+<div class="fix"><h3>Weekly page uses the same translator as everything else <span class="chip fixed">fixed</span></h3>
+  <div class="files">weekly.py — _canon_category</div>
+  <p>Category display goes through <code>funcheck.canon</code>, with the old <code>_humanize</code> guess only as the fallback for unmapped values.</p>
+  <p class="why"><b>Why:</b> two competing translators meant the weekly and monthly pages could name the same category differently — "General Question" on one screen, "General FAQ - How to questions" on the other.</p></div>
+
+<h2>2 · Concurrency and the scheduler</h2>
+<p class="sub">The deep platform audit found the locking story had three related holes; together they allowed two full QC runs of the same date at once — double Vertex billing and interleaved grade writes.</p>
+
+<div class="fix"><h3>Scheduler and manual runs now contend for the same locks <span class="chip fixed">fixed</span></h3>
+  <div class="files">scheduler.py — run_pipeline</div>
+  <p>The pipeline now holds <code>fetch:{date}</code> and <code>qc:{date}</code> — the very names the manual endpoints hold — alongside its own <code>daily_run</code> lock.</p>
+  <p class="why"><b>Why:</b> the locks guarded disjoint names, so an operator pressing Run QC at 09:31 scored the same date the scheduler started at 09:30. The collision the lock table exists to prevent was unguarded.</p></div>
+
+<div class="fix"><h3>Stale-run timeout no longer shorter than the lock TTL <span class="chip fixed">fixed</span></h3>
+  <div class="files">db.py — STALE_RUN_MINUTES 15 → 45</div>
+  <p class="why"><b>Why:</b> the code's own comment states the invariant ("must exceed the advisory lock TTL") and shipped with it inverted: a slow 20-minute run was declared dead at minute 15, retried into LockBusy, then duplicated alive at minute 30 when the TTL lapsed.</p></div>
+
+<div class="fix"><h3>Locks release only their own acquisition <span class="chip fixed">fixed</span></h3>
+  <div class="files">db.py — advisory_lock</div>
+  <p>The release deletes <code>WHERE name AND holder AND acquired_at</code> match, not by name alone.</p>
+  <p class="why"><b>Why:</b> if run A outlived its TTL and run B took the lock, A's cleanup deleted B's lock — letting a third caller in while B still ran.</p></div>
+
+<div class="fix"><h3>“Run now” satisfies the day's schedule <span class="chip fixed">fixed</span></h3>
+  <div class="files">app.py run_now · scheduler.py _already_ran</div>
+  <p>A dateless Run now records today's trigger date; the schedule guard counts any successful run of the same target, not only <code>triggered_by='scheduler'</code> — and now also matches <code>run_date</code>, so a backfill of another date can't mask today's run.</p>
+  <p class="why"><b>Why:</b> a successful manual run at 09:00 was invisible to the 09:30 tick, which fetched, scored and posted the identical Slack report a second time.</p></div>
+
+<div class="fix"><h3>Ephemeral master key generated once, not per call <span class="chip fixed">fixed</span></h3>
+  <div class="files">vault.py — _load_master_key</div>
+  <p class="why"><b>Why:</b> on a read-only filesystem without <code>QC_MASTER_KEY</code>, every call minted a fresh key — the OAuth state was signed under key #1 and verified under key #2, so sign-in looped on "Sign-in expired" forever. The warning promised sessions wouldn't survive a <em>restart</em>; they didn't survive a <em>request</em>.</p></div>
+
+<h2>3 · Security and permissions</h2>
+
+<div class="fix"><h3>Evidence CSV neutralises spreadsheet formulas <span class="chip fixed">fixed</span></h3>
+  <div class="files">app.py — report_evidence_csv</div>
+  <p class="why"><b>Why:</b> ticket titles and resolution text are customer-controlled; a title starting <code>=</code>, <code>+</code>, <code>-</code> or <code>@</code> executes when the exported CSV opens in Excel or Sheets. The sibling day-export already escaped exactly this — the report export didn't.</p></div>
+
+<div class="fix"><h3>GET /api/weekly no longer writes as a side effect of viewing <span class="chip fixed">fixed</span></h3>
+  <div class="files">app.py — get_weekly + _csat_refresh_due</div>
+  <p>The CSAT sweep (Pylon crawl + ticket writes) runs only for operators/admins, throttled to one sweep per period per 10 minutes.</p>
+  <p class="why"><b>Why:</b> members are documented as read-only, yet any member merely opening the weekly page triggered paginated Pylon API calls and unaudited <code>UPDATE tickets</code> writes — on every reload.</p></div>
+
+<h2>4 · Scoring pipeline consistency</h2>
+<p class="sub">The scoring audit's theme: scorer, evidence and the persisted advice notes are three statements of the same rules, and several had drifted from the configuration that Admin/Rules can edit.</p>
+
+<div class="fix"><h3>R8 advice follows the configured conditions <span class="chip fixed">fixed</span></h3>
+  <div class="files">qc_runner.py — _r_check_notes</div>
+  <p>The failure note only names conditions in <code>rules.r8_conditions()</code>, reads values the way the scorer does (<code>interpreted_value</code> first), and only suggests a Jira link when that condition is still required.</p>
+  <p class="why"><b>Why:</b> after an admin dropped conditions, the morning Slack report told agents to fix fields the scorer no longer checks — while never mentioning the one thing actually missing.</p></div>
+
+<div class="fix"><h3>Legal-handoff advice names the configured tag <span class="chip fixed">fixed</span></h3>
+  <div class="files">qc_runner.py — _r_check_notes (R5)</div>
+  <p class="why"><b>Why:</b> the note hardcoded "@legal-ops" while the scorer passes on whatever tags the status policy lists — edit the matrix to "@legal" and the advice sends people to type a tag that no longer counts.</p></div>
+
+<div class="fix"><h3>Evidence reads the oncall link through the field map <span class="chip fixed">fixed</span></h3>
+  <div class="files">evidence.py — _Context</div>
+  <p class="why"><b>Why:</b> the one remaining hardcoded slug. Remap the field in Rules and scoring passes R5 via the Slack thread while the evidence panel sees no link and asserts the handoff never happened.</p></div>
+
+<div class="fix"><h3>One corrupt ticket no longer sinks its whole batch <span class="chip fixed">fixed</span></h3>
+  <div class="files">qc_runner.py — _build_ticket_block</div>
+  <p>A malformed stored <code>custom_fields</code> document degrades to "fields unreadable" instead of raising while the batch prompt is assembled.</p>
+  <p class="why"><b>Why:</b> the exception fired before the per-ticket retry could catch anything, so five healthy batch-mates were marked skipped for one bad row — defeating the fallback the function promises.</p></div>
+
+<div class="fix"><h3>Run stability measured over what the run actually graded <span class="chip fixed">fixed</span></h3>
+  <div class="files">qc_runner.py — _snapshot_and_compare</div>
+  <p>The snapshot applies the excluded-state filter and masks <code>r_fails</code> to enabled checks.</p>
+  <p class="why"><b>Why:</b> frozen archived grades padded the "unchanged" count (a day with 10 of 20 graded tickets flipping still read 90% stable), and a disabled check's Fail was recorded beside a Pass overall in run history.</p></div>
+
+<div class="fix"><h3>Header stats share the day panel's scope <span class="chip fixed">fixed</span></h3>
+  <div class="files">db.py — ticket_stats</div>
+  <p class="why"><b>Why:</b> the one grade surface without the excluded-status filter: with <code>archived</code> excluded, the pills said "67 tickets, 23 unreviewed" over a panel showing 44 — the exact split the shared-clause refactor existed to end.</p></div>
+
+<div class="fix"><h3>Slack field-drift warning can't suppress itself <span class="chip fixed">fixed</span></h3>
+  <div class="files">slack.py — _field_drift_blocks</div>
+  <p>The "already reported" signature is stored only after the warning is actually built, and cleared on recovery so the same drift re-alarms if it returns.</p></div>
+
+<div class="fix"><h3>Docstring pointed at the wrong credential home <span class="chip fixed">fixed</span></h3>
+  <div class="files">scorer.py — _fetch_slack_thread</div>
+  <p class="why"><b>Why:</b> it said "SLACK_USER_TOKEN in the environment"; the code reads the vault. An operator following the doc gets silently empty Slack threads — and R5 failures — on every oncall ticket.</p></div>
+
+<div class="fix"><h3>Refetch merges CSAT instead of clobbering it <span class="chip fixed">fixed</span></h3>
+  <div class="files">weekly.py — csat_json_for_store</div>
+  <p class="why"><b>Why:</b> the two writers of <code>tickets.csat_responses</code> disagreed: the weekly page carefully merged survey responses (with comments), then a plain day refetch replaced the column with the thinner issue-level list — silently losing the comments.</p></div>
+
+<div class="fix"><h3>Drive calls off the event loop <span class="chip fixed">fixed</span></h3>
+  <div class="files">share.py — meta, send</div>
+  <p class="why"><b>Why:</b> <code>drive_status</code> and the sheet upload are synchronous httpx calls with 20–120&nbsp;s timeouts, called directly from async endpoints — while Google answered, every other request in the app stalled.</p></div>
+
+<h2>5 · Frontend</h2>
+<p class="sub">Twelve findings, eleven fixed; the twelfth verified safe (the analytics drill-down link is sanitised server-side by <code>drilldown.safe_link</code>). The theme: loaders that race, error paths that destroy state, and two pages disagreeing about the same number.</p>
+<div class="tablewrap"><table>
+  <tr><th>Where</th><th>Fix &amp; why</th></tr>
+  <tr><td><code>index.html</code> refreshDayPanel</td><td>Guards against stale responses after every await — a poll from a previous day could overwrite the day you'd clicked to, under the new day's title.</td></tr>
+  <tr><td><code>index.html</code> loadStats</td><td>Sequence token + <code>r.ok</code> check, like every other loader; a slow response no longer paints day A's counts over day B, and a 500 no longer pins "Loading…" forever.</td></tr>
+  <tr><td><code>index.html</code> slide-over checks</td><td>Respects admin-disabled checks: the sheet showed a red Fail with a Pass overall for a check the card grid struck through — the contradiction the "off" state was built to prevent.</td></tr>
+  <tr><td><code>index.html</code> rateClass</td><td>Thresholds aligned with the Leaderboard (80/60): a 55% pass rate was amber on Analytics and red on Leaderboard simultaneously.</td></tr>
+  <tr><td><code>index.html</code> Reviewed pill</td><td>Added the missing <code>active-reviewed</code> style — the filter persisted via localStorage, so a reload showed a mysteriously truncated day with no pill lit.</td></tr>
+  <tr><td><code>index.html</code> member fetch path</td><td>A member opening an unfetched day was told to press ↻ Refetch — a button their role gate had just disabled. Now told an operator has to fetch it, and the doomed POST is skipped.</td></tr>
+  <tr><td><code>index.html</code> Slack button</td><td>Delivery failures report into the meta line instead of <code>showError</code>, which replaced the entire ticket list someone was reviewing.</td></tr>
+  <tr><td><code>shell.js</code> QC.show</td><td>Cancels the pending "ok" auto-hide — a stale 4-second timer from a save was blanking the <em>next</em> error mid-read.</td></tr>
+  <tr><td><code>shell.js</code> skeletons</td><td><code>tableRows</code> now <code>aria-hidden</code> like every other skeleton — screen readers announced placeholder cells as data.</td></tr>
+  <tr><td><code>leaderboard.html</code></td><td>An API error now clears the People skeleton too; it used to shimmer forever with no error and no retry.</td></tr>
+  <tr><td><code>rules.html</code> show()</td><td>"err" mapped to the real <code>banner bad</code> class — validation rejections rendered as an unstyled grey box.</td></tr>
+</table></div>
+
+<h2>6 · Reviewed, deliberately not changed</h2>
+<p class="sub">Real findings where the fix is a bigger decision than a review should make unilaterally. Each is worth a ticket.</p>
+<ul class="doc-list">
+  <li><b>evidence.py R5 explains by hardcoded state names while the scorer follows the editable status policy.</b> Edit the policy matrix and the evidence panel can contradict the stored verdict. Fixing it properly means rebuilding evidence's R5 on <code>status_policy</code> — a refactor with its own test surface, not a patch.</li>
+  <li><b>qc_fingerprint hashes R8/R9, which the prompt never contains</b> — a Jira link appearing re-bills an identical prompt. But changing the fingerprint definition invalidates every stored fingerprint and re-bills the whole archive once; the cure costs more than the disease until batched with another prompt change.</li>
+  <li><b><code>_compute_overall</code> checks a3 for "Needs Review"</b>, a grade a3's enum can never produce — so a3's "Needs Improvement" uniquely never demotes a ticket. Whether it <em>should</em> demote is a grading-policy decision, not a code fix.</li>
+  <li><b>NULL-state tickets vanish under <code>state NOT IN (…)</code></b> (SQL three-valued logic). This is pinned in tests as current app-wide behaviour; flipping it changes historical counts everywhere at once, so it stays a documented convention (see CLAUDE.md) until decided deliberately.</li>
+  <li><b>Sync overwrites hand-curated catalog lists</b> — by design: the button's contract is "Pylon is the source of truth", and the Admin editor remains for local curation between syncs.</li>
+  <li><b>Stored funcheck verdicts keep pre-sync spellings until a re-run</b> — a transitional inconsistency the fingerprint system resolves on the next monthly check, not worth forcing a paid re-run.</li>
+  <li><b>fetch_and_store reads each ticket's prior CSAT row-by-row</b> (an N+1 from the CSAT merge). Correct, and a day's fetch is ~100 rows; noted for whoever next touches the fetch loop.</li>
+  <li><b>qc_runner's coaching text shows a raw slug</b> in one message — cosmetic; the advice remains actionable.</li>
+  <li><b>Analytics fail-ticket links</b> were flagged as an XSS sink but verified safe: the server nulls any non-http(s) link before the client sees it.</li>
+</ul>
+
+<h2>7 · Standards for a multi-contributor repo</h2>
+<p class="sub">The review's recurring pattern isn't sloppiness — it's several careful people holding <em>different</em> mental models: two CSAT writers with opposite merge semantics, two category translators, two pass-rate colour scales, three statements of R5, two lock-name schemes. The repo had no written conventions to converge on.</p>
+<div class="fix"><h3>CLAUDE.md added at the repo root <span class="chip fixed">fixed</span></h3>
+  <p>A one-page contributor guide pinning the rules whose violations shipped the bugs above: run <code>./tests/run.sh</code>; classify on raw slugs, display labels; one shared predicate for excluded statuses; the advisory-lock naming contract and the TTL invariant; <code>NULL NOT IN</code>; settings through the vault registry with audit rows; escape-and-token discipline on the frontend; and a commit-message convention (history currently mixes <code>Feat:</code>, <code>Enhanc:</code>, <code>feat:</code> and bare sentences).</p></div>
+
+<h2>8 · Verification</h2>
+<div class="tablewrap"><table>
+  <tr><th>Check</th><th>Result</th></tr>
+  <tr><td>Full suite, <code>./tests/run.sh</code> (30 suites)</td><td class="ok">ALL SUITES PASSED</td></tr>
+  <tr><td>New pins: label-sync invariance (t_report), sync mapping/blank-label/reset semantics + clean_entries + empty-list refusal (t_funcheck), manual-run-satisfies-schedule and backfill-doesn't (t_sched)</td><td class="ok">green</td></tr>
+  <tr><td>App module import boot check</td><td class="ok">ok</td></tr>
+</table></div>
+<p style="color:var(--muted);max-width:66ch">No commits made — the working tree holds the changes for your own commit and push, per your usual flow. Nothing here touched Vertex, Slack, Drive or Pylon.</p>
+
+<footer>Review run 4–7 Sep 2026 · eleven review passes over every Python module, page, and test · fixes verified by the full suite</footer>
+</div>

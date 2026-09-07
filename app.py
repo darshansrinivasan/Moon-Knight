@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -887,10 +888,8 @@ async def sync_catalog(user: dict = Depends(auth.require_admin)):
     vault.audit(user["email"], "catalog.sync",
                 f"functionality={counts['functionality']} "
                 f"category={counts['category']}")
-    current = await asyncio.to_thread(funcheck.options)
-    return {"ok": True, **counts,
-            "functionality_list": current["functionality"],
-            "category_list": current["category"]}
+    # The page re-reads the lists through loadCatalog(); counts are enough here.
+    return {"ok": True, **counts}
 
 
 @app.put("/api/admin/catalog")
@@ -905,33 +904,26 @@ async def put_catalog(request: Request,
     """
     body = await request.json()
     which = str(body.get("list") or "")
-    setting = funcheck.CATALOG_SETTINGS.get(which)
-    if not setting:
+    if which not in funcheck.CATALOG_SETTINGS:
         raise HTTPException(400, "list must be 'functionality' or 'category'")
 
-    if body.get("reset"):
-        vault.set_raw_setting(setting, "", user["email"])
-        vault.audit(user["email"], "catalog.reset", which)
-    else:
-        raw = body.get("entries")
-        if not isinstance(raw, list):
-            raise HTTPException(400, "entries must be a list of strings")
-        cleaned, seen = [], set()
-        for e in raw:
-            e = " ".join(str(e or "").split())[:120]
-            if not e or e.lower() in seen:
-                continue
-            seen.add(e.lower())
-            cleaned.append(e)
-        if not cleaned:
-            raise HTTPException(400, "The list cannot be emptied — reset it "
-                                     "to the shipped catalog instead")
-        if len(cleaned) > 1000:
-            raise HTTPException(400, "That is more than 1000 options")
-        vault.set_raw_setting(setting, json.dumps(cleaned), user["email"])
-        vault.audit(user["email"], "catalog.save", f"{which} n={len(cleaned)}")
+    # funcheck owns the write path (cleaning, caps, audit, cache invalidation)
+    # so the editor and the Pylon sync can never disagree about what a valid
+    # list is.
+    def write():
+        if body.get("reset"):
+            funcheck.clear_catalog(which, user["email"])
+        else:
+            raw = body.get("entries")
+            if not isinstance(raw, list):
+                raise HTTPException(400, "entries must be a list of strings")
+            funcheck.save_catalog(which, raw, user["email"])
+        return funcheck.options()
 
-    current = await asyncio.to_thread(funcheck.options)
+    try:
+        current = await asyncio.to_thread(write)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True, "functionality": current["functionality"],
             "category": current["category"]}
 
@@ -1019,6 +1011,22 @@ async def weekly_page(user: dict = Depends(auth.require_user)):
     return _page("weekly.html")
 
 
+# One CSAT sweep per period per process every 10 minutes: surveys trickle in
+# over days, so fresher than that buys nothing and each sweep is a paginated
+# Pylon crawl.
+_CSAT_REFRESHED: dict[tuple, float] = {}
+_CSAT_TTL_SECONDS = 600
+
+
+def _csat_refresh_due(start: str, end: str) -> bool:
+    now = time.monotonic()
+    last = _CSAT_REFRESHED.get((start, end))
+    if last is not None and now - last < _CSAT_TTL_SECONDS:
+        return False
+    _CSAT_REFRESHED[(start, end)] = now
+    return True
+
+
 @app.get("/api/weekly")
 async def get_weekly(week: str | None = None,
                     start: str | None = None,
@@ -1042,14 +1050,19 @@ async def get_weekly(week: str | None = None,
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
-    try:
-        rows = await pylon.fetch_csat_responses(prev_start, curr_end)
-        if rows:
-            await asyncio.to_thread(weekly.store_csat_responses, rows)
-    except pylon.PylonNotConfigured:
-        pass
-    except Exception as e:
-        logger.warning("Weekly CSAT fetch skipped: %s", e)
+    # The CSAT refresh calls Pylon and writes tickets — work a read-only
+    # member's page view must not trigger. Operators refresh it, throttled so
+    # a busy morning of reloads is one survey sweep, not one per reload.
+    if auth.can_run_qc(user) and _csat_refresh_due(prev_start, curr_end):
+        try:
+            rows = await pylon.fetch_csat_responses(prev_start, curr_end)
+            if rows:
+                await asyncio.to_thread(weekly.store_csat_responses, rows)
+        except pylon.PylonNotConfigured:
+            pass
+        except Exception as e:
+            _CSAT_REFRESHED.pop((prev_start, curr_end), None)
+            logger.warning("Weekly CSAT fetch skipped: %s", e)
 
     try:
         return await asyncio.to_thread(
@@ -1154,6 +1167,12 @@ async def report_evidence_csv(month: str,
     _require_month(month)
     rows = await asyncio.to_thread(report.evidence_rows, month)
 
+    def safe(v):
+        """Neutralise spreadsheet formula injection — titles and resolution
+        text are customer-controlled, and Excel executes leading = + - @."""
+        s = "" if v is None else str(v)
+        return "'" + s if s[:1] in ("=", "+", "-", "@") else s
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     cols = ["ticket_id", "title", "account", "assignee", "status", "date",
@@ -1161,7 +1180,7 @@ async def report_evidence_csv(month: str,
             "resolution_details", "resolution_category", "link"]
     writer.writerow(cols)
     for r in rows:
-        writer.writerow([r[c] for c in cols])
+        writer.writerow([safe(r[c]) for c in cols])
     return StreamingResponse(
         iter([buf.getvalue()]), media_type="text/csv",
         headers={"Content-Disposition":
@@ -2428,12 +2447,18 @@ async def run_now(request: Request,
     date_str = (body or {}).get("date")
     if date_str:
         target = _require_date(date_str)
+        trigger = None  # an explicit date is a backfill, not today's run
     else:
         offset = 0 if vault.get_setting("schedule_target") == "today" else 1
         target = date.today() - timedelta(days=offset)
+        # This IS today's scheduled work done early, so record it under
+        # today's trigger date — otherwise the scheduler sees no run for
+        # today and fetches, scores and Slack-posts the same date again.
+        trigger = datetime.now(scheduler._tz()).date().isoformat()
 
     try:
-        result = await scheduler.run_pipeline(target, user["email"])
+        result = await scheduler.run_pipeline(target, user["email"],
+                                              trigger_date=trigger)
     except db.LockBusy as e:
         raise HTTPException(409, str(e))
     except Exception as e:

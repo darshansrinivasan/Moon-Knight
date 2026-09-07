@@ -477,9 +477,9 @@ def _mentioned_group_ids(messages: list[dict]) -> set[str]:
 def _fetch_slack_thread(url: str) -> str:
     """Fetch text of a Slack thread from its archive URL.
 
-    Requires SLACK_USER_TOKEN in the environment (xoxp-… token with
-    channels:history and groups:history scopes). Returns empty string
-    on any error or if the token is absent.
+    Requires the 'slack_user_token' credential in the vault (Admin →
+    Credentials; an xoxp-… token with channels:history and groups:history
+    scopes). Returns empty string on any error or if the token is absent.
     """
     import vault
     token = vault.get_credential("slack_user_token") or ""

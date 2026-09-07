@@ -551,6 +551,9 @@
   .status-pill.active-review  { border-color: color-mix(in srgb, var(--review) 50%, transparent); background: color-mix(in srgb, var(--review) 15%, transparent); color: var(--review); }
   .status-pill.active-pending { border-color: var(--border);       background: var(--pending);       color: var(--muted); }
   .status-pill.active-unreviewed { border-color: var(--accent); background: color-mix(in srgb, var(--color-accent) 12%, transparent); color: var(--accent2); }
+  /* The Reviewed pill filters like the others but had no active style, so a
+     persisted "reviewed" filter looked like no filter at all. */
+  .status-pill.active-reviewed { border-color: color-mix(in srgb, var(--pass) 50%, transparent); background: color-mix(in srgb, var(--pass) 12%, transparent); color: var(--pass); }
 
   .ticket-list {
     flex: 1;
@@ -1603,6 +1606,15 @@ async function selectDay(dateStr) {
   if (selDate !== dateStr) return; // user clicked another day meanwhile
 
   if (!day.fetched) {
+    // Fetching is operator-gated. Telling a member to "use ↻ Refetch" — a
+    // button applyRunPermission() has just disabled for them — is a dead end;
+    // say who can actually help instead, and skip the doomed POST.
+    if (!canRunQC()) {
+      document.getElementById("panel-meta").textContent = "Not fetched yet";
+      showError("This day has not been fetched from Pylon yet. "
+                + "Ask an operator or administrator to open it or run QC.");
+      return;
+    }
     document.getElementById("panel-meta").textContent = "Fetching from Pylon…";
     try {
       const fr = await fetch(`/api/fetch/${dateStr}`, { method: "POST" });
@@ -1682,6 +1694,10 @@ async function refetchDay() {
 
 async function refreshDayPanel(dateStr) {
   const day = await getJSON(`/api/day/${dateStr}`);
+  // The user may have clicked another day while this response was in flight;
+  // rendering it anyway would replace the visible day's tickets with a stale
+  // day's data under the new day's title.
+  if (selDate !== dateStr) return;
   lastRun = day.last_run || lastRun;
   daySpend = day.spend || daySpend;
   document.getElementById("download-btn").style.display = "flex";
@@ -2179,7 +2195,10 @@ function closeSheet() {
 function sheetChecksHtml(t, why) {
   return MATRIX.map(([key]) => {
     const raw = t[key];
-    const st = cellState(key, raw);
+    // Same "off" treatment as the card grid: a disabled check must not show
+    // as a red Fail in the slide-over while the grid strikes it through.
+    const off = DISABLED_CHECKS.has(key);
+    const st = off ? "off" : cellState(key, raw);
     const meta = CHECKS[key] || {};
     const shown = raw === null || raw === undefined || raw === "" ? "—" : raw;
     const valColour = st === "fail" ? "var(--fail)"
@@ -2189,7 +2208,9 @@ function sheetChecksHtml(t, why) {
 
     // Evidence when we have it; the rule statement as the fallback, marked as
     // such so a generic line is never mistaken for this ticket's reason.
-    const reason = (why || {})[key];
+    const reason = off
+      ? "Switched off in Rules — the stored verdict is kept but no longer counts"
+      : (why || {})[key];
     const body = reason
       ? `<div class="sheet-check-why">${esc(reason)}</div>
          <div class="sheet-check-note">${esc(meta.desc || "")}</div>`
@@ -2775,11 +2796,22 @@ async function loadRailFails() {
 }
 
 // ── stats ────────────────────────────────────────────────────────────────────
+// Sequenced like the calendar and analytics loaders: two quick day clicks can
+// resolve out of order, and without the token the header pills end up showing
+// day A's counts over day B's ticket list.
+let statsToken = 0;
 async function loadStats(date = null) {
+  const token = ++statsToken;
   try {
     const url = date ? `/api/stats?date=${date}` : "/api/stats";
     const r   = await fetch(url);
+    if (token !== statsToken) return;
+    if (!r.ok) {  // never leave the pill stuck on "Loading…"
+      document.getElementById("stat-total").textContent = "Stats unavailable";
+      return;
+    }
     const s   = await r.json();
+    if (token !== statsToken) return;
 
     const scope = date ? fmtDisplay(date) : "All time";
     document.getElementById("stat-total").innerHTML =
@@ -2948,7 +2980,9 @@ function nextAnalyticMonth() {
 
 function rateClass(rate) {
   if (rate == null) return 'rate-none';
-  return rate >= 80 ? 'rate-pass' : rate >= 50 ? 'rate-review' : 'rate-fail';
+  // Same thresholds as the Leaderboard's rateCell (80/60): the two pages must
+  // not disagree on whether the same pass rate is a warning or a failure.
+  return rate >= 80 ? 'rate-pass' : rate >= 60 ? 'rate-review' : 'rate-fail';
 }
 
 let analyticsReq = 0;
@@ -3556,7 +3590,10 @@ document.getElementById("slack-btn").addEventListener("click", async () => {
     }
     document.getElementById("panel-meta").textContent = note;
   } catch (e) {
-    showError(`Slack send failed: ${e.message}`);
+    // Into panel-meta, not showError: showError replaces the ticket list, and
+    // a failed Slack delivery must not destroy the day someone is reviewing.
+    document.getElementById("panel-meta").textContent =
+      `Slack send failed: ${e.message}`;
   } finally {
     btn.disabled = false;
     btn.textContent = "➤ Slack report";

@@ -542,6 +542,9 @@ const NAV = [
 ];
 
 function show(kind, html) {
+  // shell.css styles banner.bad/warn/info/ok — callers here say "err", which
+  // matched nothing and rendered validation failures as an unstyled grey box.
+  if (kind === "err") kind = "bad";
   $("msg").innerHTML = html ? `<div class="banner ${kind}">${html}</div>` : "";
   if (html) window.scrollTo({top: 0, behavior: "smooth"});
 }

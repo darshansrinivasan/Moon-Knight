@@ -283,10 +283,66 @@ check("the catalog lists became Pylon's labels",
 f2b = [t for t in funcheck._load_month(M) if t["id"] == "f2"][0]
 check("tagged values on tickets read as labels everywhere",
       funcheck._tagged(f2b)[0], "Integrations : HubSpot")
+print()
+print("=== sync details: mapping honoured, blank labels survive, reset is total ===")
+import rules as qc_rules
+
+# The sync must read whatever slug the Admin field mapping points at — the
+# same mapping _tagged reads with — or repointing a field splits the two.
+vault.set_raw_setting(
+    "qc_rules_json", json.dumps({"excluded_states": [],
+                                 "field_request_category": "req_cat_v2"}), "t")
+qc_rules.invalidate()
+MAPPED_FIELDS = [
+    FAKE_FIELDS[0],
+    {"slug": "req_cat_v2", "select_metadata": {"options": [
+        # A blank label must fall back to the slug, never produce "" entries.
+        {"slug": "no_label_yet", "label": "  "},
+        {"slug": "general_question", "label": "General FAQ - How to questions"},
+    ]}},
+]
+
+
+async def fake_mapped():
+    return MAPPED_FIELDS
+
+_pylon.fetch_custom_fields = fake_mapped
+try:
+    counts = _aio.run(funcheck.sync_catalog_from_pylon())
+finally:
+    _pylon.fetch_custom_fields = real_fields
+check("sync followed the remapped slug", counts["category"], 2)
+check("a blank label falls back to the slug",
+      funcheck.canon("category", "no_label_yet"), "no_label_yet")
+check("blank-labelled options still enter the catalog",
+      "no_label_yet" in funcheck.options()["category"], True)
+
+# Reset must clear the list AND that kind's slice of the label map together —
+# half-cleared state translates tags into a vocabulary the catalog lost.
+funcheck.clear_catalog("category", "t")
+check("reset returns the shipped list",
+      funcheck.options()["category"] == list(
+          __import__("funcheck_catalog").REQUEST_CATEGORIES), True)
+check("reset also forgets the kind's label translations",
+      funcheck.canon("category", "general_question"), "general_question")
+check("the other kind's translations survive a category reset",
+      funcheck.canon("functionality", "HubSpot"), "Integrations : HubSpot")
+
+check("clean_entries dedupes case-insensitively and trims",
+      funcheck.clean_entries(["  A  b ", "a B", "", "c"]), ["A b", "c"])
+try:
+    funcheck.save_catalog("category", ["", "  "], "t")
+    check("save_catalog refuses to empty a list", "no error", "ValueError")
+except ValueError:
+    check("save_catalog refuses to empty a list", "ValueError", "ValueError")
+
 # Restore for anything after: clear the synced state.
+vault.set_raw_setting("qc_rules_json", '{"excluded_states": []}', "t")
+qc_rules.invalidate()
 vault.set_raw_setting(funcheck.LABELS_SETTING, "", "t")
 vault.set_raw_setting(funcheck.CATALOG_SETTINGS["functionality"], "", "t")
 vault.set_raw_setting(funcheck.CATALOG_SETTINGS["category"], "", "t")
+funcheck.invalidate_labels()
 
 print()
 if fails:

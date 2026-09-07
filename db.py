@@ -376,8 +376,15 @@ def advisory_lock(name: str, holder: str, ttl_seconds: int = 3600):
     try:
         yield
     finally:
+        # Release only THIS acquisition. If our TTL lapsed mid-run and someone
+        # else took the lock, an unconditional delete-by-name would free their
+        # lock too, letting a third caller in while they still run.
         with get_conn() as conn:
-            conn.execute("DELETE FROM run_locks WHERE name = ?", (name,))
+            conn.execute(
+                "DELETE FROM run_locks"
+                " WHERE name = ? AND holder = ? AND acquired_at = ?",
+                (name, holder, now.isoformat()),
+            )
 
 
 # A run can only be alive inside the process that started it: one replica,
@@ -387,9 +394,11 @@ def advisory_lock(name: str, holder: str, ttl_seconds: int = 3600):
 # restarts the container mid-run.
 #
 # The timeout is the second line of defence, for a run that hangs inside the
-# CURRENT process. Real runs finish in about a minute, so 15 minutes is ~15x
-# headroom while still clearing within the hour.
-STALE_RUN_MINUTES = 15
+# CURRENT process. Real runs finish in about a minute, so this is generous
+# headroom — and it MUST exceed the scheduler's 30-minute advisory-lock TTL:
+# reaping a run that still holds its lock declares it dead while it is alive,
+# and the moment the TTL then lapses a duplicate run starts alongside it.
+STALE_RUN_MINUTES = 45
 
 RESTART_CAUSE = (
     "Interrupted: the app restarted (usually a deploy) while this run was in "
@@ -698,9 +707,14 @@ def qc_spend_for_date(date_str: str) -> dict:
 
 def ticket_stats(date: str | None = None) -> dict:
     """Pass/Fail/NR counts using the latest human review when present, else the AI grade."""
-    where = ("WHERE t.fetch_date = ? AND t.deleted_at IS NULL" if date
-             else "WHERE t.deleted_at IS NULL")
-    params = (date,) if date else ()
+    # Same scope as get_day_tickets: with a status excluded from scoring, this
+    # was the one grade surface still counting those tickets, so the header
+    # pills said "67 tickets, 23 unreviewed" over a day panel showing 44.
+    clause, extra = _scope_clause("t")
+    scope = f" AND {clause}" if clause else ""
+    where = (f"WHERE t.fetch_date = ? AND t.deleted_at IS NULL{scope}" if date
+             else f"WHERE t.deleted_at IS NULL{scope}")
+    params = ((date, *extra) if date else tuple(extra))
     with get_conn() as conn:
         row = conn.execute(f"""
             SELECT

@@ -25,6 +25,7 @@ Runs are recorded in qc_runs under the label 'func:<month>' so their cost sits
 on the Runs page next to everything else that spends money.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -230,6 +231,7 @@ async def sync_catalog_from_pylon() -> dict:
             raise RuntimeError(f"Pylon returned no options for '{slug}'")
 
     def persist():
+        import vault
         vault.set_raw_settings({
             LABELS_SETTING: json.dumps(labels),
             CATALOG_SETTINGS["functionality"]: json.dumps(lists["functionality"]),

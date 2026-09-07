@@ -29,9 +29,14 @@
 
   QC.show = function (el, text, kind) {
     if (!el) return;
+    // Cancel any pending "ok" auto-hide: a stale timer from a previous save
+    // would blank an error message someone is mid-way through reading.
+    if (el._qcHide) { clearTimeout(el._qcHide); el._qcHide = null; }
     el.className = "msg " + kind;
     el.textContent = text;
-    if (kind === "ok") setTimeout(() => { el.className = "msg"; }, 4000);
+    if (kind === "ok") {
+      el._qcHide = setTimeout(() => { el.className = "msg"; el._qcHide = null; }, 4000);
+    }
   };
 
   QC.api = async function (url, opts = {}) {
@@ -107,7 +112,9 @@
       return times(rows || 8, () => {
         const tds = times(cols, c =>
           `<td><span class="sk sk-line" style="width:${w[c] || (c === 1 ? "72%" : "48%")}"></span></td>`);
-        return `<tr class="sk-row">${tds}</tr>`;
+        // aria-hidden like every other skeleton helper — a screen reader
+        // should not announce placeholder cells as data rows.
+        return `<tr class="sk-row" aria-hidden="true">${tds}</tr>`;
       });
     },
     kpis(n) {

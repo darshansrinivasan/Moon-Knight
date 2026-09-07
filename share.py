@@ -17,6 +17,7 @@ The shape of the feature follows three rules its owner set:
                 every other Slack write.
 """
 
+import asyncio
 import io
 import logging
 from datetime import datetime, timezone
@@ -130,7 +131,10 @@ async def meta() -> dict:
         "groups": [],
         "slack_ok": False,
         "slack_message": "",
-        "sheet": gcp.drive_status(vault.get_setting("share_drive_folder_id")),
+        # drive_status is sync httpx with real timeouts — off the event loop,
+        # or every other request stalls while Google answers.
+        "sheet": await asyncio.to_thread(
+            gcp.drive_status, vault.get_setting("share_drive_folder_id")),
         "sheet_visibility": vault.get_setting("share_sheet_visibility") or "domain",
     }
     try:
@@ -184,7 +188,9 @@ async def send(month: str, numbers: list[int], message: str,
                     "channel": channel, "format": fmt}
     xlsx = build_xlsx(rows, month)
     if fmt == "sheet":
-        sheet = gcp.create_sheet_from_xlsx(
+        # Sync httpx upload+convert, up to two minutes — never on the loop.
+        sheet = await asyncio.to_thread(
+            gcp.create_sheet_from_xlsx,
             f"Functionality check {month} · {stamp}", xlsx,
             vault.get_setting("share_drive_folder_id"),
             vault.get_setting("share_sheet_visibility") or "domain",

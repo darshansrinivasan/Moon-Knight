@@ -149,7 +149,11 @@ class _Context:
         self.all_text = (
             scorer._html_text(self.ticket.get("body_html")) + " " + self.thread_text
         )
-        self.oncall_link = _cf_text(self.field("oncall_slack_chat_link"))
+        # Through the field map, like scorer.r5: a hardcoded slug here means a
+        # remapped field passes scoring while the evidence panel sees no link
+        # and asserts a handoff never happened.
+        self.oncall_link = _cf_text(
+            self.field(qc_rules.field("oncall_slack_link")))
 
     def field(self, name: str) -> dict | None:
         """One custom field, or None. A non-dict value is treated as absent."""

@@ -34,9 +34,17 @@ class ConfigLocked(RuntimeError):
 
 # ── master key ────────────────────────────────────────────────────────────────
 
+# The generated fallback key is cached for the life of the process. Without
+# this, every caller in ephemeral mode got a FRESH random key — auth signs the
+# OAuth state with key #1 and verifies the callback with key #2, so nobody
+# could ever sign in. (_f() caches its Fernet, which is why only the signing
+# path was affected.)
+_generated_key: bytes | None = None
+
+
 def _load_master_key() -> bytes:
     """QC_MASTER_KEY wins. A generated file is a local-dev convenience only."""
-    global _key_is_ephemeral
+    global _key_is_ephemeral, _generated_key
 
     env_key = os.getenv("QC_MASTER_KEY", "").strip()
     if env_key:
@@ -53,6 +61,9 @@ def _load_master_key() -> bytes:
     if _KEY_FILE.exists():
         return _KEY_FILE.read_bytes().strip()
 
+    if _generated_key is not None:
+        return _generated_key
+
     key = Fernet.generate_key()
     try:
         _KEY_FILE.write_bytes(key)
@@ -64,6 +75,7 @@ def _load_master_key() -> bytes:
             "Could not persist a master key. Set QC_MASTER_KEY, or sessions and "
             "stored credentials will not survive a restart."
         )
+    _generated_key = key
     return key
 
 

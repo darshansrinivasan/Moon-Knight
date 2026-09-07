@@ -237,6 +237,16 @@ def _humanize(raw) -> str:
     return text.replace("_", " ").replace("-", " ").title()
 
 
+def _canon_category(raw) -> str:
+    """The synced Pylon label for a category slug, else _humanize's guess."""
+    import funcheck
+    value = (str(raw).strip() if raw is not None else "")
+    if not value:
+        return "Unknown"
+    label = funcheck.canon("category", value)
+    return label if label != value else _humanize(value)
+
+
 def _priority(raw) -> str:
     if not raw:
         return "Unknown"
@@ -436,7 +446,10 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
         "priority": _priority(row.get("priority")),
         "assignee": assignee,
         "account": (row.get("account_name") or "").strip() or "Unknown",
-        "category": _humanize(_cf(cf, "request_category")),
+        # Pylon's own label when the synced map knows the slug — the weekly
+        # and monthly pages must name a category identically. _humanize stays
+        # as the fallback for values the map has never seen.
+        "category": _canon_category(_cf(cf, "request_category")),
         "created": created,
         "created_day": created_day,
         "resolved_day": resolved_day,
@@ -521,10 +534,22 @@ def normalize_csat_items(raw) -> list[dict]:
 
 
 def csat_json_for_store(issue: dict, existing_json: str | None = None) -> str:
+    """Merge issue-level CSAT into what the column already holds.
+
+    Merge, never replace: store_csat_responses folds survey responses (which
+    can carry comments the issue payload lacks) into the same column, and a
+    plain refetch of the day used to overwrite that merged list with the
+    thinner issue-level one — silently losing the survey comments until the
+    next weekly view happened to re-fetch them.
+    """
     incoming = normalize_csat_items(issue.get("csat_responses"))
-    if incoming:
-        return json.dumps(incoming)
-    return existing_json or "[]"
+    if not incoming:
+        return existing_json or "[]"
+    merged = {json.dumps(x, sort_keys=True): x
+              for x in normalize_csat_items(existing_json)}
+    for item in incoming:
+        merged[json.dumps(item, sort_keys=True)] = item
+    return json.dumps(list(merged.values()))
 
 
 def store_csat_responses(rows: list[dict]) -> int:

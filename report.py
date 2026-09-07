@@ -63,7 +63,9 @@ STRICT RULES: never recommend, propose, or imply what the product should do; \
 never use words like should, could, opportunity, fix, automate, improve; never \
 invent numbers or ticket details. Return ONLY a JSON array."""
 
-# Legacy category slugs and the new curated names both map into these groups.
+# Prefixes of RAW category slugs (plus a few historic variants that appeared
+# verbatim in old tickets). _group_of is only ever fed raw values, never the
+# synced display labels — see the note above the cluster predicates.
 _DEMAND_GROUPS = [
     ("Questions & how-to (FAQ-shaped)", ("general",)),
     ("On-call / engineering escalations", ("oncall",)),
@@ -106,8 +108,11 @@ def _is_reauth(t):
 
 
 def _is_toggle(t):
+    # Both raw spellings that have appeared on real tickets. A raw value never
+    # changes after tagging, so listing historic variants here is stable.
     return "feature_flag" in _low(t, "category_raw") \
-        or _low(t, "functionality_raw") == "feature_flags"
+        or _low(t, "functionality_raw") in ("feature_flags",
+                                            "others : feature flags")
 
 
 def _is_access(t):
@@ -143,12 +148,15 @@ def _load(month: str) -> list[dict]:
     for r in rows:
         t = dict(r)
         cf = json.loads(t.pop("custom_fields") or "{}")
-        # Through the Pylon label map: the API stores option VALUES (slugs),
-        # people chose LABELS — every chart, CSV and chat should read labels.
-        t["category"] = funcheck.canon(
-            "category", _cf_val(cf.get("request_category")))
-        t["functionality"] = funcheck.canon(
-            "functionality", _cf_val(cf.get("functionalities")))
+        # Two views of every tag. The *_raw fields hold the option VALUES the
+        # API stores (stable slugs) — all classification keys on those. The
+        # unsuffixed fields go through the Pylon label map to what people
+        # actually chose — every chart, CSV and chat answer shows those.
+        t["category_raw"] = _cf_val(cf.get("request_category")) or ""
+        t["functionality_raw"] = _cf_val(cf.get("functionalities")) or ""
+        t["category"] = funcheck.canon("category", t["category_raw"])
+        t["functionality"] = funcheck.canon("functionality",
+                                            t["functionality_raw"])
         t["resolution_details"] = (_cf_val(cf.get("resolution_details")) or "").strip()
         t["resolution_category"] = (_cf_val(cf.get("resolution_category")) or "").strip()
         t["internal"] = (r["customer_portal_visible"] == 0) or (r["source"] == "manual")
@@ -206,15 +214,21 @@ def _trail(tickets: list[dict], limit: int = 10) -> list[dict]:
     return rows
 
 
-def build_data(month: str) -> dict:
-    """Everything deterministic the report shows. No model involved."""
+def build_data(month: str, tickets: list[dict] | None = None) -> dict:
+    """Everything deterministic the report shows. No model involved.
+
+    Callers that already hold the month's tickets pass them in so one
+    generation reads the table once, not once per consumer.
+    """
     month = _require_month(month)
-    tickets = _load(month)
+    if tickets is None:
+        tickets = _load(month)
 
     demand = {}
     categories = {}
     for t in tickets:
-        demand[_group_of(t["category"])] = demand.get(_group_of(t["category"]), 0) + 1
+        g = _group_of(t["category_raw"])
+        demand[g] = demand.get(g, 0) + 1
         cat = t["category"] or "(untagged)"
         categories[cat] = categories.get(cat, 0) + 1
     demand = sorted(demand.items(), key=lambda kv: -kv[1])
@@ -223,7 +237,7 @@ def build_data(month: str) -> dict:
     # for the KPI tile, the clusters and the AI payloads.
     categories = sorted(categories.items(), key=lambda kv: -kv[1])
 
-    faq = [t for t in tickets if (t["category"] or "").lower().startswith("general")]
+    faq = [t for t in tickets if _low(t, "category_raw").startswith("general")]
     themes = []
     themed_ids = set()
     for name, pat in _FAQ_THEMES:
@@ -261,7 +275,7 @@ def build_data(month: str) -> dict:
                 "trail": _trail(sel), "excerpts": ex[:4],
                 "_sel": sel}
 
-    topfaq_pred = (lambda top: (lambda t: _low(t, "category").startswith("general")
+    topfaq_pred = (lambda top: (lambda t: _low(t, "category_raw").startswith("general")
                                 and re.search(top, _low(t, "title"))))(
         dict(_FAQ_THEMES).get(themes[0]["name"], r"$^") if themes else r"$^")
     clusters = [c for c in (
@@ -278,7 +292,7 @@ def build_data(month: str) -> dict:
         "accounts": len({t["account"] for t in tickets if t["account"]}),
         "internal_pct": round(sum(t["internal"] for t in tickets) * 100 / len(tickets)) if tickets else 0,
         "console_ops": sum(1 for t in tickets
-                           if _group_of(t["category"]) == "Console ops done for customers"),
+                           if _group_of(t["category_raw"]) == "Console ops done for customers"),
         "demand": demand,
         "categories": categories,
         "themes": themes,
@@ -405,6 +419,8 @@ def evidence_rows(month: str) -> list[dict]:
         "date": t["fetch_date"],
         "functionality": t["functionality"],
         "request_category": t["category"],
+        # Raw slug rides along (never a CSV column): grouping keys on it.
+        "request_category_raw": t["category_raw"],
         "ai_summary": summaries.get(t["id"]) or "",
         "resolution_details": t["resolution_details"],
         "resolution_category": t["resolution_category"],
@@ -565,10 +581,11 @@ def _chat_context(month: str) -> tuple[str, dict]:
     cats: dict = {}
     for r in rows:
         by_number[r["ticket_id"]] = r
-        # Both vocabularies the manager might quote ride along: the raw
-        # category (what the report's demand chart now shows) and the coarse
-        # rollup group, so neither has to be reverse-engineered.
-        group = _group_of(r["request_category"])
+        # Both vocabularies the manager might quote ride along: the tagged
+        # category (what the report's demand chart shows) and the coarse
+        # rollup group, so neither has to be reverse-engineered. The rollup
+        # keys on the raw slug, same as build_data.
+        group = _group_of(r["request_category_raw"])
         groups[group] = groups.get(group, 0) + 1
         cat = r["request_category"] or "(untagged)"
         cats[cat] = cats.get(cat, 0) + 1
@@ -715,12 +732,13 @@ def snapshot(month: str) -> dict:
     categories = {}
     funcs = {}
     for t in tickets:
-        demand[_group_of(t["category"])] = demand.get(_group_of(t["category"]), 0) + 1
+        g = _group_of(t["category_raw"])
+        demand[g] = demand.get(g, 0) + 1
         cat = t["category"] or "(untagged)"
         categories[cat] = categories.get(cat, 0) + 1
         if t["functionality"]:
             funcs[t["functionality"]] = funcs.get(t["functionality"], 0) + 1
-    faq = [t for t in tickets if _low(t, "category").startswith("general")]
+    faq = [t for t in tickets if _low(t, "category_raw").startswith("general")]
     themes = {}
     seen = set()
     for name, pat in _FAQ_THEMES:
@@ -739,7 +757,7 @@ def snapshot(month: str) -> dict:
         "internal_pct": round(sum(t["internal"] for t in tickets) * 100
                               / len(tickets)) if tickets else 0,
         "console_ops": sum(1 for t in tickets
-                           if _group_of(t["category"]) == "Console ops done for customers"),
+                           if _group_of(t["category_raw"]) == "Console ops done for customers"),
         "demand": demand,
         "categories": categories,
         "functionalities": funcs,
@@ -1504,10 +1522,10 @@ def generate(month: str, triggered_by: str = "manual") -> dict:
     """Build, render and store the month's report, replacing any previous one."""
     month = _require_month(month)
     label = f"{RUN_LABEL_PREFIX}{month}"
-    data = build_data(month)
+    tickets = _load(month)
+    data = build_data(month, tickets)
 
     stats = RunStats()
-    tickets = _load(month)
     summaries = _summarize(tickets, stats) if tickets else {}
     narratives = _narratives(data["clusters"], stats) if data["total"] else {}
     # Own stats object so the page can name exactly which model wrote the

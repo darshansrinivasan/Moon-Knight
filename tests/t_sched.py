@@ -11,6 +11,8 @@ vault.set_settings({"schedule_enabled": "1", "schedule_time": "09:30",
                     "schedule_target": "yesterday"}, "test")
 
 TRIG = "2026-08-27"
+from datetime import date as _date
+TARGET = _date(2026, 8, 26)  # the run_date the fixtures insert
 
 
 def add(status, minutes_ago, finished=True, trigger=TRIG):
@@ -31,39 +33,64 @@ def reset():
 
 print("=== 1. no rows -> should run ===")
 reset()
-assert scheduler._already_ran(TRIG) is False
+assert scheduler._already_ran(TRIG, TARGET) is False
 print("   OK")
 
 print("=== 2. success -> should NOT run ===")
 reset(); add("success", 30)
-assert scheduler._already_ran(TRIG) is True
+assert scheduler._already_ran(TRIG, TARGET) is True
+print("   OK")
+
+print("=== 2b. a successful MANUAL run of the same target also satisfies ===")
+reset()
+ts = datetime.now(timezone.utc).isoformat()
+with db.get_conn() as c:
+    c.execute(
+        "INSERT INTO scheduled_runs (run_date,trigger_date,triggered_by,"
+        "started_at,finished_at,status) VALUES (?,?,'op@x.com',?,?,'success')",
+        ("2026-08-26", TRIG, ts, ts),
+    )
+assert scheduler._already_ran(TRIG, TARGET) is True, \
+    "Run now at 09:00 must not be re-run (and re-posted) at 09:30"
+print("   OK — a manual run no longer double-posts the day")
+
+print("=== 2c. a backfill of some OTHER date does not satisfy today ===")
+reset()
+with db.get_conn() as c:
+    c.execute(
+        "INSERT INTO scheduled_runs (run_date,trigger_date,triggered_by,"
+        "started_at,finished_at,status) VALUES (?,?,'op@x.com',?,?,'success')",
+        ("2026-08-20", TRIG, ts, ts),
+    )
+assert scheduler._already_ran(TRIG, TARGET) is False, \
+    "a backfill must not mask the day's own run"
 print("   OK")
 
 print("=== 3. FRESH running -> should NOT run (a live run) ===")
 reset(); add("running", 5, finished=False)
-assert scheduler._already_ran(TRIG) is True
+assert scheduler._already_ran(TRIG, TARGET) is True
 print("   OK")
 
 print("=== 4. STALE running (4h, process died) -> SHOULD run  [was: never again] ===")
 reset(); add("running", 240, finished=False)
-assert scheduler._already_ran(TRIG) is False, "stale run must not block the day"
+assert scheduler._already_ran(TRIG, TARGET) is False, "stale run must not block the day"
 print("   OK — a killed container no longer loses the day permanently")
 
 print("=== 5. one error, inside backoff -> should NOT run ===")
 reset(); add("error", 5)
-assert scheduler._already_ran(TRIG) is True
+assert scheduler._already_ran(TRIG, TARGET) is True
 print("   OK")
 
 print("=== 6. one error, past backoff -> SHOULD run ===")
 reset(); add("error", 20)
-assert scheduler._already_ran(TRIG) is False
+assert scheduler._already_ran(TRIG, TARGET) is False
 print("   OK")
 
 print("=== 7. MAX_ATTEMPTS errors -> should NOT run ===")
 reset()
 for m in (60, 40, 20):
     add("error", m)
-assert scheduler._already_ran(TRIG) is True
+assert scheduler._already_ran(TRIG, TARGET) is True
 print("   OK")
 
 print("=== 8. naive timestamp must not raise TypeError ===")
@@ -74,7 +101,7 @@ with db.get_conn() as c:
         "started_at,status) VALUES ('2026-08-26',?,'scheduler',?,'error')",
         (TRIG, datetime.now().isoformat()),          # no tzinfo
     )
-print("   _already_ran ->", scheduler._already_ran(TRIG), "(no exception)")
+print("   _already_ran ->", scheduler._already_ran(TRIG, TARGET), "(no exception)")
 
 print("=== 9. alarm fires once per trigger date ===")
 first = scheduler._claim_alarm(TRIG)

@@ -32,8 +32,9 @@ MAX_ATTEMPTS   = 3
 RETRY_BACKOFF  = timedelta(minutes=15)
 
 # A 'running' row older than this belongs to a process that died mid-run. Must
-# exceed the advisory lock TTL below, or a run still holding the lock would be
-# judged abandoned and its retry would immediately hit LockBusy.
+# exceed the advisory lock TTL below (db.STALE_RUN_MINUTES=45 > 30), or a run
+# still holding its lock would be judged abandoned, retried into LockBusy, and
+# then duplicated the moment the TTL lapsed.
 STALE_RUN_AFTER = timedelta(minutes=db.STALE_RUN_MINUTES)
 # 30 min. A real run takes about a minute, so this is generous; the old 2 hours
 # meant a lock whose holder died blocked every run for the rest of the morning.
@@ -94,14 +95,20 @@ def _is_abandoned(row) -> bool:
     return datetime.now(timezone.utc) - started > STALE_RUN_AFTER
 
 
-def _already_ran(trigger_date: str) -> bool:
+def _already_ran(trigger_date: str, target: date) -> bool:
     """True when today's scheduled run is done — or has failed too often to retry."""
+    # Any pipeline run recorded under this trigger date FOR THE SAME TARGET
+    # counts — including an operator's "Run now". Filtering to
+    # triggered_by='scheduler' here meant a successful manual run at 09:00 was
+    # invisible at 09:30, and the scheduler fetched, scored and Slack-posted
+    # the identical day a second time. Matching run_date keeps a backfill of
+    # some other date from masking today's run.
     with db.get_conn() as conn:
         rows = conn.execute(
             "SELECT status, started_at, finished_at FROM scheduled_runs"
-            " WHERE trigger_date = ? AND triggered_by = 'scheduler'"
+            " WHERE trigger_date = ? AND run_date = ?"
             " ORDER BY id DESC",
-            (trigger_date,),
+            (trigger_date, target.isoformat()),
         ).fetchall()
 
     if not rows:
@@ -186,7 +193,8 @@ def next_run_description() -> dict:
     hh, mm = parsed
 
     today_at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    pending_today = not _already_ran(now.date().isoformat())
+    pending_today = not _already_ran(now.date().isoformat(),
+                                     _target_date(now.date()))
     if today_at > now and pending_today:
         nxt, due = today_at, False
     elif pending_today:
@@ -219,11 +227,22 @@ async def run_pipeline(target: date, triggered_by: str,
     if notify_slack is None:
         notify_slack = vault.get_setting("slack_enabled") == "1"
 
-    # The lock is taken BEFORE the run row exists. Inserting first meant a
+    # Locks are taken BEFORE the run row exists. Inserting first meant a
     # collision with a manual run recorded a spurious 'error' row, and three of
     # those consumed MAX_ATTEMPTS and disabled the day's scheduled run. LockBusy
     # now propagates without leaving any trace, which is what it should be.
-    with db.advisory_lock(LOCK_NAME, triggered_by, ttl_seconds=LOCK_TTL_SECONDS):
+    #
+    # Three locks, not one: LOCK_NAME serialises the pipeline against itself,
+    # but the manual endpoints hold fetch:{date} / qc:{date} — a name this
+    # pipeline previously never touched, so an operator's "Run QC" could score
+    # a date concurrently with the scheduler (double Vertex spend, interleaved
+    # writes). Holding the same per-date names closes that.
+    with db.advisory_lock(LOCK_NAME, triggered_by,
+                          ttl_seconds=LOCK_TTL_SECONDS), \
+         db.advisory_lock(f"fetch:{date_str}", triggered_by,
+                          ttl_seconds=LOCK_TTL_SECONDS), \
+         db.advisory_lock(f"qc:{date_str}", triggered_by,
+                          ttl_seconds=LOCK_TTL_SECONDS):
         with db.get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO scheduled_runs"
@@ -336,10 +355,10 @@ async def _tick() -> None:
 
     if (now.hour, now.minute) < (hh, mm):
         return
-    if _already_ran(trigger_date):
+    target = _target_date(now.date())
+    if _already_ran(trigger_date, target):
         return
 
-    target = _target_date(now.date())
     logger.info("Scheduler firing for target date %s", target)
     try:
         await run_pipeline(target, "scheduler", trigger_date=trigger_date)

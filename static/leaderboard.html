@@ -291,7 +291,11 @@ async function load(days) {
     renderTeams(d);
     renderPeople(d);
   } catch (e) {
+    if (token !== loadToken) return;
     $("teams").innerHTML = `<tr><td colspan="10" class="empty">${esc(e.message)}</td></tr>`;
+    // Both tables come from the same request — clear the People skeleton too,
+    // or it shimmers forever with no error and no retry.
+    $("people").innerHTML = `<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;
   }
 
   try {

@@ -521,9 +521,16 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
                 "@ mention the relevant PM or @pt to hand off"
             )
         elif state_lower == "waiting_on_legal":
+            # The tags come from the status policy, not a hand-written
+            # "@legal-ops": the scorer passes on whatever the admin configured,
+            # and advice naming a tag the matrix no longer requires sends
+            # people to type the wrong thing.
+            tags = [x for x in (qc_rules.status_policy(state_lower)
+                                .get("tags") or []) if x]
+            named = ", ".join(tags) if tags else "the configured handoff tag"
             parts.append(
-                "R5 Fail: ticket is 'waiting_on_legal' but @legal-ops is not mentioned in the thread — "
-                "tag @legal-ops to formalise the handoff"
+                f"R5 Fail: ticket is 'waiting_on_legal' but {named} is not "
+                f"mentioned in the thread — tag it to formalise the handoff"
             )
         elif state_lower == "waiting_on_you":
             parts.append(
@@ -545,23 +552,40 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
         )
 
     if r_checks.get("r8") == "Fail":
-        import rules as qc_rules
+        import scorer
+
+        def cf_val(field):
+            return ((field or {}).get("interpreted_value")
+                    or (field or {}).get("value") or "")
+
+        # Only the conditions the admin still requires — advice to fix a
+        # dropped condition sends an agent to change fields the scorer no
+        # longer looks at, while the actual gap goes unmentioned.
+        required = qc_rules.r8_conditions()
         missing = []
         rootly_field = qc_rules.field("rootly_exists")
-        if (cf.get(rootly_field) or {}).get("value") != "Yes":
+        if ("rootly_yes" in required
+                and (cf.get(rootly_field) or {}).get("value") != "Yes"):
             missing.append(f"set '{rootly_field}' to Yes")
-        if not (cf.get(qc_rules.field("rootly_reference")) or {}).get("value"):
+        if ("rootly_ref" in required
+                and not cf_val(cf.get(qc_rules.field("rootly_reference")))):
             missing.append("fill in the Rootly incident reference (e.g. ROOT-1234)")
         cat_field = qc_rules.field("request_category")
-        req_cat = ((cf.get(cat_field) or {}).get("value") or "").lower()
-        if req_cat not in qc_rules.oncall_categories():
+        req_cat = cf_val(cf.get(cat_field)).lower()
+        if ("oncall_category" in required
+                and req_cat not in qc_rules.oncall_categories()):
             missing.append(
                 f"change {cat_field} from '{req_cat}' to an oncall category"
             )
         # The Jira half of R8 is checked in scorer._has_jira, which has the
         # external_issues this function is not given. So when every field we can
         # see is already correct, the missing piece is the Jira link.
-        action = "; ".join(missing) if missing else "add a Jira link to the ticket"
+        if not missing and "jira_link" in required:
+            missing.append("add a Jira link to the ticket")
+        action = "; ".join(missing) or (
+            "one of: " + ", ".join(scorer.R8_CONDITION_LABELS[c]
+                                   for c in scorer.R8_CONDITIONS
+                                   if c in required))
         parts.append(f"R8 Fail: oncall completeness incomplete — {action}")
 
     return " | ".join(parts)
@@ -656,7 +680,13 @@ def qc_fingerprint(ticket: dict, messages: list[dict], r_checks: dict) -> str:
 def _build_ticket_block(t: dict, idx: int) -> str:
     import rules as qc_rules
 
-    cf = json.loads(t.get("custom_fields") or "{}")
+    # A corrupt stored document must degrade to "fields unreadable", not raise:
+    # this runs while assembling a BATCH prompt, before the per-ticket retry
+    # can catch anything, so one bad ticket used to sink its five batch-mates.
+    try:
+        cf = json.loads(t.get("custom_fields") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        cf = {}
     cpv = t.get("customer_portal_visible")
     src = t.get("source") or ""
     is_internal = (cpv == 0) or (src == "manual")
@@ -959,18 +989,29 @@ def _snapshot_and_compare(conn, run_id: int, label: str,
     the comparison covers the tickets both runs saw — the join below already
     restricts to the intersection.
     """
+    import rules as qc_rules
+
+    # Same scope the run itself graded (_load_in_scope_where): without the
+    # excluded-state filter, frozen out-of-scope grades pad the "same" count
+    # and the stability percentage stops describing the run.
+    excl, excl_params = qc_rules.excluded_state_clause("t")
+    excl_sql = f"AND {excl}" if excl else ""
     rows = conn.execute(f"""
         SELECT t.id, t.number, ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.overall_result,
                rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8
         FROM tickets t
         LEFT JOIN ai_checks   ac ON t.id = ac.ticket_id
         LEFT JOIN rule_checks rc ON t.id = rc.ticket_id
-        WHERE t.deleted_at IS NULL AND ({scope_clause})
-    """, scope_params).fetchall()
+        WHERE t.deleted_at IS NULL AND ({scope_clause}) {excl_sql}
+    """, [*scope_params, *excl_params]).fetchall()
 
+    # Only checks that are switched on: recording a disabled check's Fail
+    # beside a Pass overall makes the run history contradict the dashboard.
+    live_keys = qc_rules.enabled_rule_keys(
+        ("r1", "r2", "r3", "r4", "r5", "r7", "r8"))
     for r in rows:
         d = dict(r)
-        r_fails = ",".join(k.upper() for k in ("r1","r2","r3","r4","r5","r7","r8")
+        r_fails = ",".join(k.upper() for k in live_keys
                            if d.get(k) == "Fail")
         conn.execute("""
             INSERT OR REPLACE INTO qc_run_results

@@ -94,6 +94,33 @@ check("identical output on a second build",
       report.build_data(M) == d, True)
 
 print()
+print("=== classification survives a label sync: logic on slugs, labels on display ===")
+# A Pylon admin can reword any option label; the synced map then renames what
+# every page SHOWS. That must never move a ticket between clusters or demand
+# groups — 64 alert tickets once vanished from their cluster this way.
+import funcheck
+vault.set_raw_setting(funcheck.LABELS_SETTING, json.dumps({
+    "category": {
+        "alerts_automated_tray_sentry_slack": "Automated relays (Tray/Sentry)",
+        "support_task_enable_disable_feature_flag": "Ops — feature toggles",
+    }, "functionality": {}}), "t")
+funcheck.invalidate_labels()
+try:
+    d2 = report.build_data(M)
+    check("alert tickets stay in their demand group under the new wording",
+          dict(d2["demand"])["Alerts relayed onward"], 2)
+    check("console ops count is unmoved by the rename",
+          d2["console_ops"], 2)
+    check("clusters are unmoved by the rename",
+          sorted(c["key"] for c in d2["clusters"]),
+          ["access", "reauth", "toggles", "topfaq"])
+    check("but the categories chart now shows the label",
+          dict(d2["categories"])["Automated relays (Tray/Sentry)"], 2)
+finally:
+    vault.set_raw_setting(funcheck.LABELS_SETTING, "", "t")
+    funcheck.invalidate_labels()
+
+print()
 print("=== generation stores the page; the model is optional ===")
 real = report._call_gemini
 model_calls = {"n": 0}

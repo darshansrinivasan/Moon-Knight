@@ -445,14 +445,19 @@ async def _field_drift_blocks() -> list:
     signature = ",".join(slug for _, slug in missing)
     if vault.get_raw_setting(_DRIFT_KEY) == signature:
         return []
-    vault.set_raw_setting(_DRIFT_KEY, signature, "slack")
     if not missing:
+        # Recovered: clear the stored signature so the SAME drift re-alarms
+        # if it ever comes back, then say nothing.
+        vault.set_raw_setting(_DRIFT_KEY, "", "slack")
         return []
 
     lines = []
     for name, slug in missing:
         checks = ", ".join(scorer.FIELD_USED_BY.get(name, ())) or "A check"
         lines.append(f"• {checks} reads `{slug}`, which Pylon no longer defines")
+    # Recorded only once the warning blocks actually exist — writing it first
+    # meant a warning that then failed to build or post was suppressed forever.
+    vault.set_raw_setting(_DRIFT_KEY, signature, "slack")
     return [{
         "type": "section",
         "text": {"type": "mrkdwn",
