@@ -51,6 +51,14 @@ MAX_TICKET_CHARS  = 24000
 # stay in the tuple because existing rows carry values for them.
 R_CHECK_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9")
 
+# Advisory checks ride every display surface but stay OUT of R_CHECK_KEYS on
+# purpose: R_CHECK_KEYS feeds _compute_overall (advisory must not flip a grade)
+# and qc_fingerprint (adding a key there would change every stored fingerprint
+# and re-bill the whole archive on the next run). scorer.ADVISORY_CHECKS is the
+# semantic source; this tuple is its bookkeeping shadow here.
+ADVISORY_CHECK_KEYS = ("r10",)
+ALL_CHECK_KEYS = R_CHECK_KEYS + ADVISORY_CHECK_KEYS
+
 VERTEX_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
 # ── determinism ───────────────────────────────────────────────────────────────
@@ -588,6 +596,13 @@ def _r_check_notes(r_checks: dict, cf: dict | None = None,
                                    if c in required))
         parts.append(f"R8 Fail: oncall completeness incomplete — {action}")
 
+    if r_checks.get("r10") == "Fail":
+        bot = qc_rules.spotassist_author()
+        parts.append(
+            f"R10 (advisory): Slack ticket answered by hand — {bot} was never "
+            f"engaged. Add the ticket emoji to the Slack thread before "
+            f"replying, so {bot} gets the first attempt")
+
     return " | ".join(parts)
 
 
@@ -930,9 +945,13 @@ def _write_results(batch: list[dict], results: list[dict], now: str) -> tuple[in
             r_checks  = {k: t.get(k) for k in R_CHECK_KEYS}
             overall   = _compute_overall(r_checks, r)
             cf        = json.loads(t.get("custom_fields") or "{}")
-            r_note    = _r_check_notes(r_checks, cf,
-                                       state=t.get("state", ""),
-                                       account_name=t.get("account_name", ""))
+            # Notes cover advisory checks too — the advice is their whole
+            # point — but overall and fingerprint above deliberately do not.
+            r_note    = _r_check_notes(
+                {**r_checks,
+                 **{k: t.get(k) for k in ADVISORY_CHECK_KEYS}}, cf,
+                state=t.get("state", ""),
+                account_name=t.get("account_name", ""))
             ai_note   = r.get("ai_notes") or ""
             full_note = f"{r_note} | {ai_note}".strip(" |") if r_note else ai_note
             # Record what was graded, so the next run can tell whether anything
@@ -1063,6 +1082,7 @@ def _load_in_scope_where(scope_clause: str, scope_params: list) -> list[dict]:
                    t.account_id, t.custom_fields, t.source, t.customer_portal_visible,
                    a.name AS account_name, a.type AS account_type,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
+                   rc.r10,
                    ac.ticket_id AS scored_id, ac.qc_fingerprint AS scored_fingerprint
             FROM tickets t
             LEFT JOIN accounts    a  ON t.account_id = a.id

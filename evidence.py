@@ -518,6 +518,23 @@ def _r8(ctx: _Context, stored: str) -> tuple[str | None, str]:
 # checks is one readable line and mirrors how `scorer` is organised. The keys are
 # the deterministic checks the leaderboard counts (leaderboard.RULE_KEYS); R6 and
 # R9 are retired and always N/A, so there is nothing to explain.
+def _r10(ctx: _Context, stored: str) -> tuple[str | None, str]:
+    """Advisory SpotAssist trigger — recomputed by the one definition in scorer."""
+    source = (ctx.ticket.get("source") or "").strip().lower()
+    bot = qc_rules.spotassist_author()
+    verdict = scorer.r10({"source": source}, ctx.messages)
+    if verdict == "Pass":
+        return "Pass", f"{bot} engaged in the thread — the ticket emoji was added"
+    if verdict == "Fail":
+        return "Fail", (
+            f"a rep replied by hand and {bot} never engaged — the ticket emoji "
+            f"was likely never added to the Slack thread (advisory: does not "
+            f"affect the overall grade)")
+    if source not in qc_rules.spotassist_sources():
+        return "N/A", f"source '{source or '—'}' auto-engages {bot}; nothing to trigger"
+    return "N/A", "no rep reply yet, so there is nobody to hold to the emoji habit"
+
+
 _HANDLERS = {
     "r1": _r1,
     "r2": _r2,
@@ -526,6 +543,7 @@ _HANDLERS = {
     "r5": _r5,
     "r7": _r7,
     "r8": _r8,
+    "r10": _r10,
 }
 
 CHECK_KEYS = tuple(_HANDLERS)

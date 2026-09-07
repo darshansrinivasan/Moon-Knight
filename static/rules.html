@@ -366,6 +366,29 @@
         </div>
       </div>
 
+      <div class="section" id="sec-r10">
+        <div class="card">
+          <h2 id="t-r10"></h2><p class="what" id="d-r10"></p>
+          <h3>Agent author name</h3>
+          <div class="hint">
+            The name SpotAssist's messages carry in Pylon threads. The check's
+            whole signal is "a message by this author exists" — if the agent is
+            ever renamed, change it here and every stored verdict follows on the
+            next resync, no deploy needed.
+          </div>
+          <input type="text" id="spotassist_author" spellcheck="false"
+                 placeholder="SpotAssist">
+          <h3>Sources needing a manual trigger</h3>
+          <div class="hint">
+            Comma-separated ticket sources where the agent only engages when
+            someone adds the ticket emoji. Email and in-app chat auto-engage it,
+            so they do not belong here. Default: slack.
+          </div>
+          <input type="text" id="spotassist_sources" spellcheck="false"
+                 placeholder="slack">
+        </div>
+      </div>
+
       <div class="section" id="sec-a">
         <div class="card">
           <h2 id="t-a"></h2><p class="what" id="d-a"></p>
@@ -534,6 +557,7 @@ const NAV = [
   ["r5", "R5 Status ownership"],
   ["r7", "R7 Rootly/Jira"],
   ["r8", "R8 Oncall"],
+  ["r10", "R10 SpotAssist"],
   ["a",  "A1–A5 AI grading"],
   ["preview", "Preview"],
   ["statuses", "Ticket statuses"],
@@ -669,6 +693,8 @@ function fillForm(r, labels) {
   }
   for (const k of CSVS) $(k).value = (r[k] || []).join(", ");
   $("r4_sla_hours").value = r.r4_sla_hours ?? 24;
+  $("spotassist_author").value = r.spotassist_author || "";
+  $("spotassist_sources").value = (r.spotassist_sources || []).join(", ");
   $("a_guidance").value = r.a_guidance || "";
   for (const s of DATA.prompt_sections || []) {
     const el = $("ps-" + s.key);
@@ -703,6 +729,11 @@ function collect() {
   }
   for (const k of CSVS)  rules[k] = $(k).value.split(",").map(x => x.trim()).filter(Boolean);
   rules.r4_sla_hours = Number($("r4_sla_hours").value);
+  // Blank means "use the default" (SpotAssist / slack), same convention as the
+  // field mappings — the server helpers fall back rather than storing "".
+  rules.spotassist_author = $("spotassist_author").value.trim();
+  rules.spotassist_sources = $("spotassist_sources").value
+    .split(",").map(x => x.trim()).filter(Boolean);
   Object.assign(rules, draftPrompt());
   // Disabled checks and R8's conditions. Sent as complete lists because they
   // are sets, not merges — an unticked box has to be absent from the list.
@@ -1339,6 +1370,7 @@ const RULE_KEY_SECTION = {
   eng_user_ids: "r5", eng_group_ids: "r5",
   pt_user_ids: "r5", pt_group_ids: "r5", r5_group_states: "r5",
   r8_oncall_categories: "r8",
+  spotassist_author: "r10", spotassist_sources: "r10",
   a_guidance: "a",
 };
 const NAV_LABELS = Object.fromEntries(NAV);

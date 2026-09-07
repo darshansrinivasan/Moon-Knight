@@ -79,6 +79,7 @@ _R_LABELS = {
     "r6": "R6 — Retired",
     "r7": "R7 — Rootly/Jira link",
     "r8": "R8 — Oncall completeness",
+    "r10": "R10 — SpotAssist trigger (advisory)",
     "r9": "R9 — Retired",
 }
 

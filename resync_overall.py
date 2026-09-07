@@ -31,6 +31,29 @@ def _rules_hash() -> str:
 R_KEYS = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9"]
 
 
+def _recompute_r10(t: dict) -> str | None:
+    """scorer.r10 over the ticket's stored messages, or None to leave as-is.
+
+    Only tickets in a SpotAssist-relevant source are worth a messages query;
+    for everything else the verdict is N/A by definition and is written once.
+    scorer.r10 is the single definition — this loads its inputs, nothing more.
+    """
+    try:
+        import rules as qc_rules
+        import scorer
+        source = (t.get("source") or "").strip().lower()
+        if source not in qc_rules.spotassist_sources():
+            return "N/A"
+        with db.get_conn() as conn:
+            msgs = [dict(m) for m in conn.execute(
+                "SELECT author_name, is_customer, is_private FROM messages"
+                " WHERE ticket_id = ?", (t["ticket_id"],)).fetchall()]
+        return scorer.r10({"source": source}, msgs)
+    except Exception:      # never let the advisory check break a resync
+        logger.exception("Could not recompute r10 for %s", t.get("ticket_id"))
+        return None
+
+
 def run(date_str: str | None = None) -> dict:
     """Resync one day, or the whole table when `date_str` is None.
 
@@ -49,7 +72,7 @@ def run(date_str: str | None = None) -> dict:
                    ac.a1, ac.a3, ac.a4, ac.a5,
                    ac.ai_notes, ac.overall_result,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
-                   t.custom_fields, t.state,
+                   rc.r10, t.custom_fields, t.state, t.source,
                    a.name AS account_name
             FROM ai_checks ac
             JOIN rule_checks rc ON ac.ticket_id = rc.ticket_id
@@ -61,6 +84,7 @@ def run(date_str: str | None = None) -> dict:
 
     overall_updates: list = []
     notes_updates: list = []
+    r10_updates: list = []
     overall_changes: dict = defaultdict(int)
 
     for row in rows:
@@ -72,6 +96,16 @@ def run(date_str: str | None = None) -> dict:
         except json.JSONDecodeError:
             cf = {}
 
+        # r10 is deterministic over stored data (source + message authors), so
+        # a resync can compute it for tickets fetched before the check existed
+        # — the backfill that makes the month's analytics meaningful on day
+        # one, with no refetch and no AI call. Advisory: recomputed and stored,
+        # fed to the notes below, never to _compute_overall.
+        new_r10 = _recompute_r10(t)
+        if new_r10 != t["r10"]:
+            r10_updates.append((new_r10, t["ticket_id"]))
+        r10_value = new_r10 if new_r10 is not None else t["r10"]
+
         new_overall = _compute_overall(r_checks, a_checks)
         if new_overall != t["overall_result"]:
             overall_changes[f"{t['overall_result']} → {new_overall}"] += 1
@@ -81,7 +115,7 @@ def run(date_str: str | None = None) -> dict:
         # repeated runs never stack duplicates.
         ai_only = _strip_r_notes(t["ai_notes"] or "")
         r_note = _r_check_notes(
-            r_checks, cf,
+            {**r_checks, "r10": r10_value}, cf,
             state=t.get("state") or "",
             account_name=t.get("account_name") or "",
         )
@@ -90,6 +124,11 @@ def run(date_str: str | None = None) -> dict:
             notes_updates.append((new_note, t["ticket_id"]))
 
     with db.get_conn() as conn:
+        if r10_updates:
+            conn.executemany(
+                "UPDATE rule_checks SET r10 = ? WHERE ticket_id = ?",
+                r10_updates,
+            )
         if overall_updates:
             conn.executemany(
                 "UPDATE ai_checks SET overall_result = ? WHERE ticket_id = ?",
@@ -113,6 +152,7 @@ def run(date_str: str | None = None) -> dict:
         "examined": len(rows),
         "overall_updated": len(overall_updates),
         "notes_updated": len(notes_updates),
+        "r10_updated": len(r10_updates),
         "changes": dict(overall_changes),
         # Which rules document produced this pass. A resync rewrites stored
         # grades with no run record of its own, so without this the only trace

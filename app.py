@@ -522,13 +522,13 @@ async def fetch_and_store(target: date) -> FetchResult:
                 conn.execute("""
                     INSERT OR REPLACE INTO rule_checks
                         (ticket_id, fetch_date, r1, r2, r3, r4, r5, r7, r8, r9,
-                         checked_at, rules_hash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         r10, checked_at, rules_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     issue["id"], date_str,
                     scores["r1"], scores["r2"], scores["r3"],
                     scores["r4"], scores["r5"], scores["r7"],
-                    scores["r8"], scores["r9"],
+                    scores["r8"], scores["r9"], scores["r10"],
                     now, rules_hash,
                 ))
 
@@ -1508,6 +1508,7 @@ RULE_DESCRIPTIONS = {
     "r5": ("R5 — Status ownership", "A ticket's state must match who owns the next action, proven by an @-mention of someone on the right team (or a Rootly/Jira link for engineering)."),
     "r7": ("R7 — Rootly/Jira link", "Engineering tickets must reference a Rootly incident or Jira issue. No parameters."),
     "r8": ("R8 — Oncall completeness", "When escalated to oncall, the required fields must be consistent."),  # conditions filled in live
+    "r10": ("R10 — SpotAssist trigger (advisory)", "Slack tickets should engage SpotAssist."),  # bot name filled in live
     "a":  ("A1–A5 — AI grading", "Category accuracy, customer sentiment, response quality, status-vs-conversation, and premature closure — graded by Gemini against a fixed rubric with pinned generation."),
 }
 
@@ -1536,6 +1537,13 @@ def live_rule_descriptions() -> dict:
                         for c in scorer.R8_CONDITIONS if c in conditions]
             desc = ("When escalated to oncall, all of these must hold: "
                     + "; ".join(required) + ".")
+        elif key == "r10":
+            bot = qc_rules.spotassist_author()
+            desc = (f"Advisory — never fails a ticket. On "
+                    f"{', '.join(sorted(qc_rules.spotassist_sources()))} tickets, "
+                    f"{bot} only engages when someone adds the ticket emoji; if a "
+                    f"rep answers by hand without {bot} ever appearing in the "
+                    f"thread, the emoji was skipped and this check flags it.")
         if key in off:
             desc = ("Switched off — stored verdicts are kept but no longer "
                     "count towards any grade. " + desc)
@@ -2054,7 +2062,7 @@ async def export_csv(date_str: str, user: dict = Depends(auth.require_user)):
         fields = [
             "number", "title", "link", "state",
             "assignee_name", "account_name",
-            "r1", "r2", "r3", "r4", "r5", "r7", "r8",
+            "r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10",
             "a1", "a2", "a3", "a4", "a5",
             "ai_result", "overall_result", "reviewed_by", "reviewed_at",
             "ai_notes",
@@ -2066,6 +2074,7 @@ async def export_csv(date_str: str, user: dict = Depends(auth.require_user)):
             "r1": "R1 Functionality", "r2": "R2 Category", "r3": "R3 Account",
             "r4": "R4 Response Time", "r5": "R5 Status Owner",
             "r7": "R7 Rootly/Jira", "r8": "R8 Oncall Check",
+            "r10": "R10 SpotAssist (advisory)",
             "a1": "A1 Cat. Accuracy", "a2": "A2 Sentiment",
             "a3": "A3 Response Quality", "a4": "A4 Status Check",
             "a5": "A5 Closure",

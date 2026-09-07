@@ -362,12 +362,12 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
             conn.execute("""
                 INSERT OR REPLACE INTO rule_checks
                     (ticket_id, fetch_date, r1, r2, r3, r4, r5, r7, r8, r9,
-                     checked_at, rules_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     r10, checked_at, rules_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (issue["id"], fetch_date,
                   scores["r1"], scores["r2"], scores["r3"], scores["r4"],
                   scores["r5"], scores["r7"], scores["r8"], scores["r9"],
-                  now, rules_hash))
+                  scores["r10"], now, rules_hash))
             rescored += 1
 
     return {"stored": stored, "rescored": rescored, "failures": failures}

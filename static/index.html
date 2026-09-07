@@ -103,11 +103,11 @@
      a fill: this grid is the primary signal on the page, and roughly 8% of men
      have red-green colour blindness, so colour alone would not be readable. */
   .mx {
-    display: grid; grid-template-columns: repeat(12, 16px); gap: 3px;
+    display: grid; grid-template-columns: repeat(13, 16px); gap: 3px;
     flex: none;
   }
   .mx-head {
-    display: grid; grid-template-columns: repeat(12, 16px); gap: 3px;
+    display: grid; grid-template-columns: repeat(13, 16px); gap: 3px;
     font-size: 9px; text-align: center;
     color: color-mix(in srgb, var(--color-text) 42%, transparent);
   }
@@ -501,6 +501,18 @@
   .assignee-ms-item.is-zero { opacity: .5; }
   .assignee-ms-item input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
   .assignee-ms-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+  /* The cascading check picker: check rows are buttons wearing the item look;
+     the verdict radios indent under the active check. */
+  .check-row {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; font: inherit; color: inherit;
+    cursor: pointer;
+  }
+  .check-row-active { color: var(--accent2); }
+  .check-verdicts {
+    margin: 0 0 4px 18px;
+    border-left: 2px solid var(--border);
+  }
   .assignee-ms-clear {
     display: block;
     width: 100%;
@@ -1153,6 +1165,15 @@
           <div id="group-ms-list"></div>
         </div>
       </div>
+      <div class="assignee-ms" id="check-ms" style="display:none">
+        <button class="assignee-ms-btn" id="check-ms-btn"
+                title="Filter by one check's verdict — pick the check, then Pass/Fail/N/A">All checks</button>
+        <div class="assignee-ms-dropdown" id="check-ms-dropdown">
+          <button class="assignee-ms-clear" id="check-ms-clear">All checks</button>
+          <hr class="assignee-ms-divider">
+          <div id="check-ms-list"></div>
+        </div>
+      </div>
       <div class="assignee-ms" id="state-ms" style="display:none">
         <button class="assignee-ms-btn" id="state-ms-btn" title="Filter by the ticket's own status in Pylon">All statuses</button>
         <div class="assignee-ms-dropdown" id="state-ms-dropdown">
@@ -1387,6 +1408,9 @@ let daySpend     = null; // cumulative spend for the day: {runs, total_cost_usd,
 const selectedAssignees = new Set();
 const selectedGroups    = new Set(); // coverage id strings, plus "ungrouped"
 const selectedStates    = new Set(); // Pylon ticket states: closed, archived, …
+// One check's verdict as a filter axis: pick the check, then the verdict.
+// {key:"", value:""} means off; value "not_evaluated" matches a missing verdict.
+let checkFilter = { key: "", value: "" };
 
 // ── filter persistence ───────────────────────────────────────────────────────
 // Filters used to reset on every day change and vanish on reload. Kept per
@@ -1402,6 +1426,7 @@ function saveFilters() {
       assignees: [...selectedAssignees],
       groups:    [...selectedGroups],
       states:    [...selectedStates],
+      check:     { ...checkFilter },
     }));
   } catch { /* storage unavailable — filters simply do not persist */ }
 }
@@ -1411,11 +1436,16 @@ function loadSavedFilters() {
     const raw = localStorage.getItem(FILTER_KEY);
     if (!raw) return null;
     const saved = JSON.parse(raw);
+    const chk = saved.check || {};
     return {
       status:    typeof saved.status === "string" ? saved.status : "",
       assignees: Array.isArray(saved.assignees) ? saved.assignees : [],
       groups:    Array.isArray(saved.groups) ? saved.groups : [],
       states:    Array.isArray(saved.states) ? saved.states : [],
+      check:     {
+        key:   typeof chk.key === "string" ? chk.key : "",
+        value: typeof chk.value === "string" ? chk.value : "",
+      },
     };
   } catch {
     return null;
@@ -1427,6 +1457,7 @@ function clearSavedFilters() {
   selectedAssignees.clear();
   selectedGroups.clear();
   selectedStates.clear();
+  checkFilter = { key: "", value: "" };
   try { localStorage.removeItem(FILTER_KEY); } catch { /* nothing to clear */ }
 }
 let coverages    = [];   // review coverage groups from Admin
@@ -1877,6 +1908,7 @@ const CHECKS = {
   r5: { label: "Status Owner",   desc: "R5: ticket status matches who owns the next action" },
   r7: { label: "Rootly/Jira",    desc: "R7: Rootly or Jira link present for engineering tickets" },
   r8: { label: "Oncall Check",    desc: "R8: when escalated to oncall or Rootly ref present — does_rootly_exist=Yes, Rootly ref filled, Jira linked, and request_category is an oncall category" },
+  r10: { label: "SpotAssist",    desc: "R10 (advisory): Slack ticket answered by hand without SpotAssist — add the ticket emoji so the agent gets the first attempt. Never affects the overall grade" },
   a1: { label: "Cat. Accuracy",  desc: "A1 (AI): functionality & category match the actual customer ask" },
   a2: { label: "Sentiment",      desc: "A2 (AI): customer sentiment — Positive/Neutral/Concerned/Frustrated/Urgent" },
   a3: { label: "Response",       desc: "A3 (AI): quality of support responses — Good/Needs Improvement/Poor" },
@@ -1884,12 +1916,13 @@ const CHECKS = {
   a5: { label: "Closure",        desc: "A5 (AI): ticket wasn't closed while customer ask was still open" },
 };
 
-// The matrix's fixed column order and two-letter heads. Seven R-checks then
+// The matrix's fixed column order and two-letter heads. Eight R-checks then
 // five A-checks, so a row reads deterministic-then-AI left to right. R6 and R9
-// are dead (never computed / always N/A) and stay out.
+// are dead (never computed / always N/A) and stay out. R10 is advisory — shown
+// like any check, never counted into the overall.
 const MATRIX = [
   ["r1", "Fn"], ["r2", "Ct"], ["r3", "Ac"], ["r4", "RT"],
-  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"],
+  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"], ["r10", "SA"],
   ["a1", "CA"], ["a2", "Sn"], ["a3", "Rs"], ["a4", "SC"], ["a5", "Cl"],
 ];
 
@@ -2500,6 +2533,99 @@ function populateStateFilter(tickets) {
   ms.style.display = tickets.length ? "block" : "none";
 }
 
+// ── per-check verdict filter ─────────────────────────────────────────────────
+// One cascading picker: choose the check, then the verdict — "R10 SpotAssist →
+// Fail". The R-check list follows MATRIX minus admin-disabled checks, so this
+// can never offer a check that no longer counts anywhere else.
+const CHECK_VERDICTS = [
+  ["Fail", "Fail"], ["Pass", "Pass"], ["N/A", "N/A"],
+  ["not_evaluated", "Not evaluated"],
+];
+
+function _checkMatches(t, key, value) {
+  const v = t[key];
+  if (value === "not_evaluated") return v === null || v === undefined || v === "";
+  return v === value;
+}
+
+function _updateCheckBtn() {
+  const btn = document.getElementById("check-ms-btn");
+  if (!btn) return;
+  if (!checkFilter.key || !checkFilter.value) {
+    btn.textContent = "All checks";
+    return;
+  }
+  const label = (CHECKS[checkFilter.key] || {}).label || checkFilter.key.toUpperCase();
+  const verdict = (CHECK_VERDICTS.find(([v]) => v === checkFilter.value) || [])[1]
+                  || checkFilter.value;
+  btn.textContent = `${label}: ${verdict}`;
+}
+
+function populateCheckFilter(tickets) {
+  const ms = document.getElementById("check-ms");
+  const list = document.getElementById("check-ms-list");
+  if (!ms || !list) return;
+
+  // R-checks only (the deterministic rules), never ones the admin switched off.
+  const keys = MATRIX.map(([k]) => k)
+    .filter(k => k.startsWith("r") && !DISABLED_CHECKS.has(k));
+  // A filter pointing at a check that has since been disabled must release its
+  // grip rather than silently hiding tickets for a rule that no longer counts.
+  if (checkFilter.key && !keys.includes(checkFilter.key)) {
+    checkFilter = { key: "", value: "" };
+  }
+
+  list.innerHTML = keys.map(key => {
+    const label = (CHECKS[key] || {}).label || key.toUpperCase();
+    const failN = tickets.filter(t => _checkMatches(t, key, "Fail")).length;
+    const active = checkFilter.key === key;
+    const verdicts = !active ? "" : `
+      <div class="check-verdicts">${CHECK_VERDICTS.map(([v, name]) => {
+        const n = tickets.filter(t => _checkMatches(t, key, v)).length;
+        return `
+        <label class="assignee-ms-item${n ? "" : " is-zero"}">
+          <input type="radio" name="check-verdict" value="${esc(v)}"
+                 ${checkFilter.value === v ? "checked" : ""}>
+          ${esc(name)} <span class="muted">(${n})</span>
+        </label>`;
+      }).join("")}</div>`;
+    return `
+      <button class="assignee-ms-item check-row${active ? " check-row-active" : ""}"
+              data-check-key="${esc(key)}" type="button">
+        ${esc(key.toUpperCase())} · ${esc(label)}
+        <span class="muted">(${failN} fail)</span>
+      </button>${verdicts}`;
+  }).join("");
+
+  list.querySelectorAll("[data-check-key]").forEach(row => {
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();     // choosing a check expands it; don't close yet
+      const key = row.dataset.checkKey;
+      // Re-clicking the active check collapses it back to "no filter".
+      checkFilter = checkFilter.key === key
+        ? { key: "", value: "" }
+        : { key, value: "Fail" };      // Fail is what people come to find
+      populateCheckFilter(allTickets);
+      _updateCheckBtn();
+      populateStatusPills();
+      applyFilters();
+      saveFilters();
+    });
+  });
+  list.querySelectorAll("input[name=check-verdict]").forEach(rb => {
+    rb.addEventListener("change", () => {
+      checkFilter.value = rb.value;
+      _updateCheckBtn();
+      populateStatusPills();
+      applyFilters();
+      saveFilters();
+    });
+  });
+
+  _updateCheckBtn();
+  ms.style.display = tickets.length ? "block" : "none";
+}
+
 function _updateGroupBtn() {
   const btn = document.getElementById("group-ms-btn");
   if (selectedGroups.size === 0) {
@@ -2614,6 +2740,7 @@ function populateAssigneeFilter(tickets) {
   ms.style.display = tickets.length ? "block" : "none";
   populateGroupFilter(tickets);
   populateStateFilter(tickets);
+  populateCheckFilter(tickets);
 }
 
 // "Unreviewed" and "Reviewed" are about human sign-off, not the verdict, so
@@ -2698,8 +2825,15 @@ function applyFilters() {
   if (selectedStates.size > 0) {
     filtered = filtered.filter(t => selectedStates.has(t.state || "—"));
   }
+  // One check's own verdict — "only tickets where R10 failed" — independent of
+  // the overall grade, which an advisory check never touches.
+  if (checkFilter.key && checkFilter.value) {
+    filtered = filtered.filter(t =>
+      _checkMatches(t, checkFilter.key, checkFilter.value));
+  }
   const isFiltered = selectedAssignees.size > 0 || selectedGroups.size > 0
-                     || selectedStates.size > 0 || statusFilter;
+                     || selectedStates.size > 0 || statusFilter
+                     || (checkFilter.key && checkFilter.value);
 
   // Filters now persist across days, so a filter carried onto a day it matches
   // nothing on would otherwise show an empty list with no explanation. Offer
@@ -2719,6 +2853,7 @@ function applyFilters() {
         _updateAssigneeBtn();
         _updateGroupBtn();
         _updateStateBtn();
+        _updateCheckBtn();
         setActivePill("");
         populateAssigneeFilter(allTickets);
         populateStatusPills(allTickets);
@@ -3525,6 +3660,45 @@ document.getElementById('lb-body').addEventListener('click', (ev) => {
   });
 })();
 
+// Check-verdict filter. Same dropdown shell as the pickers above; the cascade
+// (check → verdict) lives inside populateCheckFilter's rendering.
+(function wireCheckFilter() {
+  const btn  = document.getElementById("check-ms-btn");
+  const drop = document.getElementById("check-ms-dropdown");
+  const clr  = document.getElementById("check-ms-clear");
+  if (!btn || !drop || !clr) return;
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+
+  clr.addEventListener("click", () => {
+    checkFilter = { key: "", value: "" };
+    populateCheckFilter(allTickets);
+    _updateCheckBtn();
+    populateStatusPills();
+    applyFilters();
+    saveFilters();
+  });
+
+  document.addEventListener("click", (e) => {
+    const host = document.getElementById("check-ms");
+    if (host && !host.contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
+
 (function wireReviewModal() {
   const modal = document.getElementById("review-modal");
   if (!modal) return;
@@ -3631,10 +3805,12 @@ document.getElementById("next-month").addEventListener("click", () => {
     }
     selectedStates.clear();
     saved.states.forEach(s => selectedStates.add(s));
+    if (saved.check) checkFilter = { ...saved.check };
     setActivePill(statusFilter);
     _updateAssigneeBtn();
     _updateGroupBtn();
     _updateStateBtn();
+    _updateCheckBtn();
   }
 
   await loadAllStates();      // before the first day renders its filter

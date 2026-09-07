@@ -80,7 +80,13 @@ FIELD_USED_BY = {
 # does nothing — see t_rulecfg for the assertion that keeps this in step with
 # what `score_all` actually produces.
 DEAD_CHECKS = ("r6", "r9")
-TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8")
+TOGGLEABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10")
+
+# Advisory checks are visible everywhere a check is visible — matrix, evidence,
+# notes, analytics, leaderboard tallies — but never flip the ticket's overall
+# grade. r10 measures a habit the team is still building (triggering SpotAssist
+# on Slack tickets); failing a ticket outright for it was explicitly declined.
+ADVISORY_CHECKS = ("r10",)
 
 # R8's conditions, each independently required or not. The field this reads,
 # `does_rootly_exist`, is still defined in Pylon but has stopped being filled;
@@ -890,6 +896,57 @@ def r9(issue: dict, messages: list[dict], external_issues: list[dict] | None = N
     return "N/A"
 
 
+def _msg_author_name(m: dict) -> str:
+    """Author name from either message shape.
+
+    r10 runs at fetch time on Pylon API messages (author.name) and again from
+    resync_overall on stored rows (author_name column) — one accessor, or the
+    two paths drift.
+    """
+    return str(m.get("author_name")
+               or (m.get("author") or {}).get("name") or "").strip()
+
+
+def _msg_is_customer(m: dict) -> bool:
+    if "is_customer" in m:
+        return bool(m["is_customer"])
+    return _is_customer_msg(m)
+
+
+def r10(issue: dict, messages: list[dict]) -> str:
+    """ADVISORY. Slack tickets: was SpotAssist given the chance to answer?
+
+    SpotAssist auto-engages on email and in-app chat, but on Slack it fires
+    only when someone reacts with the ticket emoji — kept manual on purpose,
+    because auto-engaging would reply to Slack threads that are not really
+    tickets. The habit being measured: when the customer does not add the
+    emoji, the rep should, instead of hand-writing the whole answer.
+
+    The signal is SpotAssist's own message in the thread (the emoji reliably
+    triggers it), so no Slack API access is needed. Pass — SpotAssist engaged,
+    whoever added the emoji. Fail — a rep posted a public reply and SpotAssist
+    never appeared: the emoji was skipped and the answer written by hand.
+    N/A — not a Slack ticket, no customer message (internal threads), or no
+    rep reply yet (responsiveness is R4's job).
+
+    Advisory: listed in ADVISORY_CHECKS, so `_compute_overall` never lets it
+    flip a ticket's grade — it exists to be seen, not to punish.
+    """
+    if (issue.get("source") or "").strip().lower() not in qc_rules.spotassist_sources():
+        return "N/A"
+    bot = qc_rules.spotassist_author().lower()
+    if any(_msg_author_name(m).lower() == bot for m in messages):
+        return "Pass"
+    if not any(_msg_is_customer(m) for m in messages):
+        return "N/A"
+    rep_replied = any(
+        not _msg_is_customer(m)
+        and not m.get("is_private")
+        and _msg_author_name(m).lower() != bot
+        for m in messages)
+    return "Fail" if rep_replied else "N/A"
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 def score_all(
@@ -908,4 +965,5 @@ def score_all(
         "r7": r7(issue, messages, external_issues),
         "r8": r8(issue, messages, external_issues),
         "r9": r9(issue, messages, external_issues),
+        "r10": r10(issue, messages),
     }

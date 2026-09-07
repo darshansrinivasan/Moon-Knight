@@ -114,6 +114,67 @@ check("invalid name fragment", scorer.r3(iss, {"id": "a1", "name": "Live Chat", 
 check("no account id", scorer.r3({}, None), "Fail")
 
 print()
+print("=== R10 (advisory): SpotAssist trigger on Slack tickets ===")
+# Fetch-time shape: Pylon API messages with author dicts.
+BOT   = {"author": {"user": {"email": "b@x"}, "name": "SpotAssist"}}
+REP   = {"author": {"user": {"email": "r@x"}, "name": "Ram Rep"}}
+CUST  = {"author": {"contact": {"email": "c@x"}, "name": "Cus Tomer"}}
+NOTE  = {"author": {"user": {"email": "r@x"}, "name": "Ram Rep"}, "is_private": True}
+SLACK = {"source": "slack"}
+
+check("SpotAssist engaged -> Pass", scorer.r10(SLACK, [CUST, BOT, REP]), "Pass")
+check("rep answered by hand -> Fail", scorer.r10(SLACK, [CUST, REP]), "Fail")
+check("no rep reply yet -> N/A", scorer.r10(SLACK, [CUST]), "N/A")
+check("internal note is not a reply", scorer.r10(SLACK, [CUST, NOTE]), "N/A")
+check("no customer message -> N/A (internal thread)",
+      scorer.r10(SLACK, [REP, REP]), "N/A")
+check("email tickets auto-engage, nothing to check",
+      scorer.r10({"source": "email"}, [CUST, REP]), "N/A")
+
+# Resync-time shape: stored rows with author_name / is_customer columns.
+check("stored-row shape scores identically",
+      scorer.r10(SLACK, [
+          {"author_name": "Cus Tomer", "is_customer": 1, "is_private": 0},
+          {"author_name": "Ram Rep",   "is_customer": 0, "is_private": 0},
+      ]), "Fail")
+
+# The bot name is configuration, not a literal: rename it and the check follows.
+import json
+
+import db as _db
+import rules as qc_rules
+import vault
+_db.init_db()
+vault.set_raw_setting("qc_rules_json",
+                      json.dumps({"spotassist_author": "HelperBot"}), "t")
+qc_rules.invalidate()
+check("renamed agent is honoured",
+      scorer.r10(SLACK, [CUST, {"author": {"user": {}, "name": "HelperBot"}}]),
+      "Pass")
+check("the old name no longer counts",
+      scorer.r10(SLACK, [CUST, BOT, REP]), "Fail")
+vault.set_raw_setting("qc_rules_json", "{}", "t")
+qc_rules.invalidate()
+
+print()
+print("=== R10 is advisory: it can never flip a grade or a fingerprint ===")
+import qc_runner
+check("r10 stays out of the overall verdict",
+      qc_runner._compute_overall(
+          {"r1": "Pass", "r10": "Fail"}, {"a1": "Good"}), "Pass")
+check("r10 is not in the graded key set",
+      "r10" in qc_runner.R_CHECK_KEYS, False)
+check("r10 rides the bookkeeping set instead",
+      "r10" in qc_runner.ALL_CHECK_KEYS, True)
+# Adding r10 to a stored row must not change its fingerprint — a changed
+# fingerprint re-bills the ticket on the next run for a check the model
+# never reads.
+_t = {"state": "closed", "title": "x", "custom_fields": "{}"}
+check("fingerprint ignores r10",
+      qc_runner.qc_fingerprint(_t, [], {"r1": "Pass"}),
+      qc_runner.qc_fingerprint(_t, [], {"r1": "Pass", "r10": "Fail"}))
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

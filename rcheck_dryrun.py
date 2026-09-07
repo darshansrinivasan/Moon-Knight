@@ -123,7 +123,10 @@ UNKNOWN_CLOCK = ("no recorded scoring time to pin the SLA clock to, so the age "
 
 # The checks re-run here: everything `scorer.score_all` computes except r9,
 # which is hardcoded to N/A and cannot move. t_rdryrun keeps this in step.
-RECHECKED_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8")
+# r10 is advisory (never in the recomputed overall) but IS re-checked: the
+# dry-run exists to show what a rules edit changes, and editing
+# spotassist_author/sources changes exactly these verdicts.
+RECHECKED_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10")
 
 NOTHING_TO_COMPARE = (
     "No stored R-check verdicts in range. Fetch a date first, then dry-run "
@@ -256,6 +259,7 @@ class _StoredTicket:
         self.issue = {
             "id":            row.get("id"),
             "state":         row.get("state") or "",
+            "source":        row.get("source") or "",
             "custom_fields": fields,
             "body_html":     row.get("body_html"),
             "account":       {"id": row["account_id"]} if row.get("account_id") else {},
@@ -312,6 +316,7 @@ def _recheck(t: _StoredTicket) -> tuple[dict, dict]:
 
     verdicts["r7"] = scorer.r7(issue, msgs, ext)
     verdicts["r8"] = scorer.r8(issue, msgs, ext)
+    verdicts["r10"] = scorer.r10(issue, msgs)
     return verdicts, reasons
 
 
@@ -390,10 +395,11 @@ def _load(limit: int, start: str | None, end: str | None) -> list[dict]:
     with db.get_conn() as conn:
         rows = [dict(r) for r in conn.execute(f"""
             SELECT t.id, t.number, t.title, t.link, t.state, t.fetch_date,
-                   t.assignee_id, t.assignee_name, t.account_id,
+                   t.assignee_id, t.assignee_name, t.account_id, t.source,
                    t.custom_fields, t.external_issues, t.body_html, t.fetched_at,
                    a.name AS account_name, a.type AS account_type,
                    rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9,
+                   rc.r10,
                    rc.checked_at AS rc_checked_at,
                    ac.a1, ac.a2, ac.a3, ac.a4, ac.a5,
                    ac.overall_result, ac.checked_at AS ai_checked_at
