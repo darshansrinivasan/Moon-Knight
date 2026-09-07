@@ -308,8 +308,9 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                      priority, assignee_id, assignee_name, account_id,
                      custom_fields, external_issues, body_html,
                      created_at, updated_at, latest_message_time,
-                     customer_portal_visible, fetched_at, csat_responses)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     customer_portal_visible, fetched_at, csat_responses,
+                     first_response_seconds, resolution_seconds)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 issue["id"], issue.get("number"), fetch_date,
                 issue.get("title"), issue.get("link"),
@@ -319,6 +320,12 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                 issue.get("created_at"), issue.get("updated_at"),
                 issue.get("latest_message_time"),
                 1 if cpv else 0, now, csat_json,
+                weekly.issue_duration_seconds(
+                    issue, "first_response_seconds",
+                    "business_hours_first_response_seconds"),
+                weekly.issue_duration_seconds(
+                    issue, "resolution_seconds",
+                    "business_hours_resolution_seconds"),
             ))
             stored += 1
 

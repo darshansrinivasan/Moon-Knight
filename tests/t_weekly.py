@@ -34,7 +34,8 @@ def check(name, got, want):
 def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
         priority="High", account="Acme", category="Salesforce (SFDC)",
         cat_slug="salesforce_sfdc", extra_cf=None, messages=(),
-        deleted=None, link=None, csat=None):
+        deleted=None, link=None, csat=None,
+        first_response_seconds=None, resolution_seconds=None):
     _num[0] += 1
     cf = {
         "request_category": {
@@ -54,13 +55,14 @@ def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
             "INSERT OR REPLACE INTO tickets "
             "(id,number,fetch_date,title,link,state,priority,assignee_name,"
             "account_id,custom_fields,created_at,updated_at,deleted_at,"
-            "csat_responses)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "csat_responses,first_response_seconds,resolution_seconds)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, _num[0], created[:10], f"Ticket {tid}",
              link or f"https://app.usepylon.com/issues?issueNumber={_num[0]}",
              state, priority, assignee, acc_id, json.dumps(cf),
              created, updated or created, deleted,
-             json.dumps(csat) if csat else None),
+             json.dumps(csat) if csat else None,
+             first_response_seconds, resolution_seconds),
         )
         for i, m in enumerate(messages):
             c.execute(
@@ -71,6 +73,7 @@ def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
                  1 if m.get("customer") else 0,
                  1 if m.get("private") else 0),
             )
+    return _num[0]
 
 
 def reply_pair(created, hours, *, customer_first=True):
@@ -320,6 +323,68 @@ try:
     check("future start rejected", False, True)
 except ValueError:
     check("future start rejected", True, True)
+
+print()
+print("=== Pylon clocks beat reconstructed 1-minute FRT ===")
+check("wall-clock wins over business hours",
+      weekly.issue_duration_seconds(
+          {"first_response_seconds": 3600,
+           "business_hours_first_response_seconds": 900},
+          "first_response_seconds",
+          "business_hours_first_response_seconds"),
+      3600)
+check("business hours used when wall-clock missing",
+      weekly.issue_duration_seconds(
+          {"business_hours_first_response_seconds": 900},
+          "first_response_seconds",
+          "business_hours_first_response_seconds"),
+      900)
+# Slack-style: a support-side line at create, customer 1m later, real reply
+# hours later. created → first support used to report 1 minute.
+n_pylon = add(
+    "frt_pylon", created="2026-08-18T07:00:00+00:00",
+    first_response_seconds=4 * 3600, account="FRT Pylon Co",
+    messages=[
+        {"at": "2026-08-18T07:00:00+00:00", "customer": False,
+         "html": "<p>thread opened</p>"},
+        {"at": "2026-08-18T07:01:00+00:00", "customer": True,
+         "html": "<p>please help</p>"},
+        {"at": "2026-08-18T11:00:00+00:00", "customer": False,
+         "html": "<p>on it</p>"},
+    ])
+n_recon = add(
+    "frt_recon", created="2026-08-18T07:05:00+00:00",
+    account="FRT Recon Co",
+    messages=[
+        {"at": "2026-08-18T07:05:00+00:00", "customer": False,
+         "html": "<p>thread opened</p>"},
+        {"at": "2026-08-18T07:06:00+00:00", "customer": True,
+         "html": "<p>please help</p>"},
+        {"at": "2026-08-18T10:06:00+00:00", "customer": False,
+         "html": "<p>on it</p>"},
+    ])
+n_none = add(
+    "frt_none", created="2026-08-18T07:10:00+00:00",
+    account="FRT None Co",
+    messages=[
+        {"at": "2026-08-18T07:10:00+00:00", "customer": False,
+         "html": "<p>thread opened</p>"},
+    ])
+n_res = add(
+    "res_pylon", created="2026-08-18T07:15:00+00:00", state="closed",
+    updated="2026-08-18T13:15:00+00:00",
+    resolution_seconds=2 * 3600, account="Res Pylon Co",
+    messages=reply_pair("2026-08-18T07:15:00+00:00", 1))
+clocked = weekly.build(CURR, now=NOW)
+by_n = {r["issue"]: r for r in clocked["allRows"]}
+check("Pylon first_response_seconds wins over 1-minute reconstruction",
+      by_n[n_pylon]["frt_secs"], 4 * 3600)
+check("fallback FRT is customer ask → support, not created → support",
+      by_n[n_recon]["frt_secs"], 3 * 3600)
+check("no customer ask and no Pylon field means no invented FRT",
+      by_n[n_none]["frt_secs"], None)
+check("Pylon resolution_seconds wins over updated_at - created_at",
+      by_n[n_res]["res_secs"], 2 * 3600)
 
 print()
 if fails:

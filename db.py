@@ -57,6 +57,11 @@ _ADDED_COLUMNS = [
     "ALTER TABLE tickets ADD COLUMN csat_responses TEXT",
     # Survey responses often have account_id and no issue_id.
     "ALTER TABLE csat_events ADD COLUMN account_id TEXT",
+    # Pylon's own first-response / resolution clocks. Reconstructing them
+    # from created_at → first support message made Slack/chat tickets look
+    # like a 1-minute FRT while the issue page showed hours.
+    "ALTER TABLE tickets ADD COLUMN first_response_seconds INTEGER",
+    "ALTER TABLE tickets ADD COLUMN resolution_seconds INTEGER",
 ]
 
 
@@ -89,7 +94,10 @@ def init_db():
             -- on it rather than the row being destroyed.
             deleted_at    TEXT,
             -- JSON list of {score, comment, submitted_at} from Pylon CSAT.
-            csat_responses TEXT
+            csat_responses TEXT,
+            -- Pylon-computed durations (seconds). Preferred over reconstructing.
+            first_response_seconds INTEGER,
+            resolution_seconds INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS csat_events (

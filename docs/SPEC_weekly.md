@@ -67,8 +67,8 @@ dates are omitted. A future `start` is rejected.
 | open | created in the week and state is not `closed` / `archived` |
 | escalation | created in the week and `_is_escalated` |
 | SLA breach | FRT > `rules.sla_hours()`, or no first reply and age > SLA while a customer reply is still owed |
-| FRT | created → first public non-bot support (`is_customer=0`) message, seconds |
-| resolution time | created → `updated_at` on closed tickets, seconds |
+| FRT | Pylon `first_response_seconds` (else `business_hours_first_response_seconds`). Fallback is customer ask → first later public non-bot support reply — never created → first support, which made Slack/chat tickets look like 1 minute |
+| resolution time | Pylon `resolution_seconds` (else `business_hours_resolution_seconds`). Fallback is created → `updated_at` on closed tickets |
 | CSAT | survey `submitted_at` falls in the period. Ticket `created_at` does not apply. Every stored response in that window counts. |
 
 Deleted (`deleted_at`) and `archived` tickets are out. QC

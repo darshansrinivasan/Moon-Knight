@@ -347,7 +347,52 @@ def _secs_to_hrs(v):
     return None if v is None else round(v / 3600, 2)
 
 
-def _first_support_reply(messages: list[dict]) -> datetime | None:
+def pylon_duration_seconds(issue: dict, key: str) -> int | None:
+    """Pylon's own duration on the issue, in seconds.
+
+    `first_response_seconds` / `resolution_seconds` are what the issue page
+    shows. Reconstructing from our message table disagrees with that clock.
+    """
+    raw = (issue or {}).get(key)
+    if raw is None or raw == "":
+        return None
+    try:
+        n = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def issue_duration_seconds(issue: dict, *keys: str) -> int | None:
+    """First present Pylon duration among `keys` (wall-clock, then business hours)."""
+    for key in keys:
+        n = pylon_duration_seconds(issue, key)
+        if n is not None:
+            return n
+    return None
+
+
+def _first_customer_at(messages: list[dict]) -> datetime | None:
+    dated = []
+    for m in messages:
+        if m.get("is_private") or not m.get("is_customer"):
+            continue
+        ts = _parse_ts(m.get("timestamp"))
+        if ts is not None:
+            dated.append(ts)
+    return min(dated) if dated else None
+
+
+def _reconstruct_frt(messages: list[dict]) -> float | None:
+    """Customer ask → first later public support reply.
+
+    created_at → first support is the 1-minute bug: Slack/chat tickets often
+    have a support-side line within seconds of open. Pylon starts the clock
+    on the customer's ask.
+    """
+    asked = _first_customer_at(messages)
+    if asked is None:
+        return None
     dated = []
     for m in messages:
         if m.get("is_private") or m.get("is_customer"):
@@ -355,9 +400,11 @@ def _first_support_reply(messages: list[dict]) -> datetime | None:
         if scorer._is_bot_ack(m):
             continue
         ts = _parse_ts(m.get("timestamp"))
-        if ts is not None:
+        if ts is not None and ts >= asked:
             dated.append(ts)
-    return min(dated) if dated else None
+    if not dated:
+        return None
+    return (min(dated) - asked).total_seconds()
 
 
 def _load_tickets(since: date) -> tuple[list[dict], dict[str, list[dict]]]:
@@ -368,6 +415,7 @@ def _load_tickets(since: date) -> tuple[list[dict], dict[str, list[dict]]]:
             SELECT t.id, t.number, t.title, t.link, t.state, t.type, t.priority,
                    t.assignee_name, t.account_id, t.custom_fields, t.created_at,
                    t.updated_at, t.fetch_date, t.deleted_at, t.csat_responses,
+                   t.first_response_seconds, t.resolution_seconds,
                    a.name AS account_name
             FROM tickets t
             LEFT JOIN accounts a ON a.id = t.account_id
@@ -424,17 +472,20 @@ def _annotate(row: dict, messages: list[dict], tz, sla: float,
 
     state = (row.get("state") or "").strip().lower()
     updated = _parse_ts(row.get("updated_at"))
-    reply_at = _first_support_reply(messages)
-    frt = None
-    if reply_at is not None and reply_at >= created:
-        frt = (reply_at - created).total_seconds()
+    # Prefer Pylon's own clocks. Reconstructing from created_at → first
+    # support message is what made the weekly FRT read as 1 minute while
+    # the issue page showed hours.
+    frt = pylon_duration_seconds(row, "first_response_seconds")
+    if frt is None:
+        frt = _reconstruct_frt(messages)
 
     closed = state == "closed"
-    res_secs = None
+    res_secs = pylon_duration_seconds(row, "resolution_seconds")
     resolved_day = None
-    if closed and updated is not None and updated >= created:
-        res_secs = (updated - created).total_seconds()
-        resolved_day = _local_date(updated, tz)
+    if closed:
+        if res_secs is None and updated is not None and updated >= created:
+            res_secs = (updated - created).total_seconds()
+        resolved_day = _local_date(updated, tz) or _local_date(created, tz)
 
     owed = qc_rules.status_policy(state).get("r4_reply_owed", True)
     sla_secs = sla * 3600

@@ -573,6 +573,16 @@ function filteredRows() {
 
 function mean(xs) { return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; }
 function pct(c, p) { return p ? Math.round((c - p) / p * 1000) / 10 : null; }
+function pctile(xs, p, minN) {
+  minN = minN == null ? 1 : minN;
+  if (xs.length < minN) return null;
+  if (xs.length === 1) return xs[0];
+  const s = [...xs].sort((a, b) => a - b);
+  const k = (s.length - 1) * (p / 100);
+  const lo = Math.floor(k);
+  const hi = Math.min(lo + 1, s.length - 1);
+  return s[lo] + (s[hi] - s[lo]) * (k - lo);
+}
 
 function fromRows(rows) {
   const curr = rows.filter(r => r.week === "Current Week");
@@ -636,7 +646,8 @@ function fromRows(rows) {
       cv_resolved: c.filter(r => r.is_resolved).length,
       pv_frt_avg: mean(pfrt), cv_frt_avg: mean(cfrt),
       pv_res_avg: mean(pres), cv_res_avg: mean(cres),
-      pv_frt_p75: null, cv_frt_p75: null, pv_frt_p90: null, cv_frt_p90: null,
+      pv_frt_p75: pctile(pfrt, 75, 2), cv_frt_p75: pctile(cfrt, 75, 2),
+      pv_frt_p90: pctile(pfrt, 90, 2), cv_frt_p90: pctile(cfrt, 90, 2),
       pv_escalations: p.filter(r => r.is_escalated).length,
       cv_escalations: c.filter(r => r.is_escalated).length,
       cv_backlog: c.filter(r => r.is_open).length,
@@ -644,12 +655,12 @@ function fromRows(rows) {
     };
   });
   function stats(xs) {
-    const s = [...xs].sort((a, b) => a - b);
     return {
-      avg: mean(s),
-      med: s.length ? s[Math.floor((s.length - 1) / 2)] : null,
-      p90: s.length ? s[Math.floor((s.length - 1) * 0.9)] : null,
-      min: s.length ? s[0] : null, max: s.length ? s[s.length - 1] : null,
+      avg: mean(xs),
+      med: pctile(xs, 50),
+      p90: pctile(xs, 90),
+      min: xs.length ? Math.min(...xs) : null,
+      max: xs.length ? Math.max(...xs) : null,
     };
   }
   const cfrt = stats(cv.frt), pfrt = stats(pv.frt), cres = stats(cv.res), pres = stats(pv.res);
