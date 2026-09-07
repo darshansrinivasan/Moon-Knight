@@ -293,6 +293,7 @@ for page, names in (
     ("index.html", ("calDays", "kpis", "tableRows", "cards")),
     ("leaderboard.html", ("tableRows", "weeks")),
     ("open.html", ("chips", "tableRows")),
+    ("weekly.html", ("kpis", "tableRows")),
 ):
     text = (STATIC / page).read_text()
     for name in names:

@@ -1,0 +1,1106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Support weekly Dashboard · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .content-pane { padding: 18px 22px 48px; }
+  .week-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .week-nav { display: flex; align-items: center; gap: 6px; }
+  .week-nav button {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 8px; padding: 4px 10px; cursor: pointer;
+  }
+  .week-nav button:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .week-nav h2 { font-size: 14px; font-weight: 600; min-width: 220px; text-align: center; }
+  .ts-lbl { font-size: 11px; color: var(--muted); }
+  .filter-bar {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;
+    display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap;
+  }
+  .flbl { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .fsel {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 9px; font-size: 11px; color: var(--text);
+    min-width: 115px; font-family: inherit;
+  }
+  .fbtn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .fbtn:hover, .fpt-btn.act {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+  .fdiv { height: 20px; width: 1px; background: var(--border); }
+  .g6 { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px; }
+  .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .mb18 { margin-bottom: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px;
+  }
+  .card-sm { padding: 12px; }
+  .chdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .ctit { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; position: relative; overflow: hidden;
+  }
+  .kpi::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: var(--kc, var(--color-accent));
+  }
+  .kpi-hdr { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 8px; }
+  .kpi-lbl { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+  .kpi-val { font-size: 26px; font-weight: 800; letter-spacing: -1px; line-height: 1; margin-bottom: 5px; }
+  .kpi-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+  .kpi-prev { font-size: 10px; color: var(--muted); }
+  .bdg { display: inline-flex; font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 20px; }
+  .wu { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+  .up { background: color-mix(in srgb, var(--pass) 16%, transparent); color: var(--pass); }
+  .kpi-ins { font-size: 10px; color: var(--muted); margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); line-height: 1.4; }
+  .cwrap { position: relative; width: 100%; }
+  .cwrap canvas { max-height: 250px; }
+  .tall canvas { max-height: 320px; }
+  .sm canvas { max-height: 170px; }
+  .xs canvas { max-height: 130px; }
+  .str { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+  .str3 { grid-template-columns: repeat(3, 1fr); }
+  .st { text-align: center; padding: 8px; background: var(--surface2); border-radius: 8px; }
+  .st-l { font-size: 8px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
+  .st-v { font-size: 14px; font-weight: 700; margin-top: 2px; }
+  .st-s { font-size: 9px; color: var(--muted); margin-top: 1px; }
+  .cmg { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border-radius: 8px; overflow: hidden; margin-top: 8px; }
+  .cmc { background: var(--surface2); padding: 9px 11px; }
+  .cmlb { font-size: 8px; font-weight: 700; text-transform: uppercase; color: var(--muted); margin-bottom: 7px; }
+  .cmr { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid var(--border); }
+  .cmr:last-child { border-bottom: none; }
+  .cmk { font-size: 10px; color: var(--muted); }
+  .cmv { font-size: 11px; font-weight: 700; }
+  .tw { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); }
+  .dt { width: 100%; border-collapse: collapse; min-width: 1600px; }
+  .dt th {
+    font-size: 9px; font-weight: 700; color: var(--muted); text-align: left;
+    padding: 10px 11px; background: var(--surface2); border-bottom: 1px solid var(--border);
+    cursor: pointer; white-space: nowrap;
+  }
+  .dt td { padding: 9px 11px; border-bottom: 1px solid var(--border); font-size: 11px; white-space: nowrap; }
+  .agn { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .av {
+    width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 9px; font-weight: 700; flex-shrink: 0;
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+    color: var(--color-accent-300);
+  }
+  .dp { color: var(--fail); font-weight: 600; }
+  .dn2 { color: var(--pass); font-weight: 600; }
+  .dnu { color: var(--muted); }
+  .tc { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .srch { position: relative; }
+  .srch input {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 9px 6px 26px; font-size: 11px; color: var(--text); width: 200px; font-family: inherit;
+  }
+  .si { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 12px; }
+  .ti { font-size: 10px; color: var(--muted); }
+  .xb {
+    background: transparent; border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 11px; font-size: 10px; font-weight: 600; color: var(--muted); cursor: pointer;
+    font-family: inherit;
+  }
+  .xb:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .pag { display: flex; align-items: center; gap: 4px; margin-top: 12px; justify-content: center; }
+  .pgb {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 8px; font-size: 10px; cursor: pointer; color: var(--muted); font-family: inherit;
+  }
+  .pgb:hover, .pgb.act {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  }
+  .ig { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .ic { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 11px 13px; display: flex; gap: 9px; }
+  .ico2 { font-size: 16px; flex-shrink: 0; }
+  .ittl { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin-bottom: 2px; }
+  .itxt { font-size: 11px; line-height: 1.4; }
+  .ibdg { display: inline-block; font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 8px; margin-top: 4px; }
+  .ipos { background: color-mix(in srgb, var(--pass) 16%, transparent); color: var(--pass); }
+  .ineg { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+  .iwrn { background: color-mix(in srgb, var(--review) 16%, transparent); color: var(--review); }
+  .iinf { background: color-mix(in srgb, var(--color-accent) 16%, transparent); color: var(--color-accent-300); }
+  .tab-bar { display: flex; gap: 2px; border-bottom: 2px solid var(--border); margin-bottom: 14px; overflow-x: auto; }
+  .tab-btn {
+    padding: 6px 13px; font-size: 11px; font-weight: 600; color: var(--muted);
+    background: none; border: none; cursor: pointer; border-bottom: 2px solid transparent;
+    margin-bottom: -2px; font-family: inherit; white-space: nowrap;
+  }
+  .tab-btn.act { color: var(--color-accent); border-bottom-color: var(--color-accent); }
+  .tab-pane { display: none; }
+  .tab-pane.act { display: block; }
+  .sttl { font-size: 13px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 7px; }
+  .csat-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .csat-tab {
+    padding: 7px 18px; font-size: 12px; font-weight: 700; border: 1px solid var(--border);
+    border-radius: 20px; cursor: pointer; background: var(--surface2); color: var(--muted);
+  }
+  .csat-tab.act { border-color: var(--review); color: var(--review); background: color-mix(in srgb, var(--review) 10%, transparent); }
+  .csat-week { display: none; }
+  .csat-week.act { display: block; }
+  .csat-krow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+  .csat-k { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; text-align: center; }
+  .csat-kv { font-size: 22px; font-weight: 800; }
+  .csat-kl { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin-top: 2px; }
+  .csat-tbl { width: 100%; border-collapse: collapse; }
+  .csat-tbl th {
+    font-size: 9px; font-weight: 700; color: var(--muted); text-align: left;
+    padding: 8px 10px; background: var(--surface2); border-bottom: 1px solid var(--border);
+    text-transform: uppercase;
+  }
+  .csat-tbl td { padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 11px; }
+  .aw-champ, .aw-top, .aw-good, .aw-need, .aw-att {
+    display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 7px; border-radius: 8px;
+  }
+  .aw-champ { background: color-mix(in srgb, var(--review) 20%, transparent); color: var(--review); }
+  .aw-top { background: color-mix(in srgb, var(--color-accent) 16%, transparent); color: var(--color-accent-300); }
+  .aw-good { background: color-mix(in srgb, var(--pass) 16%, transparent); color: var(--pass); }
+  .aw-need { background: color-mix(in srgb, var(--review) 16%, transparent); color: var(--review); }
+  .aw-att { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+  .sbar-wrap { display: flex; align-items: center; gap: 5px; }
+  .sbar { flex: 1; max-width: 90px; height: 7px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+  .sbfill { height: 100%; border-radius: 4px; background: var(--pass); }
+  .spct { font-size: 10px; font-weight: 700; }
+  .score-v { font-size: 14px; font-weight: 800; }
+  .warn-note {
+    background: color-mix(in srgb, var(--review) 10%, transparent);
+    border: 1px solid var(--review); border-radius: 8px;
+    padding: 9px 12px; font-size: 11px; margin-top: 10px;
+  }
+  .empty { color: var(--muted); padding: 18px; text-align: center; font-size: 13px; }
+  @media (max-width: 1400px) { .g6 { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 1100px) { .csat-krow { grid-template-columns: 1fr 1fr; } .g2 { grid-template-columns: 1fr; } }
+  @media (max-width: 768px) { .ig { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body class="shell" data-page="weekly">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Support weekly Dashboard</h1>
+    <span class="muted">Week-over-week operations from the QC ticket store.</span>
+    <div class="spacer"></div>
+    <span class="ts-lbl" id="genAt">—</span>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+
+      <div class="week-bar">
+        <div class="week-nav">
+          <button type="button" id="prev-week" aria-label="Previous week">‹</button>
+          <h2 id="week-title">This week</h2>
+          <button type="button" id="next-week" aria-label="Next week">›</button>
+        </div>
+        <span class="ts-lbl" id="week-compare"></span>
+      </div>
+
+      <div class="filter-bar">
+        <span class="flbl">Filter</span>
+        <select class="fsel" id="fWeek"><option value="">All Weeks</option><option value="Previous Week">Previous</option><option value="Current Week">Current</option></select>
+        <select class="fsel" id="fAgent"><option value="">All Agents</option></select>
+        <select class="fsel" id="fPriority"><option value="">All Priorities</option><option>Urgent</option><option>High</option><option>Medium</option><option>Low</option><option>Unknown</option></select>
+        <select class="fsel" id="fCategory"><option value="">All Categories</option></select>
+        <select class="fsel" id="fStatus"><option value="">All Statuses</option><option>Closed</option><option>On customer</option><option>Waiting on Engg</option><option>Investigating</option><option>On you</option><option>Waiting on CSM</option></select>
+        <select class="fsel" id="fEsc"><option value="">All</option><option value="true">Escalated</option><option value="false">Not Escalated</option></select>
+        <div class="fdiv"></div>
+        <button type="button" class="fbtn" id="clearFilters">Clear</button>
+      </div>
+
+      <div class="g6" id="kpis">
+        <div class="kpi" style="--kc:var(--color-accent)">
+          <div class="kpi-hdr"><span class="kpi-lbl">Issue Volume</span></div>
+          <div class="kpi-val" id="k-vol">—</div>
+          <div class="kpi-meta"><span class="kpi-prev">Prev: <b id="k-vol-p">—</b></span><span class="bdg" id="k-vol-b">—</span></div>
+          <div class="kpi-ins" id="k-vol-i">—</div>
+        </div>
+        <div class="kpi" style="--kc:var(--review)">
+          <div class="kpi-hdr"><span class="kpi-lbl">CSAT (Current Week)</span></div>
+          <div class="kpi-val" id="k-csat">—</div>
+          <div class="kpi-meta" id="k-csat-m">—</div>
+          <div class="kpi-ins" id="k-csat-i">—</div>
+        </div>
+        <div class="kpi" style="--kc:var(--pass)">
+          <div class="kpi-hdr"><span class="kpi-lbl">Avg First Response</span></div>
+          <div class="kpi-val" id="k-frt">—</div>
+          <div class="kpi-meta"><span class="kpi-prev">Prev: <b id="k-frt-p">—</b></span><span class="bdg" id="k-frt-b">—</span></div>
+          <div class="kpi-ins" id="k-frt-i">—</div>
+        </div>
+        <div class="kpi" style="--kc:var(--color-accent-400)">
+          <div class="kpi-hdr"><span class="kpi-lbl">Avg Resolution Time</span></div>
+          <div class="kpi-val" id="k-res">—</div>
+          <div class="kpi-meta"><span class="kpi-prev">Prev: <b id="k-res-p">—</b></span><span class="bdg" id="k-res-b">—</span></div>
+          <div class="kpi-ins" id="k-res-i">—</div>
+        </div>
+        <div class="kpi" style="--kc:var(--review)">
+          <div class="kpi-hdr"><span class="kpi-lbl">Open / Backlog</span></div>
+          <div class="kpi-val" id="k-bl">—</div>
+          <div class="kpi-meta"><span class="kpi-prev">Prev: <b id="k-bl-p">—</b></span><span class="bdg" id="k-bl-b">—</span></div>
+          <div class="kpi-ins" id="k-bl-i">—</div>
+        </div>
+        <div class="kpi" style="--kc:var(--fail)">
+          <div class="kpi-hdr"><span class="kpi-lbl">Eng. Escalations</span></div>
+          <div class="kpi-val" id="k-esc">—</div>
+          <div class="kpi-meta"><span class="kpi-prev">Prev: <b id="k-esc-p">—</b></span><span class="bdg" id="k-esc-b">—</span></div>
+          <div class="kpi-ins" id="k-esc-i">—</div>
+        </div>
+      </div>
+
+      <div class="g2">
+        <div class="card"><div class="chdr"><span class="ctit">Issue Volume Trend</span></div><div class="cwrap"><canvas id="cTrend"></canvas></div></div>
+        <div class="card"><div class="chdr"><span class="ctit">Daily Created vs Resolved</span></div><div class="cwrap"><canvas id="cDaily"></canvas></div></div>
+      </div>
+      <div class="g2">
+        <div class="card">
+          <div class="chdr"><span class="ctit">First Response Time (min)</span></div>
+          <div class="cwrap"><canvas id="cFRT"></canvas></div>
+          <div class="str">
+            <div class="st"><div class="st-l">Avg FRT</div><div class="st-v" id="s-fa">—</div><div class="st-s" id="s-fa-p">—</div></div>
+            <div class="st"><div class="st-l">Median</div><div class="st-v" id="s-fm">—</div><div class="st-s" id="s-fm-p">—</div></div>
+            <div class="st"><div class="st-l">P90</div><div class="st-v" id="s-fp">—</div><div class="st-s" id="s-fp-p">—</div></div>
+            <div class="st"><div class="st-l">Max</div><div class="st-v" id="s-fmax">—</div><div class="st-s" id="s-fmax-p">—</div></div>
+          </div>
+        </div>
+        <div class="card"><div class="chdr"><span class="ctit">Priority Breakdown</span></div><div class="cwrap"><canvas id="cPri"></canvas></div></div>
+      </div>
+      <div class="g2">
+        <div class="card">
+          <div class="chdr"><span class="ctit">Escalation Trend</span></div>
+          <div class="cwrap"><canvas id="cEsc"></canvas></div>
+          <div class="str str3">
+            <div class="st"><div class="st-l">Total Escalations</div><div class="st-v" id="s-et">—</div><div class="st-s" id="s-ed">—</div></div>
+            <div class="st"><div class="st-l">Escalation Rate</div><div class="st-v" id="s-er">—</div><div class="st-s" id="s-erp">—</div></div>
+            <div class="st"><div class="st-l">WoW Change</div><div class="st-v" id="s-ew">—</div><div class="st-s">vs prev week</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="chdr"><span class="ctit">Resolution Time (hrs)</span></div>
+          <div class="cwrap"><canvas id="cRes"></canvas></div>
+          <div class="str">
+            <div class="st"><div class="st-l">Avg</div><div class="st-v" id="s-ra">—</div><div class="st-s" id="s-ra-p">—</div></div>
+            <div class="st"><div class="st-l">Median</div><div class="st-v" id="s-rm">—</div><div class="st-s" id="s-rm-p">—</div></div>
+            <div class="st"><div class="st-l">P90</div><div class="st-v" id="s-rp">—</div><div class="st-s" id="s-rp-p">—</div></div>
+            <div class="st"><div class="st-l">Max</div><div class="st-v" id="s-rmax">—</div><div class="st-s" id="s-rmax-p">—</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="g2">
+        <div class="card"><div class="chdr"><span class="ctit">Top Issue Categories</span></div><div class="cwrap tall"><canvas id="cCat"></canvas></div></div>
+        <div class="card"><div class="chdr"><span class="ctit">Top Customers by Volume</span></div><div class="cwrap tall"><canvas id="cCust"></canvas></div></div>
+      </div>
+      <div class="g2">
+        <div class="card"><div class="chdr"><span class="ctit">Escalation Categories</span></div><div class="cwrap"><canvas id="cEscCat"></canvas></div></div>
+        <div class="card">
+          <div class="chdr"><span class="ctit">Issue Status Breakdown</span></div>
+          <div class="cwrap sm"><canvas id="cStatus"></canvas></div>
+          <div class="cmg">
+            <div class="cmc">
+              <div class="cmlb" id="b-prev-lbl">Previous</div>
+              <div class="cmr"><span class="cmk">Open</span><span class="cmv" id="b-po">—</span></div>
+              <div class="cmr"><span class="cmk">Resolved</span><span class="cmv" id="b-pr">—</span></div>
+              <div class="cmr"><span class="cmk">Escalations</span><span class="cmv" id="b-pe">—</span></div>
+              <div class="cmr"><span class="cmk">Reopen Rate</span><span class="cmv" id="b-prr">—</span></div>
+            </div>
+            <div class="cmc">
+              <div class="cmlb" id="b-curr-lbl">Current</div>
+              <div class="cmr"><span class="cmk">Open</span><span class="cmv" id="b-co">—</span></div>
+              <div class="cmr"><span class="cmk">Resolved</span><span class="cmv" id="b-cr">—</span></div>
+              <div class="cmr"><span class="cmk">Escalations</span><span class="cmv" id="b-ce">—</span></div>
+              <div class="cmr"><span class="cmk">Reopen Rate</span><span class="cmv" id="b-crr">—</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb18">
+        <div class="sttl">CSAT — Customer Satisfaction</div>
+        <div class="warn-note" id="csat-note">CSAT is not stored in the QC database, so scores and awards are empty until that source is wired.</div>
+        <div class="csat-tabs">
+          <div class="csat-tab act" data-csat-tab="pv" id="csat-tab-pv">Previous week</div>
+          <div class="csat-tab" data-csat-tab="cv" id="csat-tab-cv">Current week</div>
+        </div>
+        <div class="csat-week act" id="csat-pv">
+          <div class="csat-krow">
+            <div class="csat-k"><div class="csat-kv" id="pv-avg">—</div><div class="csat-kl">Avg Score (/5)</div></div>
+            <div class="csat-k"><div class="csat-kv" id="pv-pos">—</div><div class="csat-kl">Positive Rate (4+5)</div></div>
+            <div class="csat-k"><div class="csat-kv" id="pv-tot">—</div><div class="csat-kl">Total Responses</div></div>
+            <div class="csat-k"><div class="csat-kv" id="pv-nag">—</div><div class="csat-kl">Agents Rated</div></div>
+          </div>
+          <div class="g2 mb18">
+            <div class="card card-sm"><div class="ctit" style="margin-bottom:8px">Rating Mix</div><div class="cwrap xs"><canvas id="cCSAT-pv-donut"></canvas></div></div>
+            <div class="card card-sm"><div class="ctit" style="margin-bottom:8px">Agent Avg Score</div><div class="cwrap sm"><canvas id="cCSAT-pv-bar"></canvas></div></div>
+          </div>
+          <div class="tw"><table class="csat-tbl"><thead><tr>
+            <th>Rank</th><th>Agent</th><th>Responses</th><th>Scores</th><th>5</th><th>4</th><th>Low</th><th>Positive %</th><th>Avg</th><th>Award</th>
+          </tr></thead><tbody id="csat-pv-tbody"></tbody></table></div>
+        </div>
+        <div class="csat-week" id="csat-cv">
+          <div class="csat-krow">
+            <div class="csat-k"><div class="csat-kv" id="cv-avg">—</div><div class="csat-kl">Avg Score (/5)</div></div>
+            <div class="csat-k"><div class="csat-kv" id="cv-pos">—</div><div class="csat-kl">Positive Rate (4+5)</div></div>
+            <div class="csat-k"><div class="csat-kv" id="cv-tot">—</div><div class="csat-kl">Total Responses</div></div>
+            <div class="csat-k"><div class="csat-kv" id="cv-nag">—</div><div class="csat-kl">Agents Rated</div></div>
+          </div>
+          <div class="g2 mb18">
+            <div class="card card-sm"><div class="ctit" style="margin-bottom:8px">Rating Mix</div><div class="cwrap xs"><canvas id="cCSAT-cv-donut"></canvas></div></div>
+            <div class="card card-sm"><div class="ctit" style="margin-bottom:8px">Agent Avg Score</div><div class="cwrap sm"><canvas id="cCSAT-cv-bar"></canvas></div></div>
+          </div>
+          <div class="tw"><table class="csat-tbl"><thead><tr>
+            <th>Rank</th><th>Agent</th><th>Responses</th><th>Scores</th><th>5</th><th>4</th><th>Low</th><th>Positive %</th><th>Avg</th><th>Award</th>
+          </tr></thead><tbody id="csat-cv-tbody"></tbody></table></div>
+        </div>
+        <div class="card card-sm" style="margin-top:14px;">
+          <div class="ctit" style="margin-bottom:10px">CSAT Week-over-Week</div>
+          <div class="cwrap sm"><canvas id="cCSATwow"></canvas></div>
+        </div>
+      </div>
+
+      <div class="card mb18" id="frtPercCard">
+        <div class="sttl">P75 &amp; P90 First Response Time by Agent</div>
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;" id="frtPercToggle">
+          <button type="button" class="fbtn fpt-btn act" data-w="both">Both Weeks</button>
+          <button type="button" class="fbtn fpt-btn" data-w="pv" id="fpt-pv">Previous</button>
+          <button type="button" class="fbtn fpt-btn" data-w="cv" id="fpt-cv">Current</button>
+        </div>
+        <div class="cwrap" style="height:340px"><canvas id="cFRTPerc"></canvas></div>
+      </div>
+
+      <div class="card mb18">
+        <div class="sttl">Agent Performance Analysis</div>
+        <div class="tab-bar">
+          <button type="button" class="tab-btn act" data-tab="workload">Workload</button>
+          <button type="button" class="tab-btn" data-tab="frt">First Response</button>
+          <button type="button" class="tab-btn" data-tab="res">Resolution Time</button>
+          <button type="button" class="tab-btn" data-tab="quality">Quality Cards</button>
+          <button type="button" class="tab-btn" data-tab="csat-ag">CSAT by Agent</button>
+        </div>
+        <div class="tab-pane act" id="tab-workload">
+          <div class="g2">
+            <div><div class="ctit" style="margin-bottom:8px">Assigned</div><div class="cwrap tall"><canvas id="cAgWL"></canvas></div></div>
+            <div><div class="ctit" style="margin-bottom:8px">Resolved</div><div class="cwrap tall"><canvas id="cAgRs"></canvas></div></div>
+          </div>
+        </div>
+        <div class="tab-pane" id="tab-frt"><div class="cwrap tall"><canvas id="cAgFRT"></canvas></div></div>
+        <div class="tab-pane" id="tab-res"><div class="cwrap tall"><canvas id="cAgRT"></canvas></div></div>
+        <div class="tab-pane" id="tab-quality"><div id="qGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:9px;"></div></div>
+        <div class="tab-pane" id="tab-csat-ag"><div class="cwrap tall"><canvas id="cAgCSAT"></canvas></div></div>
+      </div>
+
+      <div class="card mb18">
+        <div class="sttl">Agent Performance Table</div>
+        <div class="tc">
+          <div class="srch"><span class="si">⌕</span><input type="text" id="agSearch" placeholder="Search agents…"></div>
+          <div style="display:flex;align-items:center;gap:7px;"><span class="ti" id="tblInfo">—</span><button type="button" class="xb" id="expBtn">Export CSV</button></div>
+        </div>
+        <div class="tw">
+          <table class="dt"><thead><tr>
+            <th data-sort="agent">Agent</th>
+            <th data-sort="pv_assigned">Assigned (prev)</th>
+            <th data-sort="cv_assigned">Assigned (curr)</th>
+            <th data-sort="assigned_diff">Assigned Δ</th>
+            <th data-sort="pv_resolved">Resolved (prev)</th>
+            <th data-sort="cv_resolved">Resolved (curr)</th>
+            <th data-sort="pv_frt_p90">P90 FRT (prev)</th>
+            <th data-sort="cv_frt_p90">P90 FRT (curr)</th>
+            <th data-sort="pv_frt_p75">P75 FRT (prev)</th>
+            <th data-sort="cv_frt_p75">P75 FRT (curr)</th>
+            <th data-sort="pv_res_avg">Avg Res (prev)</th>
+            <th data-sort="cv_res_avg">Avg Res (curr)</th>
+            <th data-sort="pv_csat_avg">CSAT Avg (prev)</th>
+            <th data-sort="cv_csat_avg">CSAT Avg (curr)</th>
+            <th data-sort="pv_csat_total">CSAT Resp (prev)</th>
+            <th data-sort="cv_csat_total">CSAT Resp (curr)</th>
+            <th data-sort="cv_backlog">Backlog</th>
+          </tr></thead><tbody id="agTBody"></tbody></table>
+        </div>
+        <div class="pag" id="agPag"></div>
+      </div>
+
+      <div class="card mb18">
+        <div class="sttl">Executive Insights</div>
+        <div class="ig" id="insGrid"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let RAW = null, D = null, weekStart = null;
+let CH = {};
+let sortK = "cv_assigned", sortD = "desc", agPg = 1;
+const PG = 10;
+
+function tok(n) {
+  return getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+}
+function pal() {
+  return {
+    accent: tok("--color-accent"),
+    accent2: tok("--color-accent-400"),
+    accent3: tok("--color-accent-300"),
+    pass: tok("--pass"),
+    fail: tok("--fail"),
+    review: tok("--review"),
+    muted: tok("--muted"),
+    text: tok("--color-text"),
+    border: tok("--color-divider"),
+    surface: tok("--color-surface"),
+    bg: tok("--color-bg"),
+  };
+}
+function AGC() {
+  const p = pal();
+  return [p.accent, p.pass, p.review, p.fail, p.accent2, p.accent3, p.muted];
+}
+function fS(s) {
+  if (s == null) return "N/A";
+  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sc = Math.floor(s % 60);
+  if (h > 0) return h + "h " + m + "m";
+  if (m > 0) return m + "m " + sc + "s";
+  return sc + "s";
+}
+function fM(s) { return s == null ? "N/A" : Math.round(s / 60) + "m"; }
+function fH(s) { return s == null ? "N/A" : (s / 3600).toFixed(1) + "h"; }
+function fP(v, d) {
+  if (v == null) return "N/A";
+  d = d == null ? 1 : d;
+  return (v >= 0 ? "+" : "") + Number(v).toFixed(d) + "%";
+}
+function dC(id) { if (CH[id]) { CH[id].destroy(); delete CH[id]; } }
+
+function filtersOn() {
+  return ["fWeek","fAgent","fPriority","fCategory","fStatus","fEsc"].some(id => $(id).value);
+}
+
+function filteredRows() {
+  const week = $("fWeek").value, agent = $("fAgent").value, pri = $("fPriority").value;
+  const cat = $("fCategory").value, st = $("fStatus").value, escv = $("fEsc").value;
+  return (RAW.allRows || []).filter(r => {
+    if (week && r.week !== week) return false;
+    if (agent && r.assignee !== agent) return false;
+    if (pri && r.priority !== pri) return false;
+    if (cat && r.category !== cat) return false;
+    if (st && r.status !== st) return false;
+    if (escv === "true" && !r.is_escalated) return false;
+    if (escv === "false" && r.is_escalated) return false;
+    return true;
+  });
+}
+
+function mean(xs) { return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; }
+function pct(c, p) { return p ? Math.round((c - p) / p * 1000) / 10 : null; }
+
+function fromRows(rows) {
+  const curr = rows.filter(r => r.week === "Current Week");
+  const prev = rows.filter(r => r.week === "Previous Week");
+  const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+  function daily(list, key) {
+    const out = [0,0,0,0,0,0,0];
+    for (const r of list) {
+      const i = DAYS.indexOf(r.created_day);
+      if (i >= 0) out[i] += key ? (r[key] ? 1 : 0) : 1;
+    }
+    return out;
+  }
+  function dailyMean(list, field, scale) {
+    const buckets = DAYS.map(() => []);
+    for (const r of list) {
+      const i = DAYS.indexOf(r.created_day);
+      if (i >= 0 && r[field] != null) buckets[i].push(r[field] / scale);
+    }
+    return buckets.map(b => mean(b));
+  }
+  function pack(list) {
+    const n = list.length, esc = list.filter(r => r.is_escalated).length;
+    const frt = list.map(r => r.frt_secs).filter(v => v != null);
+    const res = list.filter(r => r.is_resolved).map(r => r.res_secs).filter(v => v != null);
+    return {
+      total: n, open: list.filter(r => r.is_open).length,
+      resolved: list.filter(r => r.is_resolved).length, esc,
+      esc_rate: n ? Math.round(esc / n * 1000) / 10 : 0,
+      sla: list.filter(r => r.sla_breached).length,
+      frt, res,
+    };
+  }
+  const cv = pack(curr), pv = pack(prev);
+  const STATUS = ["Closed","On customer","Waiting on Engg","Investigating","On you",
+                  "Waiting on CSM","On hold","Waiting on Legal","Waiting on Product"];
+  function statusMap(list) {
+    const m = Object.fromEntries(STATUS.map(s => [s, 0]));
+    for (const r of list) if (m[r.status] != null) m[r.status]++;
+    return m;
+  }
+  function breakdown(key, labels) {
+    const labs = labels || [...new Set(rows.map(r => r[key]))].sort();
+    return { labels: labs, prev: labs.map(l => prev.filter(r => r[key] === l).length),
+             curr: labs.map(l => curr.filter(r => r[key] === l).length) };
+  }
+  const names = [...new Set(rows.map(r => r.assignee))].sort((a, b) =>
+    curr.filter(r => r.assignee === b).length - curr.filter(r => r.assignee === a).length
+    || a.localeCompare(b));
+  const agentTable = names.map(name => {
+    const c = curr.filter(r => r.assignee === name);
+    const p = prev.filter(r => r.assignee === name);
+    const cfrt = c.map(r => r.frt_secs).filter(v => v != null);
+    const pfrt = p.map(r => r.frt_secs).filter(v => v != null);
+    const cres = c.filter(r => r.is_resolved).map(r => r.res_secs).filter(v => v != null);
+    const pres = p.filter(r => r.is_resolved).map(r => r.res_secs).filter(v => v != null);
+    return {
+      agent: name,
+      pv_assigned: p.length, cv_assigned: c.length, assigned_diff: c.length - p.length,
+      pv_resolved: p.filter(r => r.is_resolved).length,
+      cv_resolved: c.filter(r => r.is_resolved).length,
+      pv_frt_avg: mean(pfrt), cv_frt_avg: mean(cfrt),
+      pv_res_avg: mean(pres), cv_res_avg: mean(cres),
+      pv_frt_p75: null, cv_frt_p75: null, pv_frt_p90: null, cv_frt_p90: null,
+      pv_escalations: p.filter(r => r.is_escalated).length,
+      cv_escalations: c.filter(r => r.is_escalated).length,
+      cv_backlog: c.filter(r => r.is_open).length,
+      pv_csat_avg: null, cv_csat_avg: null, pv_csat_total: 0, cv_csat_total: 0,
+    };
+  });
+  function stats(xs) {
+    const s = [...xs].sort((a, b) => a - b);
+    return {
+      avg: mean(s),
+      med: s.length ? s[Math.floor((s.length - 1) / 2)] : null,
+      p90: s.length ? s[Math.floor((s.length - 1) * 0.9)] : null,
+      min: s.length ? s[0] : null, max: s.length ? s[s.length - 1] : null,
+    };
+  }
+  const cfrt = stats(cv.frt), pfrt = stats(pv.frt), cres = stats(cv.res), pres = stats(pv.res);
+  return {
+    ...RAW,
+    metrics: {
+      pv_total: pv.total, cv_total: cv.total, total_diff: cv.total - pv.total, total_pct: pct(cv.total, pv.total),
+      pv_open: pv.open, cv_open: cv.open, open_diff: cv.open - pv.open, open_pct: pct(cv.open, pv.open),
+      pv_resolved: pv.resolved, cv_resolved: cv.resolved,
+      pv_esc: pv.esc, cv_esc: cv.esc, esc_diff: cv.esc - pv.esc, esc_pct: pct(cv.esc, pv.esc),
+      pv_esc_rate: pv.esc_rate, cv_esc_rate: cv.esc_rate,
+      pv_reopen: 0, cv_reopen: 0, pv_reopen_rate: 0, cv_reopen_rate: 0,
+      pv_sla_breaches: pv.sla, cv_sla_breaches: cv.sla,
+      pv_frt_avg: pfrt.avg, cv_frt_avg: cfrt.avg, pv_frt_med: pfrt.med, cv_frt_med: cfrt.med,
+      pv_frt_p90: pfrt.p90, cv_frt_p90: cfrt.p90, pv_frt_max: pfrt.max, cv_frt_max: cfrt.max,
+      frt_pct: pct(cfrt.avg, pfrt.avg),
+      pv_res_avg: pres.avg, cv_res_avg: cres.avg, pv_res_med: pres.med, cv_res_med: cres.med,
+      pv_res_p90: pres.p90, cv_res_p90: cres.p90, pv_res_max: pres.max, cv_res_max: cres.max,
+      res_pct: pct(cres.avg, pres.avg),
+      pv_status: statusMap(prev), cv_status: statusMap(curr),
+    },
+    dailyData: {
+      currDays: DAYS, prevDays: DAYS,
+      cv_created: daily(curr), pv_created: daily(prev),
+      cv_resolved: daily(curr, "is_resolved"), pv_resolved: daily(prev, "is_resolved"),
+      cv_esc: daily(curr, "is_escalated"), pv_esc: daily(prev, "is_escalated"),
+      cv_frt_mins: dailyMean(curr, "frt_secs", 60), pv_frt_mins: dailyMean(prev, "frt_secs", 60),
+      cv_res_hrs: dailyMean(curr.filter(r => r.is_resolved), "res_secs", 3600),
+      pv_res_hrs: dailyMean(prev.filter(r => r.is_resolved), "res_secs", 3600),
+    },
+    priorities: breakdown("priority", ["Urgent","High","Medium","Low","Unknown"]),
+    categories: breakdown("category"),
+    customers: breakdown("account"),
+    escCategories: breakdown("category", [...new Set(rows.filter(r => r.is_escalated).map(r => r.category))]),
+    agents: {
+      names,
+      pv_assigned: names.map(n => prev.filter(r => r.assignee === n).length),
+      cv_assigned: names.map(n => curr.filter(r => r.assignee === n).length),
+      pv_resolved: names.map(n => prev.filter(r => r.assignee === n && r.is_resolved).length),
+      cv_resolved: names.map(n => curr.filter(r => r.assignee === n && r.is_resolved).length),
+      pv_frt: names.map(n => { const xs = prev.filter(r => r.assignee === n).map(r => r.frt_secs).filter(v => v != null); return xs.length ? mean(xs) / 60 : null; }),
+      cv_frt: names.map(n => { const xs = curr.filter(r => r.assignee === n).map(r => r.frt_secs).filter(v => v != null); return xs.length ? mean(xs) / 60 : null; }),
+      pv_res: names.map(n => { const xs = prev.filter(r => r.assignee === n && r.is_resolved).map(r => r.res_secs).filter(v => v != null); return xs.length ? mean(xs) / 3600 : null; }),
+      cv_res: names.map(n => { const xs = curr.filter(r => r.assignee === n && r.is_resolved).map(r => r.res_secs).filter(v => v != null); return xs.length ? mean(xs) / 3600 : null; }),
+    },
+    agentTable,
+    allRows: rows,
+  };
+}
+
+function view() { return filtersOn() ? fromRows(filteredRows()) : RAW; }
+
+function initKPIs() {
+  const m = D.metrics, pv = D.csatPrev, cv = D.csatCurr;
+  const pl = D.prevWeekLabel, cl = D.currWeekLabel;
+  $("k-vol").textContent = m.cv_total;
+  $("k-vol-p").textContent = m.pv_total;
+  const vb = $("k-vol-b");
+  vb.textContent = (m.total_diff >= 0 ? "+" : "") + m.total_diff + " (" + fP(m.total_pct) + ")";
+  vb.className = "bdg " + (m.total_diff > 0 ? "wu" : "up");
+  $("k-vol-i").textContent = "WoW change: " + fP(m.total_pct) + ". " + m.cv_total + " tickets in " + cl + " vs " + m.pv_total + " in " + pl + ".";
+  $("k-csat").textContent = cv.avg != null ? cv.avg.toFixed(2) + " / 5" : "—";
+  $("k-csat-m").innerHTML = '<span class="kpi-prev">Prev: <b>' + (pv.avg != null ? pv.avg.toFixed(2) + "/5" : "—") + "</b></span>";
+  $("k-csat-i").textContent = D.coverage && D.coverage.csat === false
+    ? "CSAT is not in the QC store."
+    : (pl + ": " + pv.total + " responses. " + cl + ": " + cv.total + " responses.");
+  $("k-frt").textContent = fM(m.cv_frt_avg);
+  $("k-frt-p").textContent = fM(m.pv_frt_avg);
+  const fb = $("k-frt-b");
+  fb.textContent = fP(m.frt_pct);
+  fb.className = "bdg " + ((m.frt_pct == null || m.frt_pct <= 0) ? "up" : "wu");
+  $("k-frt-i").textContent = "FRT change: " + fP(m.frt_pct) + ".";
+  $("k-res").textContent = fH(m.cv_res_avg);
+  $("k-res-p").textContent = fH(m.pv_res_avg);
+  const rb = $("k-res-b");
+  rb.textContent = fP(m.res_pct);
+  rb.className = "bdg " + ((m.res_pct == null || m.res_pct <= 0) ? "up" : "wu");
+  $("k-res-i").textContent = "Res time change: " + fP(m.res_pct) + ".";
+  $("k-bl").textContent = m.cv_open;
+  $("k-bl-p").textContent = m.pv_open;
+  const bb = $("k-bl-b");
+  bb.textContent = (m.open_diff >= 0 ? "+" : "") + m.open_diff + " (" + fP(m.open_pct) + ")";
+  bb.className = "bdg " + (m.open_diff > 0 ? "wu" : "up");
+  $("k-bl-i").textContent = "Open: " + m.pv_open + " → " + m.cv_open + ".";
+  $("k-esc").textContent = m.cv_esc;
+  $("k-esc-p").textContent = m.pv_esc;
+  const eb = $("k-esc-b");
+  eb.textContent = (m.esc_diff >= 0 ? "+" : "") + m.esc_diff + " (" + fP(m.esc_pct) + ")";
+  eb.className = "bdg " + (m.esc_diff <= 0 ? "up" : "wu");
+  $("k-esc-i").textContent = "Rate: " + Number(m.cv_esc_rate || 0).toFixed(1) + "% vs prev " + Number(m.pv_esc_rate || 0).toFixed(1) + "%.";
+  $("s-fa").textContent = fM(m.cv_frt_avg); $("s-fa-p").textContent = "Prev: " + fM(m.pv_frt_avg);
+  $("s-fm").textContent = fM(m.cv_frt_med); $("s-fm-p").textContent = "Prev: " + fM(m.pv_frt_med);
+  $("s-fp").textContent = fM(m.cv_frt_p90); $("s-fp-p").textContent = "Prev: " + fM(m.pv_frt_p90);
+  $("s-fmax").textContent = fS(m.cv_frt_max); $("s-fmax-p").textContent = "Prev: " + fS(m.pv_frt_max);
+  $("s-ra").textContent = fH(m.cv_res_avg); $("s-ra-p").textContent = "Prev: " + fH(m.pv_res_avg);
+  $("s-rm").textContent = fH(m.cv_res_med); $("s-rm-p").textContent = "Prev: " + fH(m.pv_res_med);
+  $("s-rp").textContent = fH(m.cv_res_p90); $("s-rp-p").textContent = "Prev: " + fH(m.pv_res_p90);
+  $("s-rmax").textContent = fH(m.cv_res_max); $("s-rmax-p").textContent = "Prev: " + fH(m.pv_res_max);
+  $("s-et").textContent = m.cv_esc + " / " + m.pv_esc;
+  $("s-ed").textContent = (m.esc_diff >= 0 ? "+" : "") + m.esc_diff;
+  $("s-er").textContent = Number(m.cv_esc_rate || 0).toFixed(1) + "%";
+  $("s-erp").textContent = "Prev: " + Number(m.pv_esc_rate || 0).toFixed(1) + "%";
+  $("s-ew").textContent = fP(m.esc_pct);
+  $("b-po").textContent = m.pv_open; $("b-co").textContent = m.cv_open;
+  $("b-pr").textContent = m.pv_resolved; $("b-cr").textContent = m.cv_resolved;
+  $("b-pe").textContent = m.pv_esc; $("b-ce").textContent = m.cv_esc;
+  $("b-prr").textContent = Number(m.pv_reopen_rate || 0).toFixed(1) + "%";
+  $("b-crr").textContent = Number(m.cv_reopen_rate || 0).toFixed(1) + "%";
+  $("b-prev-lbl").textContent = pl;
+  $("b-curr-lbl").textContent = cl;
+}
+
+function chartBase() {
+  const p = pal();
+  return {
+    responsive: true, maintainAspectRatio: true,
+    plugins: { legend: { labels: { color: p.muted, font: { size: 10 }, boxWidth: 10 } } },
+    scales: {
+      x: { ticks: { color: p.muted, font: { size: 9 } }, grid: { color: p.border } },
+      y: { ticks: { color: p.muted, font: { size: 9 } }, grid: { color: p.border }, beginAtZero: true },
+    },
+  };
+}
+
+function initCharts() {
+  if (typeof Chart === "undefined") return;
+  const p = pal(), agc = AGC(), base = chartBase();
+  const dd = D.dailyData, pl = D.prevWeekLabel, cl = D.currWeekLabel;
+  dC("cTrend");
+  CH.cTrend = new Chart($("cTrend"), { type: "line", data: { labels: dd.currDays, datasets: [
+    { label: cl, data: dd.cv_created, borderColor: p.accent2, backgroundColor: p.accent2, tension: .35, pointRadius: 4 },
+    { label: pl, data: dd.pv_created, borderColor: p.muted, tension: .35, pointRadius: 3, borderDash: [5, 3] },
+  ] }, options: base });
+  dC("cDaily");
+  CH.cDaily = new Chart($("cDaily"), { type: "bar", data: { labels: dd.currDays, datasets: [
+    { label: "Curr Created", data: dd.cv_created, backgroundColor: p.accent, borderRadius: 4 },
+    { label: "Curr Resolved", data: dd.cv_resolved, backgroundColor: p.pass, borderRadius: 4 },
+    { label: "Prev Created", data: dd.pv_created, backgroundColor: p.muted, borderRadius: 4 },
+  ] }, options: base });
+  dC("cFRT");
+  CH.cFRT = new Chart($("cFRT"), { type: "line", data: { labels: dd.currDays, datasets: [
+    { label: "Curr FRT (min)", data: dd.cv_frt_mins, borderColor: p.pass, tension: .35, pointRadius: 4 },
+    { label: "Prev FRT (min)", data: dd.pv_frt_mins, borderColor: p.muted, borderDash: [5, 3], tension: .35, pointRadius: 3 },
+  ] }, options: base });
+  dC("cPri");
+  CH.cPri = new Chart($("cPri"), { type: "bar", data: { labels: D.priorities.labels, datasets: [
+    { label: "Prev", data: D.priorities.prev, backgroundColor: p.muted, borderRadius: 4 },
+    { label: "Curr", data: D.priorities.curr, backgroundColor: [p.fail, p.review, p.accent, p.pass, p.muted], borderRadius: 4 },
+  ] }, options: base });
+  dC("cEsc");
+  CH.cEsc = new Chart($("cEsc"), { type: "bar", data: { labels: dd.currDays, datasets: [
+    { label: "Curr Esc", data: dd.cv_esc, backgroundColor: p.fail, borderRadius: 4 },
+    { label: "Prev Esc", data: dd.pv_esc, backgroundColor: p.muted, borderRadius: 4 },
+  ] }, options: base });
+  dC("cRes");
+  CH.cRes = new Chart($("cRes"), { type: "line", data: { labels: dd.currDays, datasets: [
+    { label: "Curr Res (hrs)", data: dd.cv_res_hrs, borderColor: p.accent2, tension: .35, pointRadius: 4 },
+    { label: "Prev Res (hrs)", data: dd.pv_res_hrs, borderColor: p.muted, borderDash: [5, 3], tension: .35, pointRadius: 3 },
+  ] }, options: base });
+  const clip = (l, n) => l.length > n ? l.substr(0, n - 2) + "…" : l;
+  dC("cCat");
+  CH.cCat = new Chart($("cCat"), { type: "bar", data: { labels: D.categories.labels.map(l => clip(l, 30)), datasets: [
+    { label: "Prev", data: D.categories.prev, backgroundColor: p.muted, borderRadius: 4 },
+    { label: "Curr", data: D.categories.curr, backgroundColor: p.accent, borderRadius: 4 },
+  ] }, options: { ...base, indexAxis: "y" } });
+  dC("cCust");
+  CH.cCust = new Chart($("cCust"), { type: "bar", data: { labels: D.customers.labels.map(l => clip(l, 22)), datasets: [
+    { label: "Prev", data: D.customers.prev, backgroundColor: p.muted, borderRadius: 4 },
+    { label: "Curr", data: D.customers.curr, backgroundColor: p.accent2, borderRadius: 4 },
+  ] }, options: { ...base, indexAxis: "y" } });
+  dC("cEscCat");
+  CH.cEscCat = new Chart($("cEscCat"), { type: "bar", data: { labels: D.escCategories.labels.map(l => clip(l, 28)), datasets: [
+    { label: "Prev", data: D.escCategories.prev, backgroundColor: p.muted, borderRadius: 4 },
+    { label: "Curr", data: D.escCategories.curr, backgroundColor: p.fail, borderRadius: 4 },
+  ] }, options: base });
+  const allSt = ["Closed","On customer","Waiting on Engg","Investigating","On you","Waiting on CSM","On hold","Waiting on Legal","Waiting on Product"];
+  dC("cStatus");
+  CH.cStatus = new Chart($("cStatus"), { type: "bar", data: { labels: allSt.map(s => clip(s, 14)), datasets: [
+    { label: "Prev", data: allSt.map(s => (D.metrics.pv_status[s] || 0)), backgroundColor: p.muted, borderRadius: 4 },
+    { label: "Curr", data: allSt.map(s => (D.metrics.cv_status[s] || 0)), backgroundColor: p.accent, borderRadius: 4 },
+  ] }, options: base });
+
+  function makeCsatDonut(id, data) {
+    dC(id);
+    CH[id] = new Chart($(id), { type: "doughnut", data: { labels: ["5","4","Low"], datasets: [{
+      data: [data.star5, data.star4, data.low], backgroundColor: [p.pass, p.accent, p.fail],
+    }] }, options: { responsive: true, cutout: "62%", plugins: { legend: { labels: { color: p.muted, font: { size: 9 } } } } } });
+  }
+  makeCsatDonut("cCSAT-pv-donut", D.csatPrev);
+  makeCsatDonut("cCSAT-cv-donut", D.csatCurr);
+  function makeCsatBar(id, agents) {
+    dC(id);
+    CH[id] = new Chart($(id), { type: "bar", data: { labels: agents.map(a => clip(a.name, 14)), datasets: [{
+      label: "Avg Score", data: agents.map(a => a.avg),
+      backgroundColor: agents.map(a => a.avg >= 4.5 ? p.pass : a.avg >= 4 ? p.accent : p.fail), borderRadius: 4,
+    }] }, options: { ...base, scales: { ...base.scales, y: { ...base.scales.y, min: 0, max: 5.5 } } } });
+  }
+  makeCsatBar("cCSAT-pv-bar", D.csatPrev.agents || []);
+  makeCsatBar("cCSAT-cv-bar", D.csatCurr.agents || []);
+  const wowAg = [...new Set([...(D.csatPrev.agents || []).map(a => a.name), ...(D.csatCurr.agents || []).map(a => a.name)])];
+  const pvM = {}, cvM = {};
+  (D.csatPrev.agents || []).forEach(a => pvM[a.name] = a.avg);
+  (D.csatCurr.agents || []).forEach(a => cvM[a.name] = a.avg);
+  dC("cCSATwow");
+  CH.cCSATwow = new Chart($("cCSATwow"), { type: "bar", data: { labels: wowAg.map(n => clip(n, 14)), datasets: [
+    { label: pl, data: wowAg.map(n => pvM[n] || null), backgroundColor: p.muted, borderRadius: 4 },
+    { label: cl, data: wowAg.map(n => cvM[n] || null), backgroundColor: p.review, borderRadius: 4 },
+  ] }, options: { ...base, scales: { ...base.scales, y: { ...base.scales.y, min: 0, max: 5.5 } } } });
+
+  const agt = D.agents;
+  dC("cAgWL");
+  CH.cAgWL = new Chart($("cAgWL"), { type: "bar", data: { labels: agt.names, datasets: [
+    { label: pl, data: agt.pv_assigned, backgroundColor: p.muted, borderRadius: 4 },
+    { label: cl, data: agt.cv_assigned, backgroundColor: agt.names.map((_, i) => agc[i % agc.length]), borderRadius: 4 },
+  ] }, options: base });
+  dC("cAgRs");
+  CH.cAgRs = new Chart($("cAgRs"), { type: "bar", data: { labels: agt.names, datasets: [
+    { label: pl, data: agt.pv_resolved, backgroundColor: p.muted, borderRadius: 4 },
+    { label: cl, data: agt.cv_resolved, backgroundColor: p.pass, borderRadius: 4 },
+  ] }, options: base });
+  dC("cAgFRT");
+  CH.cAgFRT = new Chart($("cAgFRT"), { type: "bar", data: { labels: agt.names, datasets: [
+    { label: "FRT " + pl + " (min)", data: agt.pv_frt, backgroundColor: p.muted, borderRadius: 4 },
+    { label: "FRT " + cl + " (min)", data: agt.cv_frt, backgroundColor: p.pass, borderRadius: 4 },
+  ] }, options: base });
+  dC("cAgRT");
+  CH.cAgRT = new Chart($("cAgRT"), { type: "bar", data: { labels: agt.names, datasets: [
+    { label: "Res " + pl + " (hrs)", data: agt.pv_res, backgroundColor: p.muted, borderRadius: 4 },
+    { label: "Res " + cl + " (hrs)", data: agt.cv_res, backgroundColor: p.accent2, borderRadius: 4 },
+  ] }, options: base });
+  const csatAll = wowAg;
+  dC("cAgCSAT");
+  CH.cAgCSAT = new Chart($("cAgCSAT"), { type: "bar", data: { labels: csatAll.map(n => clip(n, 13)), datasets: [
+    { label: pl + " CSAT", data: csatAll.map(n => pvM[n] || null), backgroundColor: p.muted, borderRadius: 4 },
+    { label: cl + " CSAT", data: csatAll.map(n => cvM[n] || null), backgroundColor: p.review, borderRadius: 4 },
+  ] }, options: { ...base, scales: { ...base.scales, y: { ...base.scales.y, min: 0, max: 5.5 } } } });
+}
+
+function initFRTPercChart(weekFilter) {
+  if (typeof Chart === "undefined") return;
+  weekFilter = weekFilter || "both";
+  const p = pal();
+  const agents = D.agentTable.filter(a => a.pv_frt_p75 != null || a.cv_frt_p75 != null || a.pv_frt_p90 != null || a.cv_frt_p90 != null);
+  agents.sort((a, b) => (a.pv_frt_p90 || 999999) - (b.pv_frt_p90 || 999999));
+  const labels = agents.map(a => a.agent.length > 14 ? a.agent.substr(0, 12) + "…" : a.agent);
+  const toMin = v => v != null ? Math.round(v / 60 * 10) / 10 : null;
+  const datasets = [];
+  if (weekFilter === "both" || weekFilter === "pv") {
+    datasets.push({ label: "P75 FRT – " + D.prevWeekLabel, data: agents.map(a => toMin(a.pv_frt_p75)), backgroundColor: p.accent, borderRadius: 4 });
+    datasets.push({ label: "P90 FRT – " + D.prevWeekLabel, data: agents.map(a => toMin(a.pv_frt_p90)), backgroundColor: p.fail, borderRadius: 4 });
+  }
+  if (weekFilter === "both" || weekFilter === "cv") {
+    datasets.push({ label: "P75 FRT – " + D.currWeekLabel, data: agents.map(a => toMin(a.cv_frt_p75)), backgroundColor: p.accent2, borderRadius: 4 });
+    datasets.push({ label: "P90 FRT – " + D.currWeekLabel, data: agents.map(a => toMin(a.cv_frt_p90)), backgroundColor: p.review, borderRadius: 4 });
+  }
+  dC("cFRTPerc");
+  CH.cFRTPerc = new Chart($("cFRTPerc"), {
+    type: "bar", data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: p.muted, font: { size: 11 } } } },
+      scales: {
+        x: { ticks: { color: p.muted, font: { size: 10 }, maxRotation: 35 }, grid: { color: p.border } },
+        y: { type: "logarithmic", ticks: { color: p.muted, font: { size: 10 } }, grid: { color: p.border },
+             title: { display: true, text: "First Response Time (minutes, log scale)", color: p.muted } },
+      },
+    },
+  });
+}
+
+function awCls(aw) {
+  return { Champion: "aw-champ", "Top Performer": "aw-top", Good: "aw-good",
+           "Needs Improvement": "aw-need", "Needs Attention": "aw-att" }[aw] || "aw-good";
+}
+
+function renderCSAT() {
+  const pv = D.csatPrev, cv = D.csatCurr;
+  $("pv-avg").textContent = pv.avg != null ? pv.avg.toFixed(2) + " / 5" : "—";
+  $("pv-pos").textContent = pv.positivePct != null ? pv.positivePct + "%" : "—";
+  $("pv-tot").textContent = pv.total;
+  $("pv-nag").textContent = (pv.agents || []).length;
+  $("cv-avg").textContent = cv.avg != null ? cv.avg.toFixed(2) + " / 5" : "—";
+  $("cv-pos").textContent = cv.positivePct != null ? cv.positivePct + "%" : "—";
+  $("cv-tot").textContent = cv.total;
+  $("cv-nag").textContent = (cv.agents || []).length;
+  const ranks = ["1", "2", "3"];
+  function renderCsatTbl(id, agents) {
+    if (!agents.length) {
+      $(id).innerHTML = '<tr><td colspan="10" class="empty">No CSAT responses in the QC store.</td></tr>';
+      return;
+    }
+    $(id).innerHTML = agents.map((a, i) =>
+      `<tr><td>${ranks[i] || (i + 1)}</td><td>${QC.esc(a.name)}</td><td>${a.total}</td>
+       <td>[${(a.scores || []).join(", ")}]</td><td>${a.star5}</td><td>${a.star4}</td>
+       <td>${a.low}</td><td>${a.positivePct}%</td><td>${a.avg != null ? a.avg.toFixed(2) : "—"}</td>
+       <td><span class="${awCls(a.award)}">${QC.esc(a.award || "")}</span></td></tr>`
+    ).join("");
+  }
+  renderCsatTbl("csat-pv-tbody", pv.agents || []);
+  renderCsatTbl("csat-cv-tbody", cv.agents || []);
+}
+
+function renderQuality() {
+  const pvCsat = {}, cvCsat = {};
+  (D.csatPrev.agents || []).forEach(a => pvCsat[a.name] = a);
+  (D.csatCurr.agents || []).forEach(a => cvCsat[a.name] = a);
+  $("qGrid").innerHTML = (D.agentTable || []).map(a => {
+    const ini = a.agent.split(" ").map(w => w[0]).join("").toUpperCase().substr(0, 2);
+    const pca = pvCsat[a.agent], cca = cvCsat[a.agent];
+    return `<div class="card card-sm"><div class="agn"><div class="av">${QC.esc(ini)}</div>${QC.esc(a.agent)}</div>
+      <div class="str" style="grid-template-columns:1fr 1fr;margin-top:8px">
+        <div class="st"><div class="st-l">Backlog</div><div class="st-v">${a.cv_backlog}</div></div>
+        <div class="st"><div class="st-l">Escalations</div><div class="st-v">${(a.pv_escalations || 0) + (a.cv_escalations || 0)}</div></div>
+        <div class="st"><div class="st-l">CSAT prev</div><div class="st-v">${pca ? pca.avg.toFixed(2) : "—"}</div></div>
+        <div class="st"><div class="st-l">CSAT curr</div><div class="st-v">${cca ? cca.avg.toFixed(2) : "—"}</div></div>
+      </div></div>`;
+  }).join("") || '<div class="empty">No agents in this filter.</div>';
+}
+
+function renderAgentTable() {
+  const q = ($("agSearch").value || "").toLowerCase();
+  let d = [...D.agentTable].filter(a => !q || a.agent.toLowerCase().includes(q));
+  d.sort((a, b) => {
+    let av = a[sortK] ?? -Infinity, bv = b[sortK] ?? -Infinity;
+    if (typeof av === "string") return sortD === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+    return sortD === "asc" ? av - bv : bv - av;
+  });
+  const tot = d.length, pages = Math.ceil(tot / PG);
+  if (agPg > pages) agPg = 1;
+  const s = (agPg - 1) * PG;
+  const pd = d.slice(s, s + PG);
+  $("tblInfo").textContent = tot ? `${Math.min(s + 1, tot)}–${Math.min(s + PG, tot)} of ${tot}` : "0 of 0";
+  if (!pd.length) {
+    $("agTBody").innerHTML = `<tr><td colspan="17" class="empty">No agent rows for this filter.</td></tr>`;
+    $("agPag").innerHTML = "";
+    return;
+  }
+  function dc(v, rev) {
+    if (v == null) return `<td class="dnu">—</td>`;
+    const pos = v > 0;
+    const cls = (pos && !rev) || (!pos && rev) ? "dp" : (!pos && !rev) || (pos && rev) ? "dn2" : "dnu";
+    return `<td class="${cls}">${v > 0 ? "+" : ""}${Number.isInteger(v) ? v : Number(v).toFixed(1)}</td>`;
+  }
+  $("agTBody").innerHTML = pd.map(a => {
+    const ini = a.agent.split(" ").map(w => w[0]).join("").toUpperCase().substr(0, 2);
+    const pvca = a.pv_csat_avg, cvca = a.cv_csat_avg;
+    return `<tr><td><div class="agn"><div class="av">${QC.esc(ini)}</div>${QC.esc(a.agent)}</div></td>
+      <td>${a.pv_assigned}</td><td><b>${a.cv_assigned}</b></td>${dc(a.assigned_diff)}
+      <td>${a.pv_resolved}</td><td><b>${a.cv_resolved}</b></td>
+      <td>${fM(a.pv_frt_p90)}</td><td><b>${fM(a.cv_frt_p90)}</b></td>
+      <td>${fM(a.pv_frt_p75)}</td><td><b>${fM(a.cv_frt_p75)}</b></td>
+      <td>${fH(a.pv_res_avg)}</td><td><b>${fH(a.cv_res_avg)}</b></td>
+      <td>${pvca != null ? pvca.toFixed(2) : "—"}</td>
+      <td>${cvca != null ? cvca.toFixed(2) : "—"}</td>
+      <td>${a.pv_csat_total != null ? a.pv_csat_total : "—"}</td>
+      <td>${a.cv_csat_total != null ? a.cv_csat_total : "—"}</td>
+      <td><b>${a.cv_backlog}</b></td></tr>`;
+  }).join("");
+  const pag = $("agPag");
+  if (pages <= 1) { pag.innerHTML = ""; return; }
+  let ph = `<button type="button" class="pgb" data-p="${agPg - 1}" ${agPg === 1 ? "disabled" : ""}>‹</button>`;
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || (i >= agPg - 1 && i <= agPg + 1)) {
+      ph += `<button type="button" class="pgb${i === agPg ? " act" : ""}" data-p="${i}">${i}</button>`;
+    } else if (i === agPg - 2 || i === agPg + 2) {
+      ph += `<span class="dnu">…</span>`;
+    }
+  }
+  ph += `<button type="button" class="pgb" data-p="${agPg + 1}" ${agPg === pages ? "disabled" : ""}>›</button>`;
+  pag.innerHTML = ph;
+}
+
+function renderInsights() {
+  const items = D.insights || [];
+  if (!items.length) {
+    $("insGrid").innerHTML = `<div class="empty">No derived insights for this week yet.</div>`;
+    return;
+  }
+  $("insGrid").innerHTML = items.map(it => {
+    const kind = it.kind === "pos" ? "ipos" : it.kind === "warn" ? "iwrn" : it.kind === "neg" ? "ineg" : "iinf";
+    return `<div class="ic"><div class="ico2">${QC.esc(it.icon || "•")}</div><div>
+      <div class="ittl">${QC.esc(it.title)}</div>
+      <div class="itxt">${QC.esc(it.body)}</div>
+      <span class="ibdg ${kind}">${QC.esc(it.label || "")}</span>
+    </div></div>`;
+  }).join("");
+}
+
+function populateFilters() {
+  const asel = $("fAgent");
+  [...asel.querySelectorAll("option")].slice(1).forEach(o => o.remove());
+  (RAW.agents.names || []).forEach(n => {
+    const o = document.createElement("option"); o.value = n; o.textContent = n; asel.appendChild(o);
+  });
+  const csel = $("fCategory");
+  [...csel.querySelectorAll("option")].slice(1).forEach(o => o.remove());
+  [...new Set((RAW.allRows || []).map(r => r.category))].sort().forEach(c => {
+    const o = document.createElement("option");
+    o.value = c; o.textContent = c.length > 38 ? c.substr(0, 36) + "…" : c;
+    csel.appendChild(o);
+  });
+  $("fWeek").options[1].textContent = RAW.prevWeekLabel;
+  $("fWeek").options[2].textContent = RAW.currWeekLabel;
+}
+
+function paint() {
+  D = view();
+  $("week-title").textContent = D.currWeekLabel || "This week";
+  $("week-compare").textContent = D.prevWeekLabel ? "vs " + D.prevWeekLabel : "";
+  $("genAt").textContent = D.generatedAt ? "Updated: " + D.generatedAt : "";
+  $("csat-tab-pv").textContent = D.prevWeekLabel;
+  $("csat-tab-cv").textContent = D.currWeekLabel;
+  $("fpt-pv").textContent = D.prevWeekLabel;
+  $("fpt-cv").textContent = D.currWeekLabel;
+  initKPIs();
+  initCharts();
+  initFRTPercChart(document.querySelector(".fpt-btn.act")?.dataset.w || "both");
+  renderCSAT();
+  renderQuality();
+  renderAgentTable();
+  renderInsights();
+}
+
+function exportCsv() {
+  const hdr = ["Agent","Assigned prev","Assigned curr","Δ","Resolved prev","Resolved curr",
+    "P90 FRT prev","P90 FRT curr","P75 FRT prev","P75 FRT curr","Avg Res prev","Avg Res curr",
+    "CSAT Avg prev","CSAT Avg curr","CSAT Resp prev","CSAT Resp curr","Backlog"];
+  const rows = D.agentTable.map(a => [a.agent, a.pv_assigned, a.cv_assigned, a.assigned_diff,
+    a.pv_resolved, a.cv_resolved, fM(a.pv_frt_p90), fM(a.cv_frt_p90), fM(a.pv_frt_p75), fM(a.cv_frt_p75),
+    fH(a.pv_res_avg), fH(a.cv_res_avg), a.pv_csat_avg?.toFixed(2) ?? "N/A", a.cv_csat_avg?.toFixed(2) ?? "N/A",
+    a.pv_csat_total ?? "N/A", a.cv_csat_total ?? "N/A", a.cv_backlog]);
+  const csv = [hdr, ...rows].map(r => r.map(v => `"${v}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `weekly-agents-${weekStart || "current"}.csv`;
+  a.click();
+}
+
+function shiftWeek(days) {
+  if (!weekStart) return;
+  const [y, m, d] = weekStart.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + days);
+  load(dt.toISOString().slice(0, 10));
+}
+
+async function load(week) {
+  // KPI tiles keep their ids (initKPIs writes into them). The table and
+  // insight grid take the period-change shimmer.
+  $("insGrid").innerHTML = QC.skeleton.kpis(6);
+  $("agTBody").innerHTML = QC.skeleton.tableRows(17, 6);
+  try {
+    const q = week ? `?week=${encodeURIComponent(week)}` : "";
+    RAW = await QC.api("/api/weekly" + q);
+    weekStart = RAW.week_start;
+    const url = new URL(location);
+    if (weekStart) url.searchParams.set("week", weekStart);
+    history.replaceState(null, "", url);
+    populateFilters();
+    paint();
+  } catch (e) {
+    $("kpis").innerHTML = "";
+    $("agTBody").innerHTML = `<tr><td colspan="17" class="empty">${QC.esc(e.message)}</td></tr>`;
+  }
+}
+
+["fWeek","fAgent","fPriority","fCategory","fStatus","fEsc"].forEach(id => {
+  $(id).addEventListener("change", paint);
+});
+$("clearFilters").addEventListener("click", () => {
+  ["fWeek","fAgent","fPriority","fCategory","fStatus","fEsc"].forEach(id => { $(id).value = ""; });
+  paint();
+});
+$("prev-week").addEventListener("click", () => shiftWeek(-7));
+$("next-week").addEventListener("click", () => shiftWeek(7));
+$("agSearch").addEventListener("input", renderAgentTable);
+$("expBtn").addEventListener("click", exportCsv);
+$("agPag").addEventListener("click", e => {
+  const b = e.target.closest(".pgb");
+  if (b && !b.disabled) { agPg = parseInt(b.dataset.p, 10); renderAgentTable(); }
+});
+document.querySelectorAll(".dt th[data-sort]").forEach(th => {
+  th.addEventListener("click", function () {
+    const k = this.dataset.sort;
+    if (sortK === k) sortD = sortD === "asc" ? "desc" : "asc";
+    else { sortK = k; sortD = "desc"; }
+    renderAgentTable();
+  });
+});
+document.querySelectorAll(".csat-tab").forEach(t => {
+  t.addEventListener("click", function () {
+    document.querySelectorAll(".csat-tab").forEach(x => x.classList.remove("act"));
+    document.querySelectorAll(".csat-week").forEach(x => x.classList.remove("act"));
+    this.classList.add("act");
+    $("csat-" + this.dataset.csatTab).classList.add("act");
+  });
+});
+document.querySelectorAll(".tab-btn").forEach(b => {
+  b.addEventListener("click", function () {
+    document.querySelectorAll(".tab-btn").forEach(x => x.classList.remove("act"));
+    document.querySelectorAll(".tab-pane").forEach(x => x.classList.remove("act"));
+    this.classList.add("act");
+    $("tab-" + this.dataset.tab).classList.add("act");
+  });
+});
+document.querySelectorAll(".fpt-btn").forEach(b => {
+  b.addEventListener("click", function () {
+    document.querySelectorAll(".fpt-btn").forEach(x => x.classList.remove("act"));
+    this.classList.add("act");
+    initFRTPercChart(this.dataset.w);
+  });
+});
+
+QC.ready.then(() => {
+  const week = new URLSearchParams(location.search).get("week");
+  load(week);
+});
+</script>
+</body>
+</html>

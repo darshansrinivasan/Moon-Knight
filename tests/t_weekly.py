@@ -1,0 +1,225 @@
+"""Support weekly dashboard: the D contract computed from the ticket store.
+
+Pinned because a wrong week boundary, a deleted ticket leaking into volume, or
+an insight that still names last week's top category would silently mislead
+the ops review that this tab is for.
+"""
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import db
+import rules as qc_rules
+import weekly
+
+db.init_db()
+qc_rules.invalidate()
+
+TZ = ZoneInfo("Asia/Kolkata")
+NOW = datetime(2026, 8, 19, 15, 0, tzinfo=TZ)  # Wednesday → current week Mon 17
+CURR = "2026-08-17"
+PREV_MON = "2026-08-10"
+
+fails = []
+_num = [8000]
+
+
+def check(name, got, want):
+    ok = got == want
+    print(f"  {'OK ' if ok else 'FAIL'} {name}: got {got!r}, want {want!r}")
+    if not ok:
+        fails.append(name)
+
+
+def add(tid, *, created, state="investigating", updated=None, assignee="Ann",
+        priority="High", account="Acme", category="Salesforce (SFDC)",
+        cat_slug="salesforce_sfdc", extra_cf=None, messages=(),
+        deleted=None, link=None):
+    _num[0] += 1
+    cf = {
+        "request_category": {
+            "value": cat_slug,
+            "interpreted_value": category,
+        }
+    }
+    if extra_cf:
+        cf.update(extra_cf)
+    acc_id = "acc-" + account.replace(" ", "-").lower()
+    with db.get_conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO accounts (id, name, fetched_at) VALUES (?,?,?)",
+            (acc_id, account, created),
+        )
+        c.execute(
+            "INSERT OR REPLACE INTO tickets "
+            "(id,number,fetch_date,title,link,state,priority,assignee_name,"
+            "account_id,custom_fields,created_at,updated_at,deleted_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (tid, _num[0], created[:10], f"Ticket {tid}",
+             link or f"https://app.usepylon.com/issues?issueNumber={_num[0]}",
+             state, priority, assignee, acc_id, json.dumps(cf),
+             created, updated or created, deleted),
+        )
+        for i, m in enumerate(messages):
+            c.execute(
+                "INSERT INTO messages (id,ticket_id,message_html,timestamp,"
+                "author_name,is_customer,is_private) VALUES (?,?,?,?,?,?,?)",
+                (f"{tid}-m{i}", tid, m.get("html", "<p>hi</p>"), m["at"],
+                 "Cust" if m.get("customer") else "Ann",
+                 1 if m.get("customer") else 0,
+                 1 if m.get("private") else 0),
+            )
+
+
+def reply_pair(created, hours, *, customer_first=True):
+    from datetime import timedelta
+    start = datetime.fromisoformat(created)
+    first = {
+        "at": created,
+        "customer": customer_first,
+        "html": "<p>please help</p>",
+    }
+    second = {
+        "at": (start + timedelta(hours=hours)).isoformat(),
+        "customer": not customer_first,
+        "html": "<p>looking into this</p>",
+    }
+    return [first, second]
+
+
+add("c1", created="2026-08-18T04:00:00+00:00", state="investigating",
+    messages=reply_pair("2026-08-18T04:00:00+00:00", 2))
+add("c2", created="2026-08-19T04:00:00+00:00", state="waiting_on_engg",
+    category="Integrations", cat_slug="integrations",
+    messages=reply_pair("2026-08-19T04:00:00+00:00", 1))
+add("c3", created="2026-08-20T04:00:00+00:00", state="waiting_on_you",
+    category="Oncall Integration Issues", cat_slug="oncall_integration_issues",
+    account="Beta Co",
+    messages=reply_pair("2026-08-20T04:00:00+00:00", 1))
+add("c4", created="2026-08-21T04:00:00+00:00", state="closed",
+    updated="2026-08-21T10:00:00+00:00",
+    extra_cf={"resolution_category": {"value": "Escalated to Oncall"}},
+    messages=reply_pair("2026-08-21T04:00:00+00:00", 30))
+add("c5", created="2026-08-18T06:00:00+00:00", state="investigating",
+    assignee="Bob", account="Acme",
+    messages=reply_pair("2026-08-18T06:00:00+00:00", 3))
+
+add("p1", created="2026-08-11T04:00:00+00:00", state="closed",
+    updated="2026-08-12T04:00:00+00:00",
+    messages=reply_pair("2026-08-11T04:00:00+00:00", 2))
+add("p2", created="2026-08-12T04:00:00+00:00", state="closed",
+    updated="2026-08-18T08:00:00+00:00",  # resolved in current week (flow)
+    messages=reply_pair("2026-08-12T04:00:00+00:00", 2))
+add("p3", created="2026-08-13T04:00:00+00:00", state="investigating",
+    messages=reply_pair("2026-08-13T04:00:00+00:00", 2))
+
+add("arch", created="2026-08-18T04:00:00+00:00", state="archived",
+    messages=reply_pair("2026-08-18T04:00:00+00:00", 1))
+add("gone", created="2026-08-18T04:00:00+00:00", state="investigating",
+    deleted="2026-08-18T12:00:00+00:00",
+    messages=reply_pair("2026-08-18T04:00:00+00:00", 1))
+
+raw = weekly.build(CURR, now=NOW)
+M = raw["metrics"]
+DD = raw["dailyData"]
+D = raw  # labels, allRows, insights, coverage stay top-level
+
+
+print("=== week bounds ===")
+check("week_start is Monday", D["week_start"], CURR)
+check("Wednesday snaps to Monday",
+      weekly.resolve_week_start("2026-08-19", now=NOW).isoformat(), CURR)
+check("future Monday clamps",
+      weekly.resolve_week_start("2026-09-07", now=NOW).isoformat(), CURR)
+check("prev label mentions Aug 10", "Aug 10" in D["prevWeekLabel"], True)
+check("curr label mentions Aug 17", "Aug 17" in D["currWeekLabel"], True)
+check("timezone is the schedule tz", D["timezone"], "Asia/Kolkata")
+
+print()
+print("=== volume and flow ===")
+# current created: c1 c2 c3 c4 c5  (arch/gone out) = 5
+# previous created: p1 p2 p3 = 3
+check("cv_total", M["cv_total"], 5)
+check("pv_total", M["pv_total"], 3)
+check("total_diff", M["total_diff"], 2)
+# current open among created this week: c1, c2, c3, c5 (c4 closed) = 4
+check("cv_open", M["cv_open"], 4)
+# previous open among created last week: p3 only
+check("pv_open", M["pv_open"], 1)
+# flow resolved: c4 (closed Mon 21) + p2 (updated Aug 18) = 2 current
+check("cv_resolved includes prior-week close", M["cv_resolved"], 2)
+check("pv_resolved", M["pv_resolved"], 1)
+
+print()
+print("=== escalation + SLA ===")
+# c2 eng-wait, c3 oncall category, c4 resolution escalat → 3
+check("cv_esc", M["cv_esc"], 3)
+check("pv_esc", M["pv_esc"], 0)
+# c4 FRT 30h > 24h SLA
+check("at least one current SLA breach", M["cv_sla_breaches"] >= 1, True)
+slow = [r for r in D["allRows"]
+        if r["week"] == "Current Week" and r["frt_secs"] and r["frt_secs"] >= 30 * 3600]
+check("30h FRT is an SLA breach", slow and slow[0]["sla_breached"], True)
+fast = [r for r in D["allRows"]
+        if r["week"] == "Current Week" and r["frt_secs"] and 1.5 * 3600 <= r["frt_secs"] <= 2.5 * 3600]
+check("2h FRT is recorded", len(fast) >= 1, True)
+check("2h FRT is inside SLA", fast[0]["sla_breached"], False)
+
+print()
+print("=== exclusions ===")
+weeks = {r["week"] for r in D["allRows"]}
+check("both week labels present", weeks, {"Previous Week", "Current Week"})
+check("allRows is created-in-either-week only",
+      M["cv_total"] + M["pv_total"], len(D["allRows"]))
+check("archived absent",
+      any("arch" in str(r["pylon_link"]) for r in D["allRows"]), False)
+check("deleted absent",
+      any("gone" in str(r.get("issue")) for r in D["allRows"]), False)
+
+print()
+print("=== breakdowns ===")
+check("priority labels fixed", D["priorities"]["labels"],
+      ["Urgent", "High", "Medium", "Low", "Unknown"])
+check("High is the current-week priority",
+      D["priorities"]["curr"][D["priorities"]["labels"].index("High")], 5)
+check("Salesforce leads categories",
+      D["categories"]["labels"][0], "Salesforce (SFDC)")
+check("Acme is a customer", "Acme" in D["customers"]["labels"], True)
+check("status chart has Closed", "Closed" in M["cv_status"], True)
+check("Waiting on Engg counted", M["cv_status"]["Waiting on Engg"], 1)
+
+print()
+print("=== agents ===")
+names = D["agents"]["names"]
+check("Ann and Bob present", set(names) >= {"Ann", "Bob"}, True)
+ann = next(a for a in D["agentTable"] if a["agent"] == "Ann")
+bob = next(a for a in D["agentTable"] if a["agent"] == "Bob")
+check("Bob assigned 1 this week", bob["cv_assigned"], 1)
+check("CSAT empty", D["csatCurr"]["total"], 0)
+check("reopen is zero and flagged unavailable",
+      (M["cv_reopen"], D["coverage"]["reopen"]), (0, False))
+
+print()
+print("=== insights are derived ===")
+src = open(weekly.__file__).read()
+check("source does not hardcode Salesforce copy",
+      "Salesforce (SFDC) remains" not in src, True)
+check("insights exist", len(D["insights"]) >= 1, True)
+joined = " ".join(i["body"] for i in D["insights"])
+check("insights mention the actual top category",
+      "Salesforce (SFDC)" in joined, True)
+
+print()
+print("=== daily series length ===")
+for key in ("currDays", "cv_created", "pv_created", "cv_frt_mins", "cv_res_hrs"):
+    check(f"{key} has 7 entries", len(DD[key]), 7)
+check("weekday labels", DD["currDays"],
+      ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+check("daily resolved does not overwrite KPI scalar",
+      isinstance(M["cv_resolved"], int) and isinstance(DD["cv_resolved"], list), True)
+
+print()
+if fails:
+    print(f"FAILURES ({len(fails)}): {fails}")
+    raise SystemExit(1)
+print("ALL WEEKLY ASSERTIONS PASSED")

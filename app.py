@@ -41,6 +41,7 @@ import scorer
 import slack
 import suggestions
 import vault
+import weekly
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -983,6 +984,22 @@ async def run_funcheck(month: str, user: dict = Depends(auth.require_operator)):
 
 
 # ── monthly Product Signals reports ───────────────────────────────────────────
+
+@app.get("/weekly", response_class=HTMLResponse)
+async def weekly_page(user: dict = Depends(auth.require_user)):
+    return _page("weekly.html")
+
+
+@app.get("/api/weekly")
+async def get_weekly(week: str | None = None, user: dict = Depends(auth.require_user)):
+    """Week-over-week support operations. `week` is the current week's Monday."""
+    if week:
+        _require_date(week)
+    try:
+        return await asyncio.to_thread(weekly.build, week)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
 
 @app.get("/reports", response_class=HTMLResponse)
 async def reports_page(user: dict = Depends(auth.require_user)):
