@@ -226,6 +226,13 @@
         <select id="rc-date"></select>
         <span class="rc-note" id="rc-snap-meta"></span>
         <div class="spacer"></div>
+        <span id="rc-admin-tools" hidden>
+          <label class="rc-note">Backfill <input type="date" id="bf-start"></label>
+          <label class="rc-note">to <input type="date" id="bf-end"></label>
+          <button class="btn" id="bf-go"
+                  title="Freeze every fetched day in the range that has no snapshot yet. Existing snapshots are never touched. Backfilled records freeze today's grades and are labelled as admin backfills.">Backfill snapshots</button>
+          <span class="rc-note" id="bf-msg"></span>
+        </span>
         <button class="btn" id="rc-csv" title="Download this frozen day as raw CSV — the data the evaluation used">↓ Raw data CSV</button>
       </div>
       <div class="kpis" id="rc-kpis"></div>
@@ -415,9 +422,11 @@ async function loadDates() {
   const sel = $("rc-date");
   if (!d.dates.length) {
     sel.innerHTML = `<option value="">No snapshots yet</option>`;
+    const admin = !!(window.QC && QC.me && QC.me.role === "admin");
     $("rc-cards").innerHTML = `<div class="empty">
       No snapshots yet — the first one is taken at the next scheduled run.
-      Everything before then lives only on the live dashboard.</div>`;
+      ${admin ? "As an admin you can seed history now: pick a range above and press Backfill snapshots."
+              : "Everything before then lives only on the live dashboard."}</div>`;
     return null;
   }
   sel.innerHTML = d.dates.map(x => x.hole
@@ -445,16 +454,36 @@ async function loadDay(dateStr) {
 
   if (!d.snapshot) {
     $("rc-snap-meta").textContent = "";
+    const isAdmin = !!(window.QC && QC.me && QC.me.role === "admin");
     $("rc-cards").innerHTML = `<div class="empty">
       ${esc(dateStr)} has no snapshot — the scheduled run never completed for this
       date, so there is no grade of record. The live dashboard still shows its
-      current state.</div>`;
+      current state.
+      ${isAdmin ? `<p><button class="btn" id="rc-capture-now">Capture this day now (admin backfill)</button></p>` : ""}
+    </div>`;
+    const cap = $("rc-capture-now");
+    if (cap) cap.addEventListener("click", async () => {
+      cap.disabled = true;
+      try {
+        await QC.api(`/api/reportcard/capture/${encodeURIComponent(dateStr)}`,
+                     { method: "POST" });
+        await loadDates();
+        $("rc-date").value = dateStr;
+        loadDay(dateStr);
+      } catch (e) {
+        cap.disabled = false;
+        cap.textContent = e.message;
+      }
+    });
     return;
   }
 
   const s = d.summary;
   const frozenAt = new Date(d.snapshot.created_at).toLocaleString();
-  $("rc-snap-meta").textContent = `frozen ${frozenAt}`;
+  const by = d.snapshot.created_by || "scheduler";
+  $("rc-snap-meta").textContent = by === "scheduler"
+    ? `frozen ${frozenAt} by the scheduled run`
+    : `⚠ backfilled ${frozenAt} by ${by} — grades as of that moment, not the morning run`;
   const remBase = s.remediated + s.outstanding;
   const remRate = remBase ? Math.round(s.remediated / remBase * 100) : null;
   $("rc-kpis").innerHTML = `
@@ -749,9 +778,36 @@ async function loadRewards() {
 }
 $("rw-weeks").addEventListener("change", loadRewards);
 
+$("bf-go").addEventListener("click", async () => {
+  const btn = $("bf-go"), msg = $("bf-msg");
+  const start = $("bf-start").value, end = $("bf-end").value;
+  if (!start || !end) { msg.textContent = "Pick both dates."; return; }
+  btn.disabled = true;
+  msg.textContent = "Backfilling…";
+  try {
+    const d = await QC.api("/api/reportcard/backfill", {
+      method: "POST", body: JSON.stringify({ start, end }),
+    });
+    msg.textContent = `${d.count} day${d.count === 1 ? "" : "s"} captured`
+      + (d.skipped_existing ? `, ${d.skipped_existing} already frozen (kept)` : "");
+    const dates = await loadDates();
+    if (dates && dates.length && !$("rc-date").value) {
+      $("rc-date").value = dates.find(x => !x.hole)?.date || dates[0].date;
+    }
+    if ($("rc-date").value) loadDay($("rc-date").value);
+  } catch (e) {
+    msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ── init ─────────────────────────────────────────────────────────────────────
 (async () => {
   await (window.QC && QC.ready);
+  if (window.QC && QC.me && QC.me.role === "admin") {
+    $("rc-admin-tools").hidden = false;
+  }
   const params = new URLSearchParams(location.search);
 
   const end = new Date(), start = new Date();

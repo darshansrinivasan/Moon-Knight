@@ -61,6 +61,7 @@ _ADDED_COLUMNS = [
     "ALTER TABLE tickets ADD COLUMN csat_responses TEXT",
     # Survey responses often have account_id and no issue_id.
     "ALTER TABLE csat_events ADD COLUMN account_id TEXT",
+    "ALTER TABLE day_snapshots ADD COLUMN created_by TEXT",
     # Pylon's own first-response / resolution clocks. Reconstructing them
     # from created_at → first support message made Slack/chat tickets look
     # like a 1-minute FRT while the issue page showed hours.
@@ -190,7 +191,12 @@ def init_db():
             snapshot_date TEXT PRIMARY KEY,
             run_id        INTEGER,
             created_at    TEXT,
-            ticket_count  INTEGER
+            ticket_count  INTEGER,
+            -- 'scheduler' for the morning notary; an admin email for a
+            -- backfill. Shown on the page: a backfilled record freezes the
+            -- grades as of the backfill moment, not as of that morning, and
+            -- must say so.
+            created_by    TEXT
         );
 
         CREATE TABLE IF NOT EXISTS snapshot_tickets (

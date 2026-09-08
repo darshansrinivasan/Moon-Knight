@@ -135,6 +135,22 @@ check("week-over-week needs two weeks of history or says so",
       True)
 
 print()
+print("=== admin backfill: fills only the gaps, labelled, never overwrites ===")
+D3 = (TODAY - timedelta(days=3)).isoformat()
+ticket("t6", D3, "Ann", "Pass")
+bf = reportcard.backfill(D1, TODAY.isoformat(), "admin@x")
+check("backfill captured the fetched gaps and nothing else",
+      D3 in bf["captured"] and hole_day in bf["captured"], True)
+check("existing snapshots were skipped, not replaced",
+      bf["skipped_existing"] >= 2, True)
+d3 = reportcard.day(D3)
+check("a backfilled record names its origin",
+      d3["snapshot"]["created_by"], "admin@x")
+d1 = reportcard.day(D1)
+check("the scheduler-frozen day still says scheduler",
+      d1["snapshot"]["created_by"], "scheduler")
+
+print()
 print("=== the CSV is the frozen record, formula-escaped ===")
 with db.get_conn() as c:
     c.execute("UPDATE snapshot_tickets SET title='=HYPERLINK(\"evil\")'"
@@ -143,10 +159,10 @@ csv_text = reportcard.day_csv(D1)
 check("frozen assignee is in the export", "Ann" in csv_text, True)
 check("formulas are neutralised", "'=HYPERLINK" in csv_text, True)
 try:
-    reportcard.day_csv(hole_day)
-    check("a hole cannot be exported", "no error", "ValueError")
+    reportcard.day_csv("2020-01-01")   # never fetched, never frozen
+    check("an unfrozen day cannot be exported", "no error", "ValueError")
 except ValueError:
-    check("a hole cannot be exported", "ValueError", "ValueError")
+    check("an unfrozen day cannot be exported", "ValueError", "ValueError")
 
 print()
 if fails:

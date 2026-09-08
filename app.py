@@ -1586,6 +1586,54 @@ async def reportcard_rewards(weeks: int = 4,
     return await asyncio.to_thread(reportcard.rewards, weeks)
 
 
+@app.post("/api/reportcard/capture/{date_str}")
+async def reportcard_capture(date_str: str,
+                             user: dict = Depends(auth.require_admin)):
+    """Admin backfill of one date. Insert-once: an existing snapshot wins.
+
+    Freezes the grades as they stand NOW, labelled with the admin's email —
+    honest seed data for the cold start, never disguised as the morning run.
+    """
+    _require_date(date_str)
+    if date_str > date.today().isoformat():
+        raise HTTPException(400, "Cannot snapshot a future date")
+    with db.get_conn() as conn:
+        fetched = conn.execute("SELECT 1 FROM fetch_log WHERE fetch_date = ?",
+                               (date_str,)).fetchone()
+    if not fetched:
+        raise HTTPException(400, f"{date_str} has never been fetched — there "
+                                 "is nothing to freeze. Fetch the day first.")
+    res = await asyncio.to_thread(reportcard.capture, date_str, None,
+                                  user["email"])
+    if not res.get("captured"):
+        raise HTTPException(409, "A snapshot already exists for this date — "
+                                 "frozen records are never replaced")
+    vault.audit(user["email"], "reportcard.capture",
+                f"{date_str} tickets={res['tickets']}")
+    return res
+
+
+@app.post("/api/reportcard/backfill")
+async def reportcard_backfill(request: Request,
+                              user: dict = Depends(auth.require_admin)):
+    """Admin backfill of a range: every fetched, unsnapshotted day, once each."""
+    body = await request.json()
+    start = _require_date(str(body.get("start") or "")).isoformat()
+    end = _require_date(str(body.get("end") or "")).isoformat()
+    if start > end:
+        raise HTTPException(400, "start must be on or before end")
+    if end > date.today().isoformat():
+        raise HTTPException(400, "Cannot snapshot future dates")
+    if (date.fromisoformat(end) - date.fromisoformat(start)).days > 120:
+        raise HTTPException(400, "Backfill at most 120 days at a time")
+    res = await asyncio.to_thread(reportcard.backfill, start, end,
+                                  user["email"])
+    vault.audit(user["email"], "reportcard.backfill",
+                f"{start}..{end} captured={res['count']} "
+                f"skipped={res['skipped_existing']}")
+    return res
+
+
 @app.get("/api/reportcard/export/{date_str}")
 async def reportcard_csv(date_str: str,
                          user: dict = Depends(auth.require_user)):

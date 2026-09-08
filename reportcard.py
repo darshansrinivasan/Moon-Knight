@@ -48,7 +48,8 @@ _FROZEN_GRADE = ("COALESCE(CASE WHEN rev.decision IN ('Pass','Fail')"
                  " THEN rev.decision END, st.overall_result)")
 
 
-def capture(date_str: str, run_id: int | None = None) -> dict:
+def capture(date_str: str, run_id: int | None = None,
+            created_by: str = "scheduler") -> dict:
     """Freeze one day's board, once. A second call is a no-op by design.
 
     Copies every in-scope ticket of the day with its grades and its attribution
@@ -66,8 +67,8 @@ def capture(date_str: str, run_id: int | None = None) -> dict:
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             "INSERT INTO day_snapshots (snapshot_date, run_id, created_at,"
-            " ticket_count) VALUES (?, ?, ?, ?)",
-            (date_str, run_id, now, len(rows)))
+            " ticket_count, created_by) VALUES (?, ?, ?, ?, ?)",
+            (date_str, run_id, now, len(rows), created_by))
         cols = ["snapshot_date", "ticket_id", "number", "title", "link",
                 "state", "assignee_name", "account_name", "source",
                 *_CHECK_COLS, "overall_result", "ai_notes"]
@@ -114,7 +115,7 @@ def snapshot_dates(limit: int = 400) -> list[dict]:
     """
     with db.get_conn() as conn:
         snaps = [dict(r) for r in conn.execute(
-            "SELECT snapshot_date, created_at, ticket_count"
+            "SELECT snapshot_date, created_at, ticket_count, created_by"
             " FROM day_snapshots ORDER BY snapshot_date DESC LIMIT ?",
             (limit,)).fetchall()]
         if not snaps:
@@ -125,7 +126,8 @@ def snapshot_dates(limit: int = 400) -> list[dict]:
             (first,)).fetchall()}
     have = {s["snapshot_date"] for s in snaps}
     out = [{"date": s["snapshot_date"], "hole": False,
-            "created_at": s["created_at"], "tickets": s["ticket_count"]}
+            "created_at": s["created_at"], "tickets": s["ticket_count"],
+            "created_by": s.get("created_by") or "scheduler"}
            for s in snaps]
     out += [{"date": d, "hole": True} for d in fetched - have
             if d <= max(have)]
@@ -184,7 +186,8 @@ def day(date_str: str) -> dict:
             summary[r["delta"]] += 1
     return {"date": date_str, "hole": False,
             "snapshot": {"created_at": snap["created_at"],
-                         "run_id": snap["run_id"]},
+                         "run_id": snap["run_id"],
+                         "created_by": snap["created_by"] or "scheduler"},
             "summary": summary, "tickets": rows}
 
 
@@ -274,6 +277,26 @@ def leaderboard(start: str, end: str) -> dict:
 def analytics(start: str, end: str) -> dict:
     """Per-person frozen verdict split — the Report Card's analytics lens."""
     return leaderboard(start, end)
+
+
+def backfill(start: str, end: str, created_by: str) -> dict:
+    """Capture every fetched-but-unsnapshotted date in the range, once each.
+
+    The admin's cold-start tool: on day one nothing is frozen, and a Report
+    Card with no history teaches nobody anything. Each captured day freezes the
+    grades AS THEY STAND NOW — for old dates that already includes post-hoc
+    fixes, which is why created_by is stored and shown: a backfilled record is
+    honest history-from-today, never passed off as the morning notary. Existing
+    snapshots are skipped, never replaced.
+    """
+    have, missing = _range_dates(start, end)
+    done = [capture(d, created_by=created_by) for d in missing]
+    captured = [d["date"] for d in done if d.get("captured")]
+    return {"start": start, "end": end,
+            "captured": captured, "count": len(captured),
+            # Days already frozen inside the range: reported so the admin sees
+            # "kept" rather than wondering why the count is short.
+            "skipped_existing": len(have)}
 
 
 # ── rewardable metrics ────────────────────────────────────────────────────────
