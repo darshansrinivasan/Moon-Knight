@@ -687,7 +687,11 @@ function renderFrozenCards(tickets, total) {
     return `<div class="ticket-card" id="rc-t-${esc(String(t.number))}"
                  data-tid="${esc(t.ticket_id)}">
       <div class="card-top">
-        <span class="ticket-num">#${esc(String(t.number))}</span>
+        <span class="ticket-num">${safeLink === "#"
+          ? `#${esc(String(t.number))}`
+          : `<a class="tnum" href="${esc(safeLink)}" target="_blank"
+               rel="noopener noreferrer" onclick="event.stopPropagation()"
+               title="Open in Pylon">#${esc(String(t.number))}</a>`}</span>
         <span class="ticket-title">
           <a href="${esc(safeLink)}" target="_blank" rel="noopener noreferrer"
              onclick="event.stopPropagation()">${esc(t.title || "(no title)")}</a>
@@ -885,10 +889,15 @@ async function openFrozenSheet(ticketId) {
   const official = t.effective_result || "Pending";
   const badgeCls = { "Pass": "pass", "Fail": "fail",
                      "Needs Review": "review" }[official] || "pending";
-  $("fs-num").textContent = `#${t.number}`;
+  const pylonLink = /^https?:\/\//i.test(t.link || "") ? t.link : "";
+  $("fs-num").innerHTML = pylonLink
+    ? `<a class="tnum" href="${esc(pylonLink)}" target="_blank"
+         rel="noopener noreferrer" title="Open in Pylon">#${esc(String(t.number))}</a>`
+    : `#${esc(String(t.number))}`;
   $("fs-title").textContent = t.title || "(no title)";
-  $("fs-meta").textContent =
-    `${t.assignee_name || "Unassigned"} · ${t.account_name || "—"} · frozen record`;
+  $("fs-meta").innerHTML =
+    `${esc(t.assignee_name || "Unassigned")} · ${esc(t.account_name || "—")} · frozen record · `
+    + `<a class="tnum" href="/?date=${esc(currentDay.date)}&ticket=${esc(String(t.number))}">live dashboard →</a>`;
   $("fs-tags").innerHTML = `
     <span class="overall-badge overall-${badgeCls}">${esc(official)}</span>
     <span class="meta-tag">${esc((t.state || "—").replace(/_/g, " "))}</span>
@@ -934,7 +943,7 @@ async function openFrozenSheet(ticketId) {
 
   $("fs-sheet").hidden = false;
   $("fs-scrim").hidden = false;
-  $("fs-close").focus();
+  $("fs-close").focus({ preventScroll: true });
 
   const msgs = $("fs-msgs");
   msgs.innerHTML = `<div class="rc-note">Loading conversation…</div>`;
@@ -996,7 +1005,10 @@ async function sendReview(decision) {
     });
     $("rv-scrim").hidden = true;
     const reopen = fsTicketId;
+    const pane = document.querySelector(".content-pane");
+    const keepScroll = pane ? pane.scrollTop : 0;
     await loadDay($("rc-date").value);   // re-read: the overlay changed
+    if (pane) pane.scrollTop = keepScroll;   // stay where the reviewer was
     if (reopen) openFrozenSheet(reopen); // repaint the open sheet's verdict
   } catch (e) {
     $("rv-msg").textContent = e.message;
