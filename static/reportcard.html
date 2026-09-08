@@ -75,6 +75,58 @@
   a.tnum:hover { text-decoration: underline; }
   .delta-pos { color: var(--pass); font-weight: 600; }
   .delta-neg { color: var(--fail); font-weight: 600; }
+  /* ── the dashboard's multi-select dropdowns, verbatim vocabulary ── */
+  .assignee-ms { position: relative; }
+  .assignee-ms-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--muted); font-size: 12px;
+    padding: 4px 24px 4px 8px; cursor: pointer; outline: none;
+    white-space: nowrap; max-width: 200px; overflow: hidden;
+    text-overflow: ellipsis; position: relative;
+    transition: border-color .15s, color .15s;
+  }
+  .assignee-ms-btn::after {
+    content: "▾"; position: absolute; right: 7px; top: 50%;
+    transform: translateY(-50%); font-size: 10px; color: var(--muted);
+  }
+  .assignee-ms-btn:hover, .assignee-ms-btn.open { border-color: var(--accent); color: var(--text); }
+  .assignee-ms-dropdown {
+    position: absolute; top: calc(100% + 4px); left: 0;
+    min-width: 210px; max-height: 280px; overflow-y: auto;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,.18);
+    z-index: 200; display: none; padding: 4px 0;
+  }
+  .assignee-ms-dropdown.open { display: block; }
+  .assignee-ms-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    cursor: pointer; font-size: 12px; color: var(--text); user-select: none;
+  }
+  .assignee-ms-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .assignee-ms-item.is-zero { opacity: .5; }
+  .assignee-ms-item input { accent-color: var(--accent); cursor: pointer; }
+  .assignee-ms-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+  .assignee-ms-clear {
+    display: block; width: 100%; text-align: left; padding: 6px 12px;
+    background: none; border: none; color: var(--accent2); cursor: pointer;
+    font: inherit; font-size: 12px;
+  }
+  .check-row {
+    display: block; width: 100%; text-align: left;
+    background: none; border: none; font: inherit; color: inherit; cursor: pointer;
+  }
+  .check-row-active { color: var(--accent2); }
+  .check-verdicts { margin: 0 0 4px 18px; border-left: 2px solid var(--border); }
+  .rc-filterbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin: 0 0 12px;
+  }
+  /* KPI tiles double as filters: click Pass/Fail/Remediated… to see exactly
+     those tickets. */
+  .kpi[data-kpi] { cursor: pointer; }
+  .kpi[data-kpi]:hover { border-color: var(--accent); }
+  .kpi.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+
   /* ── ticket cards + check matrix — the live dashboard's own vocabulary ── */
   .ticket-list { display: flex; flex-direction: column; gap: 10px; }
   .ticket-card {
@@ -236,6 +288,34 @@
         <button class="btn" id="rc-csv" title="Download this frozen day as raw CSV — the data the evaluation used">↓ Raw data CSV</button>
       </div>
       <div class="kpis" id="rc-kpis"></div>
+      <div class="rc-filterbar" id="rc-filterbar" hidden>
+        <div class="assignee-ms" id="fa-ms">
+          <button class="assignee-ms-btn" id="fa-ms-btn">All assignees</button>
+          <div class="assignee-ms-dropdown" id="fa-ms-dropdown">
+            <button class="assignee-ms-clear" id="fa-ms-clear">Clear selection</button>
+            <hr class="assignee-ms-divider">
+            <div id="fa-ms-list"></div>
+          </div>
+        </div>
+        <div class="assignee-ms" id="fst-ms">
+          <button class="assignee-ms-btn" id="fst-ms-btn">All statuses</button>
+          <div class="assignee-ms-dropdown" id="fst-ms-dropdown">
+            <button class="assignee-ms-clear" id="fst-ms-clear">All statuses</button>
+            <hr class="assignee-ms-divider">
+            <div id="fst-ms-list"></div>
+          </div>
+        </div>
+        <div class="assignee-ms" id="fck-ms">
+          <button class="assignee-ms-btn" id="fck-ms-btn"
+                  title="Filter by one frozen check's verdict — pick the check, then the verdict">All checks</button>
+          <div class="assignee-ms-dropdown" id="fck-ms-dropdown">
+            <button class="assignee-ms-clear" id="fck-ms-clear">All checks</button>
+            <hr class="assignee-ms-divider">
+            <div id="fck-ms-list"></div>
+          </div>
+        </div>
+        <span class="rc-note" id="rc-filter-note"></span>
+      </div>
       <div class="ticket-list" id="rc-cards">
         <div class="empty">Pick a snapshot date.</div>
       </div>
@@ -454,6 +534,7 @@ async function loadDay(dateStr) {
 
   if (!d.snapshot) {
     $("rc-snap-meta").textContent = "";
+    $("rc-filterbar").hidden = true;
     const isAdmin = !!(window.QC && QC.me && QC.me.role === "admin");
     $("rc-cards").innerHTML = `<div class="empty">
       ${esc(dateStr)} has no snapshot — the scheduled run never completed for this
@@ -478,29 +559,120 @@ async function loadDay(dateStr) {
     return;
   }
 
-  const s = d.summary;
   const frozenAt = new Date(d.snapshot.created_at).toLocaleString();
   const by = d.snapshot.created_by || "scheduler";
   $("rc-snap-meta").textContent = by === "scheduler"
     ? `frozen ${frozenAt} by the scheduled run`
     : `⚠ backfilled ${frozenAt} by ${by} — grades as of that moment, not the morning run`;
+  $("rc-filterbar").hidden = false;
+  populateFrozenFilters();
+  renderFrozenDay();
+}
+
+// ── filters: the dashboard's own axes, over the frozen record ────────────────
+// Client-side only — the snapshot is already in memory. KPI tiles double as
+// verdict/delta pills; dropdowns scope by frozen assignee, frozen status, and
+// one check's frozen verdict (cascading, like the dashboard's Check filter).
+const rcFilter = {
+  kpi: "",                       // pass | fail | review | pending | remediated…
+  assignees: new Set(),
+  states: new Set(),
+  check: { key: "", value: "" },
+};
+
+function scopedFrozen() {
+  let list = (currentDay && currentDay.tickets) || [];
+  if (rcFilter.assignees.size) {
+    list = list.filter(t => rcFilter.assignees.has(t.assignee_name || "Unassigned"));
+  }
+  if (rcFilter.states.size) {
+    list = list.filter(t => rcFilter.states.has(t.state || "—"));
+  }
+  if (rcFilter.check.key && rcFilter.check.value) {
+    list = list.filter(t => {
+      const v = t[rcFilter.check.key];
+      if (rcFilter.check.value === "__none__") return v === null || v === undefined || v === "";
+      return v === rcFilter.check.value;
+    });
+  }
+  return list;
+}
+
+function kpiMatch(t, kpi) {
+  const g = t.effective_result;
+  switch (kpi) {
+    case "pass":    return g === "Pass";
+    case "fail":    return g === "Fail";
+    case "review":  return g === "Needs Review";
+    case "pending": return !g;
+    case "remediated": case "outstanding": case "regressed":
+      return t.delta === kpi;
+    default: return true;
+  }
+}
+
+function renderFrozenDay() {
+  const scoped = scopedFrozen();
+  const s = { total: scoped.length, pass: 0, fail: 0, review: 0, pending: 0,
+              remediated: 0, outstanding: 0, regressed: 0 };
+  for (const t of scoped) {
+    const g = t.effective_result;
+    if (g === "Pass") s.pass++;
+    else if (g === "Fail") s.fail++;
+    else if (g === "Needs Review") s.review++;
+    else s.pending++;
+    if (t.delta in s) s[t.delta]++;
+  }
   const remBase = s.remediated + s.outstanding;
   const remRate = remBase ? Math.round(s.remediated / remBase * 100) : null;
+  const act = k => rcFilter.kpi === k ? " active" : "";
   $("rc-kpis").innerHTML = `
-    <div class="kpi"><b>${s.total}</b><span>tickets frozen</span></div>
-    <div class="kpi pass"><b>${s.pass}</b><span>pass (official)</span></div>
-    <div class="kpi fail"><b>${s.fail}</b><span>fail (official)</span></div>
-    <div class="kpi"><b>${s.review}</b><span>needs review</span></div>
-    ${s.pending ? `<div class="kpi"><b>${s.pending}</b><span>not graded at freeze — QC never ran before the snapshot</span></div>` : ""}
-    <div class="kpi rem"><b>${s.remediated}</b><span>remediated since</span></div>
-    <div class="kpi fail"><b>${s.outstanding}</b><span>still failing</span></div>
-    <div class="kpi reg"><b>${s.regressed}</b><span>regressed since</span></div>
+    <div class="kpi${rcFilter.kpi ? "" : " active"}" data-kpi=""><b>${s.total}</b><span>tickets frozen</span></div>
+    <div class="kpi pass${act("pass")}" data-kpi="pass"><b>${s.pass}</b><span>pass (official)</span></div>
+    <div class="kpi fail${act("fail")}" data-kpi="fail"><b>${s.fail}</b><span>fail (official)</span></div>
+    <div class="kpi${act("review")}" data-kpi="review"><b>${s.review}</b><span>needs review</span></div>
+    ${s.pending || rcFilter.kpi === "pending"
+      ? `<div class="kpi${act("pending")}" data-kpi="pending"><b>${s.pending}</b><span>not graded at freeze</span></div>` : ""}
+    <div class="kpi rem${act("remediated")}" data-kpi="remediated"><b>${s.remediated}</b><span>remediated since</span></div>
+    <div class="kpi fail${act("outstanding")}" data-kpi="outstanding"><b>${s.outstanding}</b><span>still failing</span></div>
+    <div class="kpi reg${act("regressed")}" data-kpi="regressed"><b>${s.regressed}</b><span>regressed since</span></div>
     ${remRate === null ? "" :
       `<div class="kpi rem"><b>${remRate}%</b><span>remediation rate</span></div>`}`;
+  $("rc-kpis").querySelectorAll("[data-kpi]").forEach(tile =>
+    tile.addEventListener("click", () => {
+      // Clicking the active tile clears it — same toggle feel as the pills.
+      rcFilter.kpi = (rcFilter.kpi === tile.dataset.kpi) ? "" : tile.dataset.kpi;
+      renderFrozenDay();
+    }));
 
+  const shown = scoped.filter(t => kpiMatch(t, rcFilter.kpi));
+  const total = (currentDay.tickets || []).length;
+  const isFiltered = shown.length !== total;
+  $("rc-filter-note").textContent =
+    isFiltered ? `${shown.length} of ${total} tickets` : `${total} tickets`;
+  renderFrozenCards(shown, total);
+}
+
+function renderFrozenCards(tickets, total) {
   const badgeCls = g => ({ "Pass": "pass", "Fail": "fail",
                            "Needs Review": "review" }[g] || "pending");
-  $("rc-cards").innerHTML = d.tickets.map(t => {
+  if (!tickets.length) {
+    $("rc-cards").innerHTML = `<div class="empty">
+      ${total ? `${total} tickets in this snapshot, all hidden by your filters.
+        <p><button class="btn" id="rc-clear-filters">Clear filters</button></p>`
+              : "The snapshot is empty."}</div>`;
+    const clr = $("rc-clear-filters");
+    if (clr) clr.addEventListener("click", () => {
+      rcFilter.kpi = "";
+      rcFilter.assignees.clear();
+      rcFilter.states.clear();
+      rcFilter.check = { key: "", value: "" };
+      populateFrozenFilters();
+      renderFrozenDay();
+    });
+    return;
+  }
+  $("rc-cards").innerHTML = tickets.map(t => {
     const official = t.effective_result || "Pending";
     const safeLink = /^https?:\/\//i.test(t.link || "") ? t.link : "#";
     const signed = t.review_decision
@@ -530,11 +702,158 @@ async function loadDay(dateStr) {
       </div>
       <div class="checks-row">${matrixHtml(t)}</div>
     </div>`;
-  }).join("") || `<div class="empty">The snapshot is empty.</div>`;
+  }).join("");
 
   document.querySelectorAll("#rc-cards .ticket-card").forEach(card =>
     card.addEventListener("click", () => openFrozenSheet(card.dataset.tid)));
 }
+
+// The three dropdowns, rebuilt per loaded day from FROZEN values.
+function populateFrozenFilters() {
+  const all = (currentDay && currentDay.tickets) || [];
+
+  const counts = (fn) => {
+    const m = new Map();
+    for (const t of all) {
+      const k = fn(t);
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return m;
+  };
+
+  const buildMs = (listId, btnId, selected, cm, labelOf, allLabel) => {
+    const list = $(listId);
+    list.innerHTML = [...cm.keys()].sort().map(k => `
+      <label class="assignee-ms-item">
+        <input type="checkbox" value="${esc(k)}" ${selected.has(k) ? "checked" : ""}>
+        ${esc(labelOf(k))} <span class="rc-note">(${cm.get(k)})</span>
+      </label>`).join("");
+    list.querySelectorAll("input").forEach(cb =>
+      cb.addEventListener("change", () => {
+        if (cb.checked) selected.add(cb.value); else selected.delete(cb.value);
+        updateBtn(btnId, selected, labelOf, allLabel);
+        renderFrozenDay();
+      }));
+    updateBtn(btnId, selected, labelOf, allLabel);
+  };
+
+  const updateBtn = (btnId, selected, labelOf, allLabel) => {
+    const btn = $(btnId);
+    if (!selected.size) btn.textContent = allLabel;
+    else if (selected.size === 1) btn.textContent = labelOf([...selected][0]);
+    else btn.textContent = `${selected.size} selected`;
+  };
+
+  buildMs("fa-ms-list", "fa-ms-btn", rcFilter.assignees,
+          counts(t => t.assignee_name || "Unassigned"), k => k, "All assignees");
+  buildMs("fst-ms-list", "fst-ms-btn", rcFilter.states,
+          counts(t => t.state || "—"),
+          k => k.replace(/_/g, " "), "All statuses");
+  populateFrozenCheckFilter(all);
+}
+
+// Cascading check filter over FROZEN verdicts: pick the check, then the value.
+// Values are whatever the snapshot actually holds for that check (A-checks
+// included — their vocabularies differ per check), so the options can never
+// offer a verdict the day does not contain.
+function populateFrozenCheckFilter(all) {
+  const list = $("fck-ms-list");
+  list.innerHTML = MATRIX.map(([key]) => {
+    const label = (CHECKS[key] || {}).label || key.toUpperCase();
+    const failN = all.filter(t => cellState(key, t[key]) === "fail").length;
+    const active = rcFilter.check.key === key;
+    let verdicts = "";
+    if (active) {
+      const vals = new Map();
+      for (const t of all) {
+        const v = (t[key] === null || t[key] === undefined || t[key] === "")
+          ? "__none__" : t[key];
+        vals.set(v, (vals.get(v) || 0) + 1);
+      }
+      verdicts = `<div class="check-verdicts">${[...vals.keys()].sort().map(v => `
+        <label class="assignee-ms-item">
+          <input type="radio" name="fck-verdict" value="${esc(v)}"
+                 ${rcFilter.check.value === v ? "checked" : ""}>
+          ${esc(v === "__none__" ? "Not evaluated" : v)}
+          <span class="rc-note">(${vals.get(v)})</span>
+        </label>`).join("")}</div>`;
+    }
+    return `
+      <button class="assignee-ms-item check-row${active ? " check-row-active" : ""}"
+              data-fck-key="${esc(key)}" type="button">
+        ${esc(key.toUpperCase())} · ${esc(label)}
+        <span class="rc-note">(${failN} fail)</span>
+      </button>${verdicts}`;
+  }).join("");
+
+  list.querySelectorAll("[data-fck-key]").forEach(row =>
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const key = row.dataset.fckKey;
+      rcFilter.check = rcFilter.check.key === key
+        ? { key: "", value: "" }
+        : { key, value: "Fail" };
+      populateFrozenCheckFilter(all);
+      updateCheckBtn();
+      renderFrozenDay();
+    }));
+  list.querySelectorAll("input[name=fck-verdict]").forEach(rb =>
+    rb.addEventListener("change", () => {
+      rcFilter.check.value = rb.value;
+      updateCheckBtn();
+      renderFrozenDay();
+    }));
+  updateCheckBtn();
+}
+
+function updateCheckBtn() {
+  const btn = $("fck-ms-btn");
+  if (!rcFilter.check.key || !rcFilter.check.value) {
+    btn.textContent = "All checks";
+    return;
+  }
+  const label = (CHECKS[rcFilter.check.key] || {}).label || rcFilter.check.key;
+  const v = rcFilter.check.value === "__none__" ? "Not evaluated" : rcFilter.check.value;
+  btn.textContent = `${label}: ${v}`;
+}
+
+// Open/close wiring, identical for all three dropdowns.
+for (const [host, btn, drop] of [["fa-ms", "fa-ms-btn", "fa-ms-dropdown"],
+                                 ["fst-ms", "fst-ms-btn", "fst-ms-dropdown"],
+                                 ["fck-ms", "fck-ms-btn", "fck-ms-dropdown"]]) {
+  $(btn).addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = $(drop).classList.toggle("open");
+    $(btn).classList.toggle("open", open);
+  });
+  document.addEventListener("click", (e) => {
+    if (!$(host).contains(e.target)) {
+      $(drop).classList.remove("open");
+      $(btn).classList.remove("open");
+    }
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    document.querySelectorAll(".assignee-ms-dropdown.open, .assignee-ms-btn.open")
+      .forEach(el => el.classList.remove("open"));
+  }
+});
+$("fa-ms-clear").addEventListener("click", () => {
+  rcFilter.assignees.clear();
+  populateFrozenFilters();
+  renderFrozenDay();
+});
+$("fst-ms-clear").addEventListener("click", () => {
+  rcFilter.states.clear();
+  populateFrozenFilters();
+  renderFrozenDay();
+});
+$("fck-ms-clear").addEventListener("click", () => {
+  rcFilter.check = { key: "", value: "" };
+  populateFrozenFilters();
+  renderFrozenDay();
+});
 
 // ── the slide-over: frozen record on top, live conversation beneath ─────────
 let fsTicketId = null;
