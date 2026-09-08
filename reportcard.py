@@ -309,8 +309,13 @@ def backfill(start: str, end: str, created_by: str) -> dict:
 def rewards(weeks: int = 4) -> dict:
     """Per-person rewardable metrics over the last `weeks` ISO weeks.
 
-    remediation_rate  of tickets frozen as Fail, % now effectively Pass —
-                      fixing what QC found, the exact opposite of gaming it.
+    remediation_rate  of tickets the machine froze as Fail, % now OFFICIALLY
+                      Pass — via a fix that re-scored, or a lead's reviewed
+                      verdict. Same comparison as the Frozen Dashboard's
+                      "remediated since" chip, so the two can never disagree.
+                      The denominator is the RAW frozen grade on purpose: a
+                      review resolves a fail, it must not erase that the
+                      morning found one.
     wow_improvement   this week's frozen pass rate minus last week's,
                       in percentage points. Needs two weeks of snapshots;
                       None (shown as "insufficient history") until then.
@@ -323,6 +328,7 @@ def rewards(weeks: int = 4) -> dict:
     with db.get_conn() as conn:
         rows = [dict(r) for r in conn.execute(f"""
             SELECT st.snapshot_date, st.assignee_name AS name,
+                   st.overall_result AS frozen_raw,
                    {_FROZEN_GRADE} AS frozen_grade,
                    {EFFECTIVE_GRADE_SQL.replace('ac.', 'cur.')} AS current_grade
             FROM snapshot_tickets st
@@ -352,7 +358,11 @@ def rewards(weeks: int = 4) -> dict:
             if g == "Pass":
                 p["passed"] += 1
                 wk["passed"] += 1
-        if g == "Fail":
+        # Remediation keys on the RAW frozen grade — the machine's morning
+        # verdict — matching the dashboard's delta chip. The official pass
+        # rate above stays on the reviewed grade; the two answer different
+        # questions and each stays consistent with its own surface.
+        if r["frozen_raw"] == "Fail":
             p["frozen_fails"] += 1
             if r["current_grade"] == "Pass":
                 p["remediated"] += 1

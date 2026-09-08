@@ -128,8 +128,13 @@ cid = next(p for p in rw["people"] if p["name"] == "Cid")
 check("an unremediated fail scores zero",
       (cid["frozen_fails"], cid["remediation_rate"]), (1, 0.0))
 bob = next(p for p in rw["people"] if p["name"] == "Bob")
-check("a lead's Pass review removes the fail from the record — and the metric",
-      bob["frozen_fails"], 0)
+# The lead reviewed Bob's frozen Fail to Pass. The morning still found a fail
+# (denominator keeps it) and it is now officially resolved (numerator counts
+# it) — exactly what the Frozen Dashboard's "remediated since" chip says, so
+# the two surfaces can never tell a lead two different stories.
+check("a lead's Fail→Pass review counts as a remediation",
+      (bob["frozen_fails"], bob["remediated"], bob["remediation_rate"]),
+      (1, 1, 100.0))
 check("week-over-week needs two weeks of history or says so",
       ann["wow_improvement"] is None or isinstance(ann["wow_improvement"], float),
       True)

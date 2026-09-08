@@ -995,7 +995,9 @@ function openReview(ticketId) {
 async function sendReview(decision) {
   if (!rvTicket) { $("rv-scrim").hidden = true; return; }
   const note = $("rv-note").value.trim();
-  if (decision !== "Revert" && !note) {
+  // The server's revert keyword is lowercase; "Revert" would be validated as
+  // a sign-off and demand a note it deliberately does not need.
+  if (decision !== "revert" && !note) {
     $("rv-msg").textContent = "A note is required — it is the audit trail.";
     return;
   }
@@ -1016,7 +1018,7 @@ async function sendReview(decision) {
 }
 $("rv-pass").addEventListener("click", () => sendReview("Pass"));
 $("rv-fail").addEventListener("click", () => sendReview("Fail"));
-$("rv-revert").addEventListener("click", () => sendReview("Revert"));
+$("rv-revert").addEventListener("click", () => sendReview("revert"));
 $("rv-cancel").addEventListener("click", () => { $("rv-scrim").hidden = true; });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") $("rv-scrim").hidden = true;
