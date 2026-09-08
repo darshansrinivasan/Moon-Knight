@@ -736,6 +736,11 @@
     border-radius: var(--radius); font-size: 12px;
   }
   .review-bar .review-who { color: var(--muted); flex: 1; min-width: 180px; }
+  .review-bar .review-link {
+    color: var(--accent2); text-decoration: none; font-weight: 600;
+    white-space: nowrap;
+  }
+  .review-bar .review-link:hover { text-decoration: underline; }
   .review-bar .review-note {
     flex-basis: 100%; color: var(--text); font-style: italic;
     border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px;
@@ -2028,22 +2033,14 @@ function reviewBarHtml(t) {
     who = `AI overall is ${ai}. Accept keeps it, or set Pass / Fail.`;
   }
 
-  const canAct = t.can_review && (ai || rev);
+  // Sign-off moved to the Report Card: reviews adjudicate the frozen record,
+  // and this live sheet is the fix-it surface — showing action buttons here
+  // again would recreate two places to record one judgment. The verdict and
+  // note stay visible; the action links to where it now happens.
   let btns = "";
-  if (canAct && !rev) {
-    const canAccept = ai === "Pass" || ai === "Fail";
-    const acceptTitle = canAccept
-      ? "Keep the AI overall and record who signed off"
-      : `AI graded this ${ai || "pending"} — pick Pass or Fail`;
-    btns = `
-      <button type="button" class="accept" data-review="accept" ${canAccept ? "" : "disabled"}
-              title="${esc(acceptTitle)}">Accept QC</button>
-      <button type="button" class="pass" data-open-modal="Pass">Pass</button>
-      <button type="button" class="fail" data-open-modal="Fail">Fail</button>`;
-  } else if (canAct && rev) {
-    btns = `
-      <button type="button" class="change" data-open-modal="${esc(rev.decision)}">Change overall</button>
-      <button type="button" class="revert" data-review="revert">Revert</button>`;
+  if (t.can_review && (ai || rev)) {
+    btns = `<a class="review-link" href="/reportcard?date=${esc(selDate || "")}`
+         + `&ticket=${esc(String(t.number || ""))}">Review in Report Card →</a>`;
   }
   // The note lands where the sign-off is read, not only in the facts grid up
   // top — a reviewer who just confirmed looks here and saw nothing.

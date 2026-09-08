@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Report Card · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  /* Sub-view pills — same interaction as the dashboard's verdict pills. */
+  .rc-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .rc-tab {
+    padding: 6px 14px; border-radius: 999px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--muted);
+  }
+  .rc-tab.active {
+    border-color: var(--accent); color: var(--accent2);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .rc-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .rc-bar select, .rc-bar input {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+    font: inherit; font-size: 13px;
+  }
+  .rc-bar .spacer { flex: 1; }
+  .rc-note { color: var(--muted); font-size: 12px; }
+  .btn {
+    padding: 6px 12px; border-radius: 8px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface2); color: var(--text);
+  }
+  .btn:hover { border-color: var(--accent); }
+  .kpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .kpi {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 16px; min-width: 110px;
+  }
+  .kpi b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .kpi span { color: var(--muted); font-size: 11.5px; }
+  .kpi.pass b { color: var(--pass); } .kpi.fail b { color: var(--fail); }
+  .kpi.rem b { color: var(--pass); } .kpi.reg b { color: var(--review); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .tablewrap {
+    overflow-x: auto; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+       color: var(--muted); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .g-Pass { color: var(--pass); font-weight: 600; }
+  .g-Fail { color: var(--fail); font-weight: 600; }
+  .g-NR   { color: var(--review); font-weight: 600; }
+  .g-none { color: var(--muted); }
+  .chip {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; white-space: nowrap;
+  }
+  .chip.remediated { background: color-mix(in srgb, var(--pass) 15%, transparent); color: var(--pass); }
+  .chip.outstanding { background: color-mix(in srgb, var(--fail) 15%, transparent); color: var(--fail); }
+  .chip.regressed { background: color-mix(in srgb, var(--review) 18%, transparent); color: var(--review); }
+  .chip.frozen { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+  .review-note-cell { color: var(--muted); font-size: 12px; max-width: 260px; }
+  .empty { color: var(--muted); padding: 22px; text-align: center; font-size: 13px; }
+  .hole-banner {
+    background: color-mix(in srgb, var(--review) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--review) 40%, transparent);
+    border-radius: var(--radius); padding: 12px 16px; color: var(--text);
+    font-size: 13px; margin-bottom: 14px;
+  }
+  a.tnum { color: var(--accent2); text-decoration: none; }
+  a.tnum:hover { text-decoration: underline; }
+  .delta-pos { color: var(--pass); font-weight: 600; }
+  .delta-neg { color: var(--fail); font-weight: 600; }
+  /* ── ticket cards + check matrix — the live dashboard's own vocabulary ── */
+  .ticket-list { display: flex; flex-direction: column; gap: 10px; }
+  .ticket-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 16px; cursor: pointer;
+  }
+  .ticket-card:hover { border-color: var(--accent); }
+  .ticket-card.is-open { border-color: var(--accent); }
+  .card-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .ticket-num { color: var(--accent2); font-weight: 600; font-size: 13px; }
+  .ticket-title { flex: 1; min-width: 200px; font-size: 13.5px; }
+  .ticket-title a { color: var(--text); text-decoration: none; }
+  .ticket-title a:hover { text-decoration: underline; }
+  .overall-badge {
+    padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+  }
+  .overall-pass { background: color-mix(in srgb, var(--pass) 18%, transparent); color: var(--pass); }
+  .overall-fail { background: color-mix(in srgb, var(--fail) 18%, transparent); color: var(--fail); }
+  .overall-review { background: color-mix(in srgb, var(--review) 20%, transparent); color: var(--review); }
+  .overall-pending { background: var(--surface2); color: var(--muted); }
+  .review-mark { font-size: 11px; color: var(--accent2); }
+  .card-meta { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+  .meta-tag {
+    font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    background: var(--surface2); color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .checks-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .mx { display: grid; grid-template-columns: repeat(14, 16px); gap: 3px; flex: none; }
+  .mx-cell {
+    width: 16px; height: 20px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 600; line-height: 1; cursor: default;
+  }
+  .c-pass { background: var(--pass);   color: #10201a; }
+  .c-fail { background: var(--fail);   color: #20111a; }
+  .c-warn { background: var(--review); color: #241a0d; }
+  .c-na {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-text) 14%, transparent);
+    color: color-mix(in srgb, var(--color-text) 30%, transparent);
+  }
+  .c-none {
+    border: 1px dashed color-mix(in srgb, var(--color-text) 18%, transparent);
+    color: transparent;
+  }
+
+  /* ── slide-over detail sheet, as on the live dashboard ── */
+  .sheet-scrim {
+    position: fixed; inset: 0; z-index: 40;
+    background: color-mix(in srgb, var(--color-neutral-900) 70%, transparent);
+  }
+  .sheet-scrim[hidden] { display: none; }
+  .sheet {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 50;
+    width: min(560px, 94vw); background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+  }
+  .sheet[hidden] { display: none; }
+  .sheet-head {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 16px 18px 10px; border-bottom: 1px solid var(--border);
+  }
+  .sheet-head-main { flex: 1; min-width: 0; }
+  .sheet-num { color: var(--accent2); font-weight: 700; font-size: 13px; }
+  .sheet-title { margin: 2px 0 4px; font-size: 15px; line-height: 1.35; }
+  .sheet-meta { color: var(--muted); font-size: 12px; }
+  .sheet-close {
+    background: none; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--muted); cursor: pointer; padding: 4px 10px; font-size: 13px;
+  }
+  .sheet-close:hover { border-color: var(--accent); color: var(--text); }
+  .sheet-tags { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 18px 0; }
+  .sheet-body { flex: 1; overflow-y: auto; padding: 6px 18px 24px; }
+  .sheet-section { margin-top: 16px; }
+  .sheet-section-title {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); font-weight: 600; margin-bottom: 8px;
+  }
+  .sheet-check {
+    display: flex; gap: 10px; padding: 7px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 6%, transparent);
+    font-size: 12.5px;
+  }
+  .sheet-check-head { display: flex; justify-content: space-between; gap: 10px; }
+  .sheet-check-note { color: var(--muted); font-size: 11.5px; }
+  .sheet-msgs { display: flex; flex-direction: column; gap: 10px; }
+  .message-bubble {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px 12px; font-size: 12.5px;
+  }
+  .message-bubble.customer { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .message-bubble.private { opacity: .75; border-style: dashed; }
+  .msg-author { font-weight: 600; font-size: 11.5px; margin-bottom: 3px; }
+  .msg-author.customer { color: var(--accent2); }
+  .msg-time { color: var(--muted); font-size: 10.5px; margin-top: 4px; }
+  .sheet-foot {
+    border-top: 1px solid var(--border); padding: 12px 18px;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  }
+  .sheet-foot .who { color: var(--muted); font-size: 12px; flex: 1; min-width: 160px; }
+
+  /* Review modal — same contract as the dashboard's: a note is mandatory. */
+  .modal-scrim {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+  }
+  /* The class's display:flex outranks the UA's [hidden] rule — restate it,
+     or the modal renders open on first paint. */
+  .modal-scrim[hidden] { display: none; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; width: min(440px, 92vw);
+  }
+  .modal h3 { margin: 0 0 4px; font-size: 15px; }
+  .modal .sub { color: var(--muted); font-size: 12.5px; margin: 0 0 12px; }
+  .modal textarea {
+    width: 100%; min-height: 84px; box-sizing: border-box; resize: vertical;
+    background: var(--surface2); color: var(--text); font: inherit; font-size: 13px;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .modal .msg-line { color: var(--fail); font-size: 12px; min-height: 16px; margin-top: 6px; }
+  .btn.pass { border-color: color-mix(in srgb, var(--pass) 50%, transparent); color: var(--pass); }
+  .btn.fail { border-color: color-mix(in srgb, var(--fail) 50%, transparent); color: var(--fail); }
+</style>
+</head>
+<body class="shell" data-page="reportcard">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>Report Card</h1>
+    <span class="muted">The day's grade of record — frozen at the scheduled run. Reviews here change the verdict everywhere.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+    <div class="rc-tabs" id="rc-tabs">
+      <button class="rc-tab active" data-view="day">Frozen Dashboard</button>
+      <button class="rc-tab" data-view="analytics">Frozen Analytics</button>
+      <button class="rc-tab" data-view="board">Frozen Leaderboard</button>
+      <button class="rc-tab" data-view="rewards">Rewardable Metrics</button>
+    </div>
+
+    <div id="view-day">
+      <div class="rc-bar">
+        <label class="rc-note" for="rc-date">Snapshot</label>
+        <select id="rc-date"></select>
+        <span class="rc-note" id="rc-snap-meta"></span>
+        <div class="spacer"></div>
+        <button class="btn" id="rc-csv" title="Download this frozen day as raw CSV — the data the evaluation used">↓ Raw data CSV</button>
+      </div>
+      <div class="kpis" id="rc-kpis"></div>
+      <div class="ticket-list" id="rc-cards">
+        <div class="empty">Pick a snapshot date.</div>
+      </div>
+    </div>
+
+    <div id="view-analytics" hidden>
+      <div class="rc-bar">
+        <label class="rc-note">From <input type="date" id="an-start"></label>
+        <label class="rc-note">To <input type="date" id="an-end"></label>
+        <button class="btn" id="an-go">Apply</button>
+        <span class="rc-note" id="an-mix"></span>
+      </div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Assignee</th><th>Graded</th><th>Pass</th><th>Fail</th>
+        <th>Needs review</th><th>Pass rate</th></tr></thead>
+        <tbody id="an-rows"></tbody>
+      </table></div>
+    </div>
+
+    <div id="view-board" hidden>
+      <div class="rc-bar">
+        <label class="rc-note">From <input type="date" id="lb-start"></label>
+        <label class="rc-note">To <input type="date" id="lb-end"></label>
+        <button class="btn" id="lb-go">Apply</button>
+        <span class="rc-note" id="lb-mix"></span>
+      </div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Rank</th><th>Assignee</th><th>Pass rate</th><th>Graded</th>
+        <th>Pass</th><th>Fail</th></tr></thead>
+        <tbody id="lb-rows"></tbody>
+      </table></div>
+    </div>
+
+    <div id="view-rewards" hidden>
+      <div class="rc-bar">
+        <label class="rc-note" for="rw-weeks">Window</label>
+        <select id="rw-weeks">
+          <option value="2">2 weeks</option>
+          <option value="4" selected>4 weeks</option>
+          <option value="8">8 weeks</option>
+          <option value="12">12 weeks</option>
+        </select>
+        <span class="rc-note">Computed only from frozen records — fixing what the morning found is what scores here; editing tickets after the fact cannot.</span>
+      </div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Assignee</th><th>Graded</th><th>Frozen pass rate</th>
+        <th>Frozen fails</th><th>Remediated</th><th>Remediation rate</th>
+        <th>Week-over-week</th></tr></thead>
+        <tbody id="rw-rows"></tbody>
+      </table></div>
+    </div>
+    </div>
+  </div>
+</div>
+
+<div class="sheet-scrim" id="fs-scrim" hidden></div>
+<aside class="sheet" id="fs-sheet" hidden role="dialog" aria-modal="true"
+       aria-labelledby="fs-title">
+  <header class="sheet-head">
+    <div class="sheet-head-main">
+      <div class="sheet-num" id="fs-num"></div>
+      <h2 class="sheet-title" id="fs-title"></h2>
+      <div class="sheet-meta" id="fs-meta"></div>
+    </div>
+    <button class="sheet-close" id="fs-close" type="button"
+            aria-label="Close ticket detail">✕</button>
+  </header>
+  <div class="sheet-tags" id="fs-tags"></div>
+  <div class="sheet-body">
+    <section class="sheet-section">
+      <div class="sheet-section-title">Checks — as frozen at the snapshot</div>
+      <div id="fs-checks"></div>
+    </section>
+    <section class="sheet-section" id="fs-since-wrap">
+      <div class="sheet-section-title">Since the snapshot</div>
+      <div id="fs-since" style="font-size:12.5px"></div>
+    </section>
+    <section class="sheet-section" id="fs-notes-wrap">
+      <div class="sheet-section-title">Notes at the snapshot</div>
+      <div id="fs-notes" style="font-size:12.5px;color:var(--muted)"></div>
+    </section>
+    <section class="sheet-section">
+      <div class="sheet-section-title">Conversation (live)</div>
+      <div class="sheet-msgs" id="fs-msgs"></div>
+    </section>
+  </div>
+  <footer class="sheet-foot" id="fs-foot"></footer>
+</aside>
+
+<div class="modal-scrim" id="rv-scrim" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rv-title">
+    <h3 id="rv-title"></h3>
+    <p class="sub" id="rv-sub"></p>
+    <textarea id="rv-note" placeholder="Why — required. This note is the audit trail for changing the record."></textarea>
+    <div class="msg-line" id="rv-msg"></div>
+    <div class="row">
+      <button class="btn" id="rv-cancel">Cancel</button>
+      <button class="btn pass" id="rv-pass">Pass</button>
+      <button class="btn fail" id="rv-fail">Fail</button>
+      <button class="btn" id="rv-revert" title="Remove the human verdict; the frozen machine grade stands again">Revert to AI</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const esc = s => (window.QC ? QC.esc(s) : String(s));
+const $ = id => document.getElementById(id);
+
+let dayToken = 0, rwToken = 0;
+let currentDay = null;        // the loaded /day payload
+let rvTicket = null;          // ticket under review in the modal
+
+// ── sub-views ────────────────────────────────────────────────────────────────
+function showView(name) {
+  for (const v of ["day", "analytics", "board", "rewards"]) {
+    $("view-" + v).hidden = v !== name;
+  }
+  document.querySelectorAll(".rc-tab").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === name));
+  try { localStorage.setItem("qc.rc.view", name); } catch {}
+}
+$("rc-tabs").addEventListener("click", e => {
+  const btn = e.target.closest("[data-view]");
+  if (btn) showView(btn.dataset.view);
+});
+
+// ── frozen dashboard ─────────────────────────────────────────────────────────
+const GRADE_CLS = { "Pass": "g-Pass", "Fail": "g-Fail", "Needs Review": "g-NR" };
+
+// The same 14-column matrix as the live dashboard, reading FROZEN verdicts.
+// No "off" state here on purpose: the snapshot shows what was recorded, and a
+// check disabled later must not restyle history.
+const CHECKS = {
+  r1: { label: "Functionality" }, r2: { label: "Category" },
+  r3: { label: "Account" }, r4: { label: "Response Time" },
+  r5: { label: "Status Owner" }, r7: { label: "Rootly/Jira" },
+  r8: { label: "Oncall Check" }, r10: { label: "SpotAssist (advisory)" },
+  r11: { label: "Follow-through" },
+  a1: { label: "Cat. Accuracy" }, a2: { label: "Sentiment" },
+  a3: { label: "Response" }, a4: { label: "Status Check" },
+  a5: { label: "Closure" },
+};
+const MATRIX = [
+  ["r1", "Fn"], ["r2", "Ct"], ["r3", "Ac"], ["r4", "RT"],
+  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"], ["r10", "SA"], ["r11", "FT"],
+  ["a1", "CA"], ["a2", "Sn"], ["a3", "Rs"], ["a4", "SC"], ["a5", "Cl"],
+];
+const CELL_GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "–", none: "" };
+
+function cellState(key, v) {
+  if (v === null || v === undefined || v === "") return "none";
+  if (v === "N/A") return "na";
+  if (key === "a2") return "na";               // sentiment is never a verdict
+  if (v === "Pass" || v === "Good" || v === "Accurate" || v === "Consistent")
+    return "pass";
+  if (v === "Fail" || v === "Poor" || v === "Inaccurate" || v === "Inconsistent")
+    return "fail";
+  return "warn";                                // Needs Review / Needs Improvement
+}
+
+function matrixHtml(t) {
+  return `<div class="mx" role="group" aria-label="Frozen check results">`
+    + MATRIX.map(([key, short]) => {
+        const st = cellState(key, t[key]);
+        const label = (CHECKS[key] || {}).label || key.toUpperCase();
+        const shown = t[key] || "not evaluated";
+        return `<span class="mx-cell c-${st}" title="${esc(label)}: ${esc(shown)}"
+                      aria-label="${esc(label + " " + shown)}">${CELL_GLYPH[st]}</span>`;
+      }).join("") + `</div>`;
+}
+const DELTA_LABEL = {
+  remediated: "Remediated — failing at snapshot, passing now",
+  outstanding: "Outstanding — still failing",
+  regressed: "Regressed — passing at snapshot, failing now",
+};
+
+function gradeHtml(g) {
+  return `<span class="${GRADE_CLS[g] || "g-none"}">${esc(g || "—")}</span>`;
+}
+
+async function loadDates() {
+  const d = await QC.api("/api/reportcard/dates");
+  const sel = $("rc-date");
+  if (!d.dates.length) {
+    sel.innerHTML = `<option value="">No snapshots yet</option>`;
+    $("rc-cards").innerHTML = `<div class="empty">
+      No snapshots yet — the first one is taken at the next scheduled run.
+      Everything before then lives only on the live dashboard.</div>`;
+    return null;
+  }
+  sel.innerHTML = d.dates.map(x => x.hole
+    ? `<option value="${esc(x.date)}" data-hole="1">${esc(x.date)} — no snapshot (hole)</option>`
+    : `<option value="${esc(x.date)}">${esc(x.date)} · ${x.tickets} tickets</option>`
+  ).join("");
+  return d.dates;
+}
+
+async function loadDay(dateStr) {
+  const token = ++dayToken;
+  $("rc-cards").innerHTML =
+    `<div class="ticket-card" aria-hidden="true"><span class="sk sk-line" style="width:60%"></span></div>`;
+  $("rc-kpis").innerHTML = "";
+  let d;
+  try {
+    d = await QC.api(`/api/reportcard/day/${encodeURIComponent(dateStr)}`);
+  } catch (e) {
+    if (token !== dayToken) return;
+    $("rc-cards").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+    return;
+  }
+  if (token !== dayToken) return;
+  currentDay = d;
+
+  if (!d.snapshot) {
+    $("rc-snap-meta").textContent = "";
+    $("rc-cards").innerHTML = `<div class="empty">
+      ${esc(dateStr)} has no snapshot — the scheduled run never completed for this
+      date, so there is no grade of record. The live dashboard still shows its
+      current state.</div>`;
+    return;
+  }
+
+  const s = d.summary;
+  const frozenAt = new Date(d.snapshot.created_at).toLocaleString();
+  $("rc-snap-meta").textContent = `frozen ${frozenAt}`;
+  const remBase = s.remediated + s.outstanding;
+  const remRate = remBase ? Math.round(s.remediated / remBase * 100) : null;
+  $("rc-kpis").innerHTML = `
+    <div class="kpi"><b>${s.total}</b><span>tickets frozen</span></div>
+    <div class="kpi pass"><b>${s.pass}</b><span>pass (official)</span></div>
+    <div class="kpi fail"><b>${s.fail}</b><span>fail (official)</span></div>
+    <div class="kpi"><b>${s.review}</b><span>needs review</span></div>
+    ${s.pending ? `<div class="kpi"><b>${s.pending}</b><span>not graded at freeze — QC never ran before the snapshot</span></div>` : ""}
+    <div class="kpi rem"><b>${s.remediated}</b><span>remediated since</span></div>
+    <div class="kpi fail"><b>${s.outstanding}</b><span>still failing</span></div>
+    <div class="kpi reg"><b>${s.regressed}</b><span>regressed since</span></div>
+    ${remRate === null ? "" :
+      `<div class="kpi rem"><b>${remRate}%</b><span>remediation rate</span></div>`}`;
+
+  const badgeCls = g => ({ "Pass": "pass", "Fail": "fail",
+                           "Needs Review": "review" }[g] || "pending");
+  $("rc-cards").innerHTML = d.tickets.map(t => {
+    const official = t.effective_result || "Pending";
+    const safeLink = /^https?:\/\//i.test(t.link || "") ? t.link : "#";
+    const signed = t.review_decision
+      ? `<span class="review-mark" title="Signed off ${esc(t.review_decision)} by ${esc(t.reviewer_name || "")}${t.review_note ? ` — “${esc(t.review_note)}”` : ""}">signed off · ${esc(t.reviewer_name || "")}</span>`
+      : "";
+    let delta = "";
+    if (t.delta && t.delta !== "unchanged") {
+      const when = t.current_checked_at
+        ? ` title="current grade as of ${esc(new Date(t.current_checked_at).toLocaleString())}"` : "";
+      delta = `<span class="chip ${esc(t.delta)}"${when}>${esc(DELTA_LABEL[t.delta] || t.delta)}</span>`;
+    }
+    return `<div class="ticket-card" id="rc-t-${esc(String(t.number))}"
+                 data-tid="${esc(t.ticket_id)}">
+      <div class="card-top">
+        <span class="ticket-num">#${esc(String(t.number))}</span>
+        <span class="ticket-title">
+          <a href="${esc(safeLink)}" target="_blank" rel="noopener noreferrer"
+             onclick="event.stopPropagation()">${esc(t.title || "(no title)")}</a>
+        </span>
+        <span class="overall-badge overall-${badgeCls(official)}">${esc(official)}</span>${signed}
+      </div>
+      <div class="card-meta">
+        <span class="meta-tag">${esc((t.state || "—").replace(/_/g, " "))}</span>
+        <span class="meta-tag">${esc(t.assignee_name || "Unassigned")}</span>
+        <span class="meta-tag">${esc(t.account_name || "—")}</span>
+        ${delta}
+      </div>
+      <div class="checks-row">${matrixHtml(t)}</div>
+    </div>`;
+  }).join("") || `<div class="empty">The snapshot is empty.</div>`;
+
+  document.querySelectorAll("#rc-cards .ticket-card").forEach(card =>
+    card.addEventListener("click", () => openFrozenSheet(card.dataset.tid)));
+}
+
+// ── the slide-over: frozen record on top, live conversation beneath ─────────
+let fsTicketId = null;
+
+function closeFrozenSheet() {
+  fsTicketId = null;
+  $("fs-sheet").hidden = true;
+  $("fs-scrim").hidden = true;
+  document.querySelectorAll(".ticket-card.is-open")
+    .forEach(c => c.classList.remove("is-open"));
+}
+$("fs-close").addEventListener("click", closeFrozenSheet);
+$("fs-scrim").addEventListener("click", closeFrozenSheet);
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && fsTicketId) closeFrozenSheet();
+});
+
+async function openFrozenSheet(ticketId) {
+  const t = (currentDay?.tickets || []).find(x => x.ticket_id === ticketId);
+  if (!t) return;
+  fsTicketId = ticketId;
+
+  document.querySelectorAll(".ticket-card.is-open")
+    .forEach(c => c.classList.remove("is-open"));
+  const card = document.querySelector(
+    `.ticket-card[data-tid="${CSS.escape(ticketId)}"]`);
+  if (card) card.classList.add("is-open");
+
+  const official = t.effective_result || "Pending";
+  const badgeCls = { "Pass": "pass", "Fail": "fail",
+                     "Needs Review": "review" }[official] || "pending";
+  $("fs-num").textContent = `#${t.number}`;
+  $("fs-title").textContent = t.title || "(no title)";
+  $("fs-meta").textContent =
+    `${t.assignee_name || "Unassigned"} · ${t.account_name || "—"} · frozen record`;
+  $("fs-tags").innerHTML = `
+    <span class="overall-badge overall-${badgeCls}">${esc(official)}</span>
+    <span class="meta-tag">${esc((t.state || "—").replace(/_/g, " "))}</span>
+    ${t.delta && t.delta !== "unchanged"
+      ? `<span class="chip ${esc(t.delta)}">${esc(DELTA_LABEL[t.delta] || t.delta)}</span>` : ""}
+    ${t.review_decision
+      ? `<span class="review-mark">signed off · ${esc(t.reviewer_name || "")}</span>` : ""}`;
+
+  $("fs-checks").innerHTML = MATRIX.map(([key]) => {
+    const st = cellState(key, t[key]);
+    const label = (CHECKS[key] || {}).label || key.toUpperCase();
+    const shown = t[key] || "—";
+    return `<div class="sheet-check">
+      <span class="mx-cell c-${st}">${CELL_GLYPH[st]}</span>
+      <div style="flex:1">
+        <div class="sheet-check-head">
+          <span>${esc(key.toUpperCase())} · ${esc(label)}</span>
+          <span class="${GRADE_CLS[shown] || ""}">${esc(shown)}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const cur = t.current_effective;
+  const when = t.current_checked_at
+    ? ` (as of ${esc(new Date(t.current_checked_at).toLocaleString())})` : "";
+  $("fs-since").innerHTML = (t.delta && t.delta !== "unchanged")
+    ? `Frozen ${gradeHtml(t.overall_result)} → currently ${gradeHtml(cur)}${when}.
+       The frozen record does not change; this is what happened after it.`
+    : `<span class="rc-note">No change — the live board still agrees with the snapshot.</span>`;
+
+  $("fs-notes-wrap").style.display = t.ai_notes ? "" : "none";
+  $("fs-notes").textContent = t.ai_notes || "";
+
+  const who = t.review_decision
+    ? `Signed off ${t.review_decision} by ${t.reviewer_name || ""}`
+      + (t.review_note ? ` — “${t.review_note}”` : "")
+    : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
+  $("fs-foot").innerHTML = `
+    <span class="who">${esc(who)}</span>
+    <button class="btn" id="fs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
+  $("fs-review-btn").addEventListener("click", () => openReview(t.ticket_id));
+
+  $("fs-sheet").hidden = false;
+  $("fs-scrim").hidden = false;
+  $("fs-close").focus();
+
+  const msgs = $("fs-msgs");
+  msgs.innerHTML = `<div class="rc-note">Loading conversation…</div>`;
+  try {
+    const data = await QC.api(`/api/ticket/${encodeURIComponent(ticketId)}`);
+    if (fsTicketId !== ticketId) return;
+    renderMessages(msgs, data.messages || []);
+  } catch (e) {
+    if (fsTicketId !== ticketId) return;
+    msgs.innerHTML = `<div class="rc-note">${esc(e.message)}</div>`;
+  }
+}
+
+function renderMessages(container, messages) {
+  if (!messages.length) {
+    container.innerHTML = `<div class="rc-note">No messages.</div>`;
+    return;
+  }
+  container.innerHTML = messages.map(m => {
+    const div = document.createElement("div");
+    div.innerHTML = m.message_html || "";
+    const text = (div.textContent || "").trim();
+    const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : "";
+    const cls = `message-bubble ${m.is_customer ? "customer" : ""}${m.is_private ? " private" : ""}`;
+    const label = m.is_private ? `${m.author_name || ""} (private)` : (m.author_name || "Unknown");
+    return `<div class="${cls}">
+      <div class="msg-author ${m.is_customer ? "customer" : ""}">${esc(label)}</div>
+      <div>${esc(text)}</div>
+      <div class="msg-time">${esc(ts)}</div>
+    </div>`;
+  }).join("");
+}
+
+// ── review modal: the one place a human changes the record ──────────────────
+function openReview(ticketId) {
+  rvTicket = (currentDay?.tickets || []).find(t => t.ticket_id === ticketId);
+  if (!rvTicket) return;
+  $("rv-title").textContent = `Sign off #${rvTicket.number}`;
+  $("rv-sub").textContent =
+    `Frozen grade: ${rvTicket.overall_result || "not graded"} · your verdict `
+    + `overrides it in the Report Card AND every live view.`;
+  $("rv-note").value = "";
+  $("rv-msg").textContent = "";
+  $("rv-revert").style.display = rvTicket.review_decision ? "" : "none";
+  $("rv-scrim").hidden = false;
+  $("rv-note").focus();
+}
+
+async function sendReview(decision) {
+  if (!rvTicket) { $("rv-scrim").hidden = true; return; }
+  const note = $("rv-note").value.trim();
+  if (decision !== "Revert" && !note) {
+    $("rv-msg").textContent = "A note is required — it is the audit trail.";
+    return;
+  }
+  try {
+    await QC.api(`/api/ticket/${encodeURIComponent(rvTicket.ticket_id)}/review`, {
+      method: "POST", body: JSON.stringify({ decision, note }),
+    });
+    $("rv-scrim").hidden = true;
+    const reopen = fsTicketId;
+    await loadDay($("rc-date").value);   // re-read: the overlay changed
+    if (reopen) openFrozenSheet(reopen); // repaint the open sheet's verdict
+  } catch (e) {
+    $("rv-msg").textContent = e.message;
+  }
+}
+$("rv-pass").addEventListener("click", () => sendReview("Pass"));
+$("rv-fail").addEventListener("click", () => sendReview("Fail"));
+$("rv-revert").addEventListener("click", () => sendReview("Revert"));
+$("rv-cancel").addEventListener("click", () => { $("rv-scrim").hidden = true; });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") $("rv-scrim").hidden = true;
+});
+
+$("rc-date").addEventListener("change", () => loadDay($("rc-date").value));
+$("rc-csv").addEventListener("click", () => {
+  const d = $("rc-date").value;
+  if (!d) return;
+  const a = document.createElement("a");
+  a.href = `/api/reportcard/export/${d}`;
+  a.download = `report-card-${d}.csv`;
+  a.click();
+});
+
+// ── frozen analytics + leaderboard (two lenses on the same range query) ─────
+function mixNote(d) {
+  if (!d.live_days) return `${d.frozen_days} frozen day${d.frozen_days === 1 ? "" : "s"}`;
+  return `${d.frozen_days} frozen · ${d.live_days} day${d.live_days === 1 ? "" : "s"} `
+       + `not frozen (pre-snapshot or holes) — those use live grades`;
+}
+
+// One token PER view: analytics and leaderboard load concurrently at init, and
+// a shared token would let whichever starts second cancel the first's render.
+const rangeTokens = {};
+async function loadRange(startId, endId, noteId, render) {
+  const token = (rangeTokens[noteId] = (rangeTokens[noteId] || 0) + 1);
+  const start = $(startId).value, end = $(endId).value;
+  if (!start || !end) return;
+  try {
+    const d = await QC.api(`/api/reportcard/leaderboard?start=${start}&end=${end}`);
+    if (token !== rangeTokens[noteId]) return;
+    $(noteId).textContent = mixNote(d);
+    render(d);
+  } catch (e) {
+    if (token !== rangeTokens[noteId]) return;
+    $(noteId).textContent = e.message;
+  }
+}
+
+function renderAnalytics(d) {
+  $("an-rows").innerHTML = d.people.map(p => `
+    <tr><td>${esc(p.name)}</td><td class="num">${p.graded}</td>
+    <td class="num g-Pass">${p.pass}</td><td class="num g-Fail">${p.fail}</td>
+    <td class="num g-NR">${p.review}</td>
+    <td class="num">${p.pass_rate === null ? "—" : p.pass_rate + "%"}</td></tr>`
+  ).join("") || `<tr><td colspan="6" class="empty">No graded tickets in this range.</td></tr>`;
+}
+
+function renderBoard(d) {
+  $("lb-rows").innerHTML = d.people.map((p, i) => `
+    <tr><td class="num">${i + 1}</td><td>${esc(p.name)}</td>
+    <td class="num">${p.pass_rate === null ? "—" : p.pass_rate + "%"}</td>
+    <td class="num">${p.graded}</td><td class="num g-Pass">${p.pass}</td>
+    <td class="num g-Fail">${p.fail}</td></tr>`
+  ).join("") || `<tr><td colspan="6" class="empty">No graded tickets in this range.</td></tr>`;
+}
+
+$("an-go").addEventListener("click", () => loadRange("an-start", "an-end", "an-mix", renderAnalytics));
+$("lb-go").addEventListener("click", () => loadRange("lb-start", "lb-end", "lb-mix", renderBoard));
+
+// ── rewardable metrics ───────────────────────────────────────────────────────
+async function loadRewards() {
+  const token = ++rwToken;
+  $("rw-rows").innerHTML =
+    `<tr class="sk-row" aria-hidden="true"><td colspan="7"><span class="sk sk-line" style="width:55%"></span></td></tr>`;
+  let d;
+  try {
+    d = await QC.api(`/api/reportcard/rewards?weeks=${$("rw-weeks").value}`);
+  } catch (e) {
+    if (token !== rwToken) return;
+    $("rw-rows").innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  if (token !== rwToken) return;
+  $("rw-rows").innerHTML = d.people.map(p => {
+    const wow = p.wow_improvement;
+    const wowCell = wow === null
+      ? `<span class="rc-note" title="Needs snapshots in both this week and last week">insufficient history</span>`
+      : `<span class="${wow >= 0 ? "delta-pos" : "delta-neg"}">${wow >= 0 ? "+" : ""}${wow} pp</span>`;
+    return `<tr><td>${esc(p.name)}</td><td class="num">${p.graded}</td>
+      <td class="num">${p.frozen_pass_rate === null ? "—" : p.frozen_pass_rate + "%"}</td>
+      <td class="num g-Fail">${p.frozen_fails}</td>
+      <td class="num g-Pass">${p.remediated}</td>
+      <td class="num">${p.remediation_rate === null
+        ? `<span class="rc-note" title="No frozen fails to remediate">no fails</span>`
+        : p.remediation_rate + "%"}</td>
+      <td>${wowCell}</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="empty">No snapshots in this window yet.</td></tr>`;
+}
+$("rw-weeks").addEventListener("change", loadRewards);
+
+// ── init ─────────────────────────────────────────────────────────────────────
+(async () => {
+  await (window.QC && QC.ready);
+  const params = new URLSearchParams(location.search);
+
+  const end = new Date(), start = new Date();
+  start.setDate(start.getDate() - 29);
+  const iso = d => d.toISOString().slice(0, 10);
+  for (const [s, e] of [["an-start", "an-end"], ["lb-start", "lb-end"]]) {
+    $(s).value = iso(start); $(e).value = iso(end);
+  }
+
+  const dates = await loadDates().catch(() => null);
+  if (dates && dates.length) {
+    const wanted = params.get("date");
+    const pick = (wanted && dates.some(x => x.date === wanted && !x.hole))
+      ? wanted : (dates.find(x => !x.hole) || dates[0]).date;
+    $("rc-date").value = pick;
+    await loadDay(pick);
+    const tnum = params.get("ticket");
+    if (tnum) {
+      const row = document.getElementById(`rc-t-${CSS.escape(tnum)}`);
+      if (row) { row.scrollIntoView({ block: "center" }); }
+    }
+  }
+  loadRange("an-start", "an-end", "an-mix", renderAnalytics);
+  loadRange("lb-start", "lb-end", "lb-mix", renderBoard);
+  loadRewards();
+
+  let view = params.get("view") || "";
+  try { view = view || localStorage.getItem("qc.rc.view") || "day"; } catch { view = view || "day"; }
+  showView(["day", "analytics", "board", "rewards"].includes(view) ? view : "day");
+})();
+</script>
+</body>
+</html>

@@ -8,6 +8,7 @@
     { id: "weekly",      href: "/weekly",             label: "Weekly Dashboard" },
     { id: "reports",     href: "/reports",            label: "Product Report" },
     { id: "leaderboard", href: "/leaderboard",        label: "Leaderboard" },
+    { id: "reportcard",  href: "/reportcard",         label: "Report Card" },
     { id: "runs",        href: "/runs",               label: "Runs" },
     { id: "rules",       href: "/rules",              label: "Rules" },
     { id: "admin",       href: "/admin",              label: "Admin", memberLabel: "Settings" },
@@ -66,6 +67,7 @@
     if (location.pathname === "/rules") return "rules";
     if (location.pathname === "/admin") return "admin";
     if (location.pathname === "/leaderboard") return "leaderboard";
+    if (location.pathname === "/reportcard") return "reportcard";
     if (location.pathname === "/weekly") return "weekly";
     if (new URLSearchParams(location.search).get("view") === "analytics") return "analytics";
     return "dashboard";

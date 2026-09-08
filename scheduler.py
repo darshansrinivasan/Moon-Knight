@@ -276,6 +276,19 @@ async def run_pipeline(target: date, triggered_by: str,
                 qc_runner.run_qc_date, date_str, triggered_by
             )
 
+            # The grade of record. ONLY the scheduled run is the notary — it
+            # fires at a fixed time nobody can game. Manual runs, however
+            # complete, leave a visible hole instead (support is 24/7, so
+            # "first manual run of the day" is not a fair deadline). Never
+            # let snapshot bookkeeping fail the pipeline itself.
+            if triggered_by == "scheduler":
+                try:
+                    import reportcard
+                    await asyncio.to_thread(reportcard.capture, date_str, run_id)
+                except Exception:
+                    logger.exception("Report Card snapshot failed for %s",
+                                     date_str)
+
             slack_ok = None
             if notify_slack:
                 try:

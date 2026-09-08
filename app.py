@@ -33,6 +33,7 @@ import openqc
 import prompts
 import pylon
 import report
+import reportcard
 import share
 import qc_runner
 import resync_overall
@@ -1546,6 +1547,58 @@ async def review_ticket(ticket_id: str, request: Request,
         "reviewed_at": record["reviewed_at"],
         "note": record["note"],
     }}
+
+
+# ── Report Card: the frozen grade of record ──────────────────────────────────
+
+@app.get("/reportcard", response_class=HTMLResponse)
+async def reportcard_page(user: dict = Depends(auth.require_user)):
+    return _page("reportcard.html")
+
+
+@app.get("/api/reportcard/dates")
+async def reportcard_dates(user: dict = Depends(auth.require_user)):
+    return {"dates": await asyncio.to_thread(reportcard.snapshot_dates)}
+
+
+@app.get("/api/reportcard/day/{date_str}")
+async def reportcard_day(date_str: str,
+                         user: dict = Depends(auth.require_user)):
+    _require_date(date_str)
+    return await asyncio.to_thread(reportcard.day, date_str)
+
+
+@app.get("/api/reportcard/leaderboard")
+async def reportcard_leaderboard(start: str, end: str,
+                                 user: dict = Depends(auth.require_user)):
+    _require_date(start)
+    _require_date(end)
+    if start > end:
+        raise HTTPException(400, "start must be on or before end")
+    return await asyncio.to_thread(reportcard.leaderboard, start, end)
+
+
+@app.get("/api/reportcard/rewards")
+async def reportcard_rewards(weeks: int = 4,
+                             user: dict = Depends(auth.require_user)):
+    if not (1 <= weeks <= 26):
+        raise HTTPException(400, "weeks must be between 1 and 26")
+    return await asyncio.to_thread(reportcard.rewards, weeks)
+
+
+@app.get("/api/reportcard/export/{date_str}")
+async def reportcard_csv(date_str: str,
+                         user: dict = Depends(auth.require_user)):
+    """The frozen day as raw CSV — the data the evaluation used."""
+    _require_date(date_str)
+    try:
+        content = await asyncio.to_thread(reportcard.day_csv, date_str)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return StreamingResponse(
+        iter([content]), media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="report-card-{date_str}.csv"'})
 
 
 @app.get("/api/review/coverages")

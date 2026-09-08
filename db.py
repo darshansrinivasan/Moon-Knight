@@ -181,6 +181,39 @@ def init_db():
             qc_fingerprint TEXT
         );
 
+        -- ── Report Card: the day's grade of record ────────────────────
+        -- Written once per date by the SCHEDULED run, then never updated:
+        -- freezing is write discipline, not storage tricks. Attribution
+        -- (assignee/state/title) is copied, not joined — a later reassignment
+        -- must not move a frozen Fail onto someone else's scoreboard.
+        CREATE TABLE IF NOT EXISTS day_snapshots (
+            snapshot_date TEXT PRIMARY KEY,
+            run_id        INTEGER,
+            created_at    TEXT,
+            ticket_count  INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS snapshot_tickets (
+            snapshot_date TEXT,
+            ticket_id     TEXT,
+            number        INTEGER,
+            title         TEXT,
+            link          TEXT,
+            state         TEXT,
+            assignee_name TEXT,
+            account_name  TEXT,
+            source        TEXT,
+            r1 TEXT, r2 TEXT, r3 TEXT, r4 TEXT, r5 TEXT,
+            r7 TEXT, r8 TEXT, r10 TEXT, r11 TEXT,
+            a1 TEXT, a2 TEXT, a3 TEXT, a4 TEXT, a5 TEXT,
+            overall_result TEXT,
+            ai_notes       TEXT,
+            PRIMARY KEY (snapshot_date, ticket_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_snapshot_assignee
+            ON snapshot_tickets(assignee_name);
+
         CREATE TABLE IF NOT EXISTS fetch_log (
             fetch_date   TEXT PRIMARY KEY,
             ticket_count INTEGER,
