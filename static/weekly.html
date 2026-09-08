@@ -563,7 +563,7 @@ function filteredRows() {
   const cat = $("fCategory").value, st = $("fStatus").value, escv = $("fEsc").value;
   return (RAW.allRows || []).filter(r => {
     if (week && r.week !== week) return false;
-    if (agent && r.assignee !== agent) return false;
+    if (agent && agentName(r.assignee) !== agent) return false;
     if (pri && r.priority !== pri) return false;
     if (cat && r.category !== cat) return false;
     if (st && r.status !== st) return false;
@@ -573,6 +573,25 @@ function filteredRows() {
   });
 }
 
+function agentName(n) {
+  const t = (n == null ? "" : String(n)).trim();
+  if (!t || /^(unassigned|none|null|-|n\/a)$/i.test(t)) return "Unassigned";
+  return t;
+}
+function initials(name) {
+  const n = agentName(name);
+  if (n === "Unassigned") return "UN";
+  return n.split(/\s+/).map(w => w[0]).join("").toUpperCase().substr(0, 2);
+}
+function normalizeWeeklyPayload(data) {
+  if (!data) return data;
+  (data.allRows || []).forEach(r => { r.assignee = agentName(r.assignee); });
+  (data.agentTable || []).forEach(a => { a.agent = agentName(a.agent); });
+  if (data.agents && Array.isArray(data.agents.names)) {
+    data.agents.names = data.agents.names.map(agentName);
+  }
+  return data;
+}
 function mean(xs) { return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; }
 function pct(c, p) { return p ? Math.round((c - p) / p * 1000) / 10 : null; }
 // Pylon analytics P75/P90: nearest-rank, not interpolated.
@@ -585,6 +604,10 @@ function pctile(xs, p, minN) {
 }
 
 function fromRows(rows) {
+  rows = (rows || []).map(r => {
+    const n = agentName(r.assignee);
+    return n === r.assignee ? r : Object.assign({}, r, { assignee: n });
+  });
   const curr = rows.filter(r => r.week === "Current Week");
   const prev = rows.filter(r => r.week === "Previous Week");
   const DAYS = (RAW.dailyData && RAW.dailyData.currDays) || ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
@@ -966,7 +989,10 @@ function initFRTPercChart(weekFilter) {
   const p = pal();
   const agents = D.agentTable.filter(a => a.pv_frt_p75 != null || a.cv_frt_p75 != null || a.pv_frt_p90 != null || a.cv_frt_p90 != null);
   agents.sort((a, b) => (a.pv_frt_p90 || 999999) - (b.pv_frt_p90 || 999999));
-  const labels = agents.map(a => a.agent.length > 14 ? a.agent.substr(0, 12) + "…" : a.agent);
+  const labels = agents.map(a => {
+    const n = agentName(a.agent);
+    return n.length > 14 ? n.substr(0, 12) + "…" : n;
+  });
   const toMin = v => v != null ? Math.round(v / 60 * 10) / 10 : null;
   const datasets = [];
   if (weekFilter === "both" || weekFilter === "pv") {
@@ -1029,9 +1055,9 @@ function renderQuality() {
   (D.csatPrev.agents || []).forEach(a => pvCsat[a.name] = a);
   (D.csatCurr.agents || []).forEach(a => cvCsat[a.name] = a);
   $("qGrid").innerHTML = (D.agentTable || []).map(a => {
-    const ini = a.agent.split(" ").map(w => w[0]).join("").toUpperCase().substr(0, 2);
-    const pca = pvCsat[a.agent], cca = cvCsat[a.agent];
-    return `<div class="card card-sm"><div class="agn"><div class="av">${QC.esc(ini)}</div>${QC.esc(a.agent)}</div>
+    const name = agentName(a.agent);
+    const pca = pvCsat[a.agent] || pvCsat[name], cca = cvCsat[a.agent] || cvCsat[name];
+    return `<div class="card card-sm"><div class="agn"><div class="av">${QC.esc(initials(name))}</div>${QC.esc(name)}</div>
       <div class="str" style="grid-template-columns:1fr 1fr;margin-top:8px">
         <div class="st"><div class="st-l">Backlog</div><div class="st-v">${a.cv_backlog}</div></div>
         <div class="st"><div class="st-l">Escalations</div><div class="st-v">${(a.pv_escalations || 0) + (a.cv_escalations || 0)}</div></div>
@@ -1043,7 +1069,7 @@ function renderQuality() {
 
 function renderAgentTable() {
   const q = ($("agSearch").value || "").toLowerCase();
-  let d = [...D.agentTable].filter(a => !q || a.agent.toLowerCase().includes(q));
+  let d = [...D.agentTable].filter(a => !q || agentName(a.agent).toLowerCase().includes(q));
   d.sort((a, b) => {
     let av = a[sortK] ?? -Infinity, bv = b[sortK] ?? -Infinity;
     if (typeof av === "string") return sortD === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -1066,9 +1092,9 @@ function renderAgentTable() {
     return `<td class="${cls}">${v > 0 ? "+" : ""}${Number.isInteger(v) ? v : Number(v).toFixed(1)}</td>`;
   }
   $("agTBody").innerHTML = pd.map(a => {
-    const ini = a.agent.split(" ").map(w => w[0]).join("").toUpperCase().substr(0, 2);
+    const name = agentName(a.agent);
     const pvca = a.pv_csat_avg, cvca = a.cv_csat_avg;
-    return `<tr><td><div class="agn"><div class="av">${QC.esc(ini)}</div>${QC.esc(a.agent)}</div></td>
+    return `<tr><td><div class="agn"><div class="av">${QC.esc(initials(name))}</div>${QC.esc(name)}</div></td>
       <td>${a.pv_assigned}</td><td><b>${a.cv_assigned}</b></td>${dc(a.assigned_diff)}
       <td>${a.pv_resolved}</td><td><b>${a.cv_resolved}</b></td>
       <td>${fM(a.pv_frt_p90)}</td><td><b>${fM(a.cv_frt_p90)}</b></td>
@@ -1113,7 +1139,11 @@ function renderInsights() {
 function populateFilters() {
   const asel = $("fAgent");
   [...asel.querySelectorAll("option")].slice(1).forEach(o => o.remove());
+  const seen = new Set();
   (RAW.agents.names || []).forEach(n => {
+    n = agentName(n);
+    if (seen.has(n)) return;
+    seen.add(n);
     const o = document.createElement("option"); o.value = n; o.textContent = n; asel.appendChild(o);
   });
   const csel = $("fCategory");
@@ -1185,7 +1215,7 @@ function exportCsv() {
   const hdr = ["Agent","Assigned prev","Assigned curr","Δ","Resolved prev","Resolved curr",
     "P90 FRT prev","P90 FRT curr","P75 FRT prev","P75 FRT curr","Avg Res prev","Avg Res curr",
     "CSAT Avg prev","CSAT Avg curr","CSAT Resp prev","CSAT Resp curr","Backlog"];
-  const rows = D.agentTable.map(a => [a.agent, a.pv_assigned, a.cv_assigned, a.assigned_diff,
+  const rows = D.agentTable.map(a => [agentName(a.agent), a.pv_assigned, a.cv_assigned, a.assigned_diff,
     a.pv_resolved, a.cv_resolved, fM(a.pv_frt_p90), fM(a.cv_frt_p90), fM(a.pv_frt_p75), fM(a.cv_frt_p75),
     fH(a.pv_res_avg), fH(a.cv_res_avg), a.pv_csat_avg?.toFixed(2) ?? "N/A", a.cv_csat_avg?.toFixed(2) ?? "N/A",
     a.pv_csat_total ?? "N/A", a.cv_csat_total ?? "N/A", a.cv_backlog]);
@@ -1276,7 +1306,7 @@ async function load(opts) {
       q.set("week", opts.week);
     }
     const qs = q.toString();
-    RAW = await QC.api("/api/weekly" + (qs ? "?" + qs : ""));
+    RAW = normalizeWeeklyPayload(await QC.api("/api/weekly" + (qs ? "?" + qs : "")));
     RAW._csatLoading = true;
     weekStart = RAW.week_start;
     periodStart = RAW.period_start || RAW.week_start;

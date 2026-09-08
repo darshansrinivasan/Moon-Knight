@@ -431,6 +431,26 @@ check("n=1 is the only sample", weekly._pctile([674], 75), 674)
 check("too few samples is null", weekly._pctile([674], 75, min_n=2), None)
 
 print()
+print("=== blank assignee is Unassigned ===")
+# A missing owner used to render as a nameless row (empty avatar, empty
+# filter option that collided with All agents). Same label as leaderboard.
+add("no_owner", created="2026-08-21T08:00:00+00:00", assignee=None,
+    first_response_seconds=120)
+add("blank_owner", created="2026-08-21T09:00:00+00:00", assignee="  ",
+    first_response_seconds=90)
+unowned = weekly.build(CURR, now=NOW)
+ua_names = unowned["agents"]["names"]
+check("Unassigned is listed", "Unassigned" in ua_names, True)
+check("blank string is not an agent name", "" not in ua_names, True)
+check("whitespace is not an agent name", "  " not in ua_names, True)
+ua = next(a for a in unowned["agentTable"] if a["agent"] == "Unassigned")
+check("NULL and blank fold into one Unassigned row", ua["cv_assigned"], 2)
+check("allRows label unowned tickets Unassigned",
+      sum(1 for r in unowned["allRows"] if r["assignee"] == "Unassigned"), 2)
+check("no allRows keep a blank assignee",
+      any((r["assignee"] or "").strip() == "" for r in unowned["allRows"]), False)
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

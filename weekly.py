@@ -444,7 +444,7 @@ def _annotate(row: dict, tz, sla: float, now: datetime) -> dict | None:
         age = (clock - created).total_seconds()
         sla_breached = age > sla_secs
 
-    assignee = _display_agent(row.get("assignee_name")) or ""
+    assignee = _agent_label(row.get("assignee_name"))
     created_day = _local_date(created, tz)
     csat_events = []
     csat_raw = list(normalize_csat_items(row.get("csat_responses")))
@@ -613,12 +613,20 @@ def csat_json_for_store(issue: dict, existing_json: str | None = None) -> str:
     return json.dumps(list(merged.values()))
 
 
+UNASSIGNED = "Unassigned"
+
+
 def _display_agent(name) -> str | None:
     """A real person for CSAT charts, or None for Unassigned / blank."""
     text = (name or "").strip()
     if not text or text.lower() in {"unassigned", "none", "null", "-", "n/a"}:
         return None
     return text
+
+
+def _agent_label(name) -> str:
+    """Ticket/agent-table label. Blank is a person-shaped hole in the table."""
+    return _display_agent(name) or UNASSIGNED
 
 
 def _ticket_for_csat(conn, row: dict):
