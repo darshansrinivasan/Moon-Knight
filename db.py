@@ -220,6 +220,21 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_snapshot_assignee
             ON snapshot_tickets(assignee_name);
 
+        -- Which Slack channel a ticket ORIGINATED in, learned from Pylon's
+        -- channel-filtered search (the ticket's own payload usually does not
+        -- say: source='manual' + slack=null on most internal-channel tickets).
+        -- Membership table rather than a tickets column on purpose: the search
+        -- also names tickets never fetched locally, and the closed-in-range
+        -- denominators must classify those too.
+        CREATE TABLE IF NOT EXISTS channel_index (
+            ticket_id  TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            tagged_at  TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_channel_index_channel
+            ON channel_index(channel_id);
+
         CREATE TABLE IF NOT EXISTS fetch_log (
             fetch_date   TEXT PRIMARY KEY,
             ticket_count INTEGER,

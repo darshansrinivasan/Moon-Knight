@@ -237,6 +237,15 @@
             <label for="period-end">To</label>
             <input type="date" id="period-end">
           </div>
+          <div class="ffield">
+            <label for="channel-scope">Channels</label>
+            <select id="channel-scope"
+                    title="Page-level scope: internal = tickets raised in the CSM Slack channels configured in Admin. Changes every number on this page.">
+              <option value="all" selected>All</option>
+              <option value="external">External only</option>
+              <option value="internal">Internal only</option>
+            </select>
+          </div>
           <button type="button" class="fbtn primary" id="apply-period">Apply dates</button>
           <button type="button" id="this-week">This week</button>
           <button type="button" id="prev-week" aria-label="Previous period">‹</button>
@@ -300,6 +309,7 @@
           <div class="kpi-val" id="k-csat">—</div>
           <div class="kpi-meta" id="k-csat-m">—</div>
           <div class="kpi-ins" id="k-csat-i">—</div>
+          <div class="kpi-ins" id="k-csat-rr"></div>
         </div>
         <div class="kpi" style="--kc:var(--pass)">
           <div class="kpi-hdr"><span class="kpi-lbl">Avg First Response</span></div>
@@ -747,7 +757,11 @@ function initKPIs() {
   $("k-vol-i").textContent = "WoW change: " + fP(m.total_pct) + ". " + m.cv_total + " tickets in " + cl + " vs " + m.pv_total + " in " + pl + ".";
   $("k-csat").textContent = cv.avg != null ? cv.avg.toFixed(2) + " / 5" : "—";
   $("k-csat-m").innerHTML = '<span class="kpi-prev">Prev: <b>' + (pv.avg != null ? pv.avg.toFixed(2) + "/5" : "—") + "</b></span>";
-  $("k-csat-i").textContent = cv.total
+  const scopeSel = $("channel-scope");
+  const internalScope = scopeSel && scopeSel.value === "internal";
+  $("k-csat-i").textContent = internalScope
+    ? "Internal tickets don't trigger CSAT."
+    : cv.total
     ? cv.total + " responses · " + (cv.positivePct != null ? cv.positivePct + "% positive" : "—")
     : (D._csatLoading
       ? "Loading CSAT from Pylon…"
@@ -756,6 +770,31 @@ function initKPIs() {
         : (D.coverage && D.coverage.csatError
           ? "CSAT pull failed: " + D.coverage.csatError
           : "No CSAT responses in this period.")));
+  const rrEl = $("k-csat-rr");
+  if (rrEl && internalScope) {
+    rrEl.textContent = "";
+  } else if (rrEl) {
+    // From RAW, not D: the filtered-view rebuild (fromRows) carries only the
+    // fields it knows, and the KPI chips ignore the filter row anyway.
+    const cr = (RAW && RAW.closedRange) || D.closedRange;
+    const rr = (side, csatTotal) => {
+      const c = cr && cr[side];
+      if (!c) return null;                     // not fetched yet
+      if (!c.complete) return "unavailable";   // partial denominator: no fake %
+      if (!c.count) return "— (0 closed)";
+      return Math.round(csatTotal / c.count * 1000) / 10 + "% (" +
+             csatTotal + " of " + c.count + " closed)";
+    };
+    const cRate = rr("curr", cv.total || 0);
+    const pRate = rr("prev", pv.total || 0);
+    rrEl.textContent = cRate === null
+      ? ""                                      // stays empty until counts land
+      : "Response rate: " + cRate +
+        (pRate !== null && pRate !== "unavailable" ? " · Prev: " + pRate : "");
+    rrEl.title = "Responses ÷ tickets CLOSED in the period (by resolution "
+      + "date, whenever they were created). 'Unavailable' means Pylon's "
+      + "closed-ticket count could not be read completely.";
+  }
   $("k-frt").textContent = fM(m.cv_frt_avg);
   $("k-frt-p").textContent = fM(m.pv_frt_avg);
   const fb = $("k-frt-b");
@@ -1254,6 +1293,7 @@ function applyCsat(csat) {
   if (!RAW || !csat) return;
   RAW.csatPrev = csat.csatPrev || RAW.csatPrev;
   RAW.csatCurr = csat.csatCurr || RAW.csatCurr;
+  RAW.closedRange = csat.closed_range || RAW.closedRange || null;
   RAW.coverage = Object.assign({}, RAW.coverage || {}, csat.coverage || {}, {
     csatError: csat.error || null,
   });
@@ -1305,6 +1345,10 @@ async function load(opts) {
     } else if (opts && opts.week) {
       q.set("week", opts.week);
     }
+    // Page-level channel scope: one parameter, both endpoints, so the KPIs
+    // and the CSAT slice can never describe two different cohorts.
+    const scope = $("channel-scope") ? $("channel-scope").value : "all";
+    if (scope && scope !== "all") q.set("channels_scope", scope);
     const qs = q.toString();
     RAW = normalizeWeeklyPayload(await QC.api("/api/weekly" + (qs ? "?" + qs : "")));
     RAW._csatLoading = true;
@@ -1329,6 +1373,7 @@ async function load(opts) {
 ["fWeek","fAgent","fPriority","fCategory","fStatus","fEsc"].forEach(id => {
   $(id).addEventListener("change", paint);
 });
+$("channel-scope").addEventListener("change", () => load(lastLoadOpts));
 $("clearFilters").addEventListener("click", () => {
   ["fWeek","fAgent","fPriority","fCategory","fStatus","fEsc"].forEach(id => { $(id).value = ""; });
   paint();

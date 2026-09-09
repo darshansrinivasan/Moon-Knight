@@ -372,14 +372,17 @@ async def _search_issues_page(
     set cannot be enumerated up front. (Pylon allows not_in on state but
     rejects not_equals — verified against the live API.)
     """
-    body: dict = {
-        "filter": {
-            "field": "state",
-            "operator": "not_in",
-            "values": list(exclude_states),
-        },
-        "limit": 100,
-    }
+    return await _search_page(
+        client,
+        {"field": "state", "operator": "not_in",
+         "values": list(exclude_states)},
+        cursor, f"states not in {exclude_states}")
+
+
+async def _search_page(client: httpx.AsyncClient, search_filter: dict,
+                       cursor: str | None, what: str) -> IssuePage:
+    """One page of POST /issues/search for an arbitrary filter."""
+    body: dict = {"filter": search_filter, "limit": 100}
     if cursor:
         body["cursor"] = cursor
     r = await client.post(
@@ -388,9 +391,17 @@ async def _search_issues_page(
     r.raise_for_status()
     payload = r.json()
     if "data" not in payload:
+        # A zero-match search answers 200 with ONLY a request_id — no data
+        # key, no errors (verified live on empty channels). That is a real,
+        # complete, empty result. Only trusted on the FIRST page: an empty
+        # envelope mid-pagination still reads as "could not read the rest",
+        # because truncation must never be mistaken for completeness.
+        if "errors" not in payload and cursor is None:
+            logger.info("Pylon search matched nothing (%s)", what)
+            return IssuePage([], None, False, ok=True)
         logger.warning(
-            "Pylon search returned no data page (states not in %s): %s",
-            exclude_states, str(payload)[:200],
+            "Pylon search returned no data page (%s): %s",
+            what, str(payload)[:200],
         )
         return IssuePage([], None, False, ok=False)
     pag = payload.get("pagination", {})
@@ -398,6 +409,107 @@ async def _search_issues_page(
         payload["data"], pag.get("cursor"), pag.get("has_next_page", False),
         ok=True,
     )
+
+
+async def search_issue_refs(search_filter: dict,
+                            known_ids: set | None = None
+                            ) -> tuple[list[dict], bool]:
+    """[{id, number}] for every issue matching `search_filter`, paged.
+
+    `known_ids` enables the incremental mode the channel tagger runs daily:
+    results come newest-first, so a page that adds nothing new means the rest
+    is already indexed — stop there instead of re-reading years of history.
+    Returns (refs, complete); complete is False only when a page could not be
+    read, never because of an early stop.
+    """
+    refs: list[dict] = []
+    async with httpx.AsyncClient(timeout=30, headers=_headers()) as client:
+        cursor: str | None = None
+        while True:
+            page = await _with_retry(
+                lambda c=cursor: _search_page(client, search_filter, c,
+                                              str(search_filter)[:80]))
+            if not page.ok:
+                return refs, False
+            new = 0
+            for i in page.issues:
+                refs.append({"id": i.get("id"), "number": i.get("number")})
+                if known_ids is None or i.get("id") not in known_ids:
+                    new += 1
+            if not page.has_next:
+                return refs, True
+            if known_ids is not None and page.issues and new == 0:
+                return refs, True          # nothing new: the rest is indexed
+            cursor = page.cursor
+
+
+async def count_resolved_issues(start: date, end: date,
+                                exclude_states: tuple = (),
+                                internal_ids: set | None = None,
+                                internal_channels: set | None = None,
+                                ) -> tuple[dict, bool]:
+    """({total, internal, external}, complete) of issues RESOLVED in the range.
+
+    `exclude_states` drops issues whose CURRENT state is in the set: Pylon
+    stamps resolved_at on archived tickets too, and archiving is this org's
+    discard bucket, not a resolution — counting it inflated a week's "closed"
+    from 235 to 410.
+
+    Internal/external split: a kept issue is internal when its id is in
+    `internal_ids` (the channel_index membership the tagger maintains) or its
+    payload carries a channel in `internal_channels` (fast-path for tickets
+    the tagger has not seen yet). Unknown = external, the correct default.
+
+    POST /issues/search filtered on resolved_at + time_range — confirmed with
+    Pylon support — which is the only true "closed in range" cohort: the
+    date-windowed listing keys on creation, so a ticket created in June and
+    closed this week is invisible to it, and the local store only knows states
+    as of each day's last fetch. Bare pages, no hydration: the CSAT response
+    rate needs a denominator, not threads.
+
+    `complete` False means a page could not be read; a response rate built on
+    a partial denominator must say "unavailable", never a plausible-looking
+    wrong percentage.
+    """
+    lo, hi = _ist_range(start, end)
+    search_filter = {"field": "resolved_at", "operator": "time_range",
+                     "values": [lo, hi]}
+    async with httpx.AsyncClient(timeout=30, headers=_headers()) as client:
+        dropped = {str(s).lower() for s in exclude_states}
+        internal_ids = internal_ids or set()
+        internal_channels = internal_channels or set()
+        counts = {"total": 0, "internal": 0, "external": 0}
+
+        def keep(issues):
+            for i in issues:
+                if (i.get("state") or "").lower() in dropped:
+                    continue
+                counts["total"] += 1
+                chan = (i.get("slack") or {}).get("channel_id")
+                if i.get("id") in internal_ids or chan in internal_channels:
+                    counts["internal"] += 1
+                else:
+                    counts["external"] += 1
+
+        page = await _with_retry(
+            lambda: _search_page(client, search_filter, None, "resolved_at range"))
+        if not page.ok:
+            raise RuntimeError(
+                "Pylon search for resolved issues returned no data — "
+                "see the server log for Pylon's response")
+        keep(page.issues)
+        cursor, has_next = page.cursor, page.has_next
+        complete = True
+        while has_next:
+            nxt = await _with_retry(
+                lambda c=cursor: _search_page(client, search_filter, c,
+                                              "resolved_at range"))
+            if not nxt.ok:
+                complete = False
+                break
+            keep(nxt.issues)
+            cursor, has_next = nxt.cursor, nxt.has_next
+    return counts, complete
 
 
 async def fetch_open_issues(exclude_states: tuple) -> FetchedTickets:

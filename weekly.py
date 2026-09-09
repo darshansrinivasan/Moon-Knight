@@ -365,11 +365,17 @@ def pylon_duration_seconds(issue: dict, key: str) -> int | None:
     return n if n >= 0 else None
 
 
-def _load_tickets(since: date) -> list[dict]:
+def _load_tickets(since: date, channel_scope: str = "all") -> list[dict]:
+    import channels
     bound = since.isoformat()
+    # The page-level channel scope narrows the universe HERE, at the one place
+    # the cohort is loaded, so every KPI, chart and table inherits it and no
+    # surface can disagree with another about what "External only" contains.
+    scope_sql, scope_params = channels.channel_scope_clause(channel_scope, "t")
+    scope = f" AND {scope_sql}" if scope_sql else ""
     with db.get_conn() as conn:
         rows = conn.execute(
-                """
+                f"""
             SELECT t.id, t.number, t.title, t.link, t.state, t.type, t.priority,
                    t.assignee_name, t.account_id, t.custom_fields, t.created_at,
                    t.updated_at, t.fetch_date, t.deleted_at, t.csat_responses,
@@ -385,9 +391,9 @@ def _load_tickets(since: date) -> list[dict]:
                     COALESCE(t.created_at, t.fetch_date) >= ?
                  OR COALESCE(t.updated_at, '') >= ?
                  OR COALESCE(t.fetch_date, '') >= ?
-              )
+              ){scope}
             """,
-            (bound, bound, bound),
+            (bound, bound, bound, *scope_params),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1061,7 +1067,8 @@ def _insights(metrics: dict, categories: dict, customers: dict) -> list[dict]:
 
 
 def build(week_start: str | None = None, *, start: str | None = None,
-          end: str | None = None, now: datetime | None = None) -> dict:
+          end: str | None = None, now: datetime | None = None,
+          channel_scope: str = "all") -> dict:
     """Return the Support Weekly Dashboard payload for a current period."""
     tz = _tz()
     current = _now(now)
@@ -1069,7 +1076,7 @@ def build(week_start: str | None = None, *, start: str | None = None,
         week_start, start, end, now=current)
     sla = qc_rules.sla_hours()
 
-    raw_rows = _load_tickets(prev_monday)
+    raw_rows = _load_tickets(prev_monday, channel_scope)
     tickets = []
     for row in raw_rows:
         annotated = _annotate(row, tz, sla, current)

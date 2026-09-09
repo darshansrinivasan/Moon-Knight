@@ -288,6 +288,13 @@ async def run_pipeline(target: date, triggered_by: str,
                 except Exception:
                     logger.exception("Report Card snapshot failed for %s",
                                      date_str)
+                # Keep the internal-channel index fresh: incremental (newest-
+                # first, early stop), ~one Pylon page per channel per day.
+                try:
+                    import channels
+                    await channels.tag_all()
+                except Exception:
+                    logger.exception("Channel tagging failed")
 
             slack_ok = None
             if notify_slack:

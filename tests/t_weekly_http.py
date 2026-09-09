@@ -75,6 +75,66 @@ if r.status_code == 200:
     check("csat slice does not block on missing Pylon",
           r.json().get("error") in (None, "pylon_not_configured")
           or isinstance(r.json().get("csatCurr"), dict))
+    # Response-rate denominator: always present as a key; None until a Pylon
+    # count lands (here Pylon is unconfigured, so both sides stay None).
+    check("csat slice carries closed_range", "closed_range" in r.json())
+    check("unconfigured Pylon leaves the denominators None, not fake zeros",
+          r.json()["closed_range"] == {"curr": None, "prev": None})
+
+print()
+print("=== response-rate denominator: closed-in-range, by resolution date ===")
+import pylon as _pylon
+
+
+async def fake_count(start, end, exclude_states=(), internal_ids=None,
+                     internal_channels=None):
+    fake_count.exclude = exclude_states
+    fake_count.calls.append((start.isoformat(), end.isoformat()))
+    # current period: 30 closed (10 internal); previous: 60 (20 internal)
+    if start.isoformat() == "2026-08-18":
+        return {"total": 30, "internal": 10, "external": 20}, True
+    return {"total": 60, "internal": 20, "external": 40}, True
+
+fake_count.calls = []
+real_count = _pylon.count_resolved_issues
+_pylon.count_resolved_issues = fake_count
+appmod._CLOSED_COUNTS.clear()
+try:
+    r = client.get("/api/weekly/csat?start=2026-08-18&end=2026-08-20")
+    cr = r.json()["closed_range"]
+    check("closed counts flow through for both periods",
+          (cr["curr"], cr["prev"]) ==
+          ({"count": 30, "complete": True}, {"count": 60, "complete": True}),
+          str(cr))
+    check("both period windows were asked of Pylon, prev before curr window",
+          sorted(fake_count.calls) ==
+          [("2026-08-15", "2026-08-17"), ("2026-08-18", "2026-08-20")],
+          str(fake_count.calls))
+    check("archived is always excluded from the denominator",
+          "archived" in fake_count.exclude, str(fake_count.exclude))
+    # The page-level channel scope picks its own denominator from the same
+    # cached split — External must not divide by a total that includes
+    # internal tickets which can never produce CSAT.
+    r2 = client.get("/api/weekly/csat?start=2026-08-18&end=2026-08-20"
+                    "&channels_scope=external")
+    cr2 = r2.json()["closed_range"]
+    check("external scope uses the external denominator",
+          (cr2["curr"]["count"], cr2["prev"]["count"]) == (20, 40), str(cr2))
+    check("scope echoed back", r2.json().get("channel_scope") == "external")
+    check("bad scope -> 400",
+          client.get("/api/weekly/csat?start=2026-08-18&end=2026-08-20"
+                     "&channels_scope=nope").status_code == 400)
+    check("bad scope on /api/weekly -> 400",
+          client.get("/api/weekly?start=2026-08-18&end=2026-08-20"
+                     "&channels_scope=nope").status_code == 400)
+    # TTL cache: a second view must not crawl Pylon again.
+    n = len(fake_count.calls)
+    client.get("/api/weekly/csat?start=2026-08-18&end=2026-08-20")
+    check("second view reads the cache, no second crawl",
+          len(fake_count.calls) == n)
+finally:
+    _pylon.count_resolved_issues = real_count
+    appmod._CLOSED_COUNTS.clear()
 
 print()
 print("=== refresh: fetch today + refresh the week, no AI path ===")

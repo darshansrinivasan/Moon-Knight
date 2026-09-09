@@ -237,6 +237,13 @@ SETTING_SPECS = [
     # Functionality-check sharing: where generated Google Sheets land, and who
     # can open them ("domain" = anyone at the login domain, "link" = anyone
     # with the link — the Slack channel's members).
+    # Slack channels whose tickets are INTERNAL (CSM-raised): one ID per
+    # line. Classification is derived at read time, so edits reclassify
+    # instantly; adding a channel triggers its history tagging.
+    {"key": "internal_slack_channel_ids",
+     "default": "C03KBJNNN9X\nC03LH5CFV9C\nC020Z7RV0SU\nC04TELM72BY\n"
+                "C8HMVSUTH\nC09PV4749GE\nC05CQ616P0X\nC06165JH6PQ\n"
+                "CNTV3DSTH\nC01HRKT45NG"},
     {"key": "share_drive_folder_id", "default": ""},
     {"key": "share_sheet_visibility", "default": "domain"},
     {"key": "dashboard_base_url", "env": "QC_BASE_URL",             "default": ""},

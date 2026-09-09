@@ -180,6 +180,7 @@
       <button data-section="review">Review coverage</button>
       <button data-section="statuses">Ticket statuses</button>
       <button data-section="catalog">Tagging catalog</button>
+      <button data-section="channels">Slack channels</button>
       <button data-section="audit" id="nav-audit">Activity log</button>
     </aside>
     <div class="content-pane">
@@ -518,6 +519,38 @@
               <button type="button" class="ghost" data-cat-reset="category">Reset to shipped list</button>
             </div>
             <div class="msg" id="msg-catalog"></div>
+          </div>
+        </div>
+
+        <div class="section" id="sec-channels">
+          <div class="card">
+            <h2>Internal Slack channels</h2>
+            <p class="card-sub">
+              Tickets raised in these channels are <b>internal</b> (CSM-raised);
+              everything else counts as external. The Weekly Dashboard's
+              Channels scope reads this list. Classification comes from Pylon's
+              own channel search — a ticket's record usually does not name its
+              channel, so the app mirrors each channel's search results and
+              re-checks them daily.
+            </p>
+            <div class="field">
+              <label for="channel-ids">Channel IDs — one per line</label>
+              <div class="hint">Adding a channel tags its whole history in the
+                background right away. Removing one reclassifies instantly —
+                nothing to re-run.</div>
+              <textarea id="channel-ids" rows="10" spellcheck="false"
+                        style="font-family:ui-monospace,monospace"></textarea>
+            </div>
+            <div class="actions">
+              <button id="channels-save">Save channels</button>
+              <button class="ghost" id="channels-retag"
+                      title="Re-read every channel's full history from Pylon — use after an incomplete run">Re-run tagging</button>
+            </div>
+            <div class="msg" id="msg-channels"></div>
+            <div class="field">
+              <label>Tagging health</label>
+              <div class="hint" id="channels-state">Loading…</div>
+            </div>
           </div>
         </div>
 
@@ -1268,6 +1301,7 @@ async function load() {
 
   try {
     await loadCatalog();
+    await loadChannels();
   } catch (e) {
     show($("msg-catalog"), e.message, "err");
   }
@@ -1296,6 +1330,65 @@ function fillCatalog(d) {
     $("cat-cat").readOnly = true;
   }
 }
+
+async function loadChannels() {
+  try {
+    const d = await api("/api/admin/channels");
+    $("channel-ids").value = (d.ids || []).join("\n");
+    const st = d.state || {};
+    const lines = (d.ids || []).map(id => {
+      const x = st[id];
+      if (!x) return `${esc(id)} — never tagged yet`;
+      const when = new Date(x.at).toLocaleString();
+      return x.error
+        ? `${esc(id)} — FAILED ${esc(when)}: ${esc(x.error)}`
+        : `${esc(id)} — ${x.complete ? "ok" : "INCOMPLETE (re-run tagging)"} · ${x.seen} seen · ${esc(when)}`;
+    });
+    $("channels-state").innerHTML = lines.join("<br>") || "No channels configured.";
+    if (ME && ME.role !== "admin") {
+      $("channels-save").disabled = true;
+      $("channels-retag").disabled = true;
+      $("channel-ids").disabled = true;
+    }
+  } catch (e) {
+    $("channels-state").textContent = e.message;
+  }
+}
+
+$("channels-save").addEventListener("click", async () => {
+  const btn = $("channels-save");
+  btn.disabled = true;
+  try {
+    const ids = $("channel-ids").value.split("\n").map(x => x.trim()).filter(Boolean);
+    const d = await api("/api/admin/channels", {
+      method: "PUT", body: JSON.stringify({ ids }),
+    });
+    show($("msg-channels"),
+         d.tagging_started && d.tagging_started.length
+           ? `Saved — tagging history for ${d.tagging_started.length} new channel(s) in the background.`
+           : "Saved.", "ok");
+    await loadChannels();
+  } catch (e) {
+    show($("msg-channels"), e.message, "bad");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("channels-retag").addEventListener("click", async () => {
+  const btn = $("channels-retag");
+  btn.disabled = true;
+  try {
+    await api("/api/admin/channels/retag", { method: "POST" });
+    show($("msg-channels"),
+         "Full re-tagging started in the background — refresh this section in a minute.",
+         "ok");
+  } catch (e) {
+    show($("msg-channels"), e.message, "bad");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 async function loadCatalog() {
   fillCatalog(await api("/api/admin/catalog"));

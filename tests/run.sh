@@ -36,7 +36,7 @@ run_suite() {
     fi
 }
 
-for suite in t_scorer t_evidence t_vault t_sched t_grades t_cost t_rescore t_cleanup t_reap t_theme t_calendar t_leaderboard t_drilldown t_open t_funcheck t_report t_reportcard t_share t_suggestions t_prompts t_dryrun t_rdryrun t_logger t_rulecfg t_status t_roles t_slack t_route t_lb_http t_http t_weekly t_weekly_http; do
+for suite in t_scorer t_evidence t_vault t_sched t_grades t_cost t_rescore t_cleanup t_reap t_theme t_calendar t_channels t_leaderboard t_drilldown t_open t_funcheck t_report t_reportcard t_share t_suggestions t_prompts t_dryrun t_rdryrun t_logger t_rulecfg t_status t_roles t_slack t_route t_lb_http t_http t_weekly t_weekly_http; do
     printf '\n═══ %s ═══\n' "$suite"
     if run_suite "$suite"; then
         :

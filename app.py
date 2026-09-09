@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 load_dotenv()
 
 import auth
+import channels
 import db
 import drilldown
 import dryrun
@@ -486,6 +487,10 @@ async def fetch_and_store(target: date) -> FetchResult:
                     weekly.pylon_duration_seconds(
                         issue, "business_hours_resolution_seconds"),
                 ))
+
+                # Origin channel, when the payload names it (most internal-
+                # channel tickets don't — the tagger covers those).
+                channels.note_payload_channel(issue, conn)
 
                 # Skip messages and scoring for archived tickets — state is
                 # persisted above so the dashboard shows current assignee/state.
@@ -1021,6 +1026,55 @@ async def put_catalog(request: Request,
             "category": current["category"]}
 
 
+@app.get("/api/admin/channels")
+async def get_channels(user: dict = Depends(auth.require_user)):
+    """The internal-channel list and the tagger's per-channel health."""
+    return {
+        "ids": channels.internal_channel_ids(),
+        "state": await asyncio.to_thread(channels.tag_state),
+        "can_edit": user["role"] == "admin",
+    }
+
+
+@app.put("/api/admin/channels")
+async def put_channels(request: Request,
+                       user: dict = Depends(auth.require_admin)):
+    """Save the internal-channel list; newly added channels get their history
+    tagged immediately in the background — otherwise channel #11 would be
+    misclassified until someone remembered to re-run the tagger."""
+    body = await request.json()
+    raw = body.get("ids")
+    if not isinstance(raw, list):
+        raise HTTPException(400, "ids must be a list of Slack channel IDs")
+    cleaned, seen = [], set()
+    for x in raw:
+        cid = str(x or "").strip()
+        if not cid or cid in seen:
+            continue
+        if not re.fullmatch(r"[A-Z0-9]{5,20}", cid):
+            raise HTTPException(400, f"{cid!r} is not a Slack channel ID")
+        seen.add(cid)
+        cleaned.append(cid)
+
+    before = set(channels.internal_channel_ids())
+    vault.set_raw_setting(channels.SETTING_KEY, "\n".join(cleaned),
+                          user["email"])
+    vault.audit(user["email"], "channels.save",
+                f"{len(cleaned)} internal channels")
+    added = [c for c in cleaned if c not in before]
+    if added:
+        asyncio.create_task(channels.tag_all(full=True, only=added))
+    return {"ok": True, "ids": cleaned, "tagging_started": added}
+
+
+@app.post("/api/admin/channels/retag")
+async def retag_channels(user: dict = Depends(auth.require_admin)):
+    """Full re-sweep of every configured channel, in the background."""
+    vault.audit(user["email"], "channels.retag", "full sweep")
+    asyncio.create_task(channels.tag_all(full=True))
+    return {"ok": True, "channels": channels.internal_channel_ids()}
+
+
 @app.post("/api/admin/share/folder")
 async def create_share_folder(request: Request,
                               user: dict = Depends(auth.require_admin)):
@@ -1110,6 +1164,43 @@ async def weekly_page(user: dict = Depends(auth.require_user)):
 _CSAT_REFRESHED: dict[tuple, float] = {}
 _CSAT_TTL_SECONDS = 600
 
+# Closed-in-range counts for the CSAT response rate: the denominator is
+# "tickets RESOLVED in the period" (Pylon resolved_at search), regardless of
+# when they were created — a cohort the local store cannot produce. Cached per
+# period so member views read the last operator-triggered count instead of
+# each triggering a Pylon crawl.
+_CLOSED_COUNTS: dict[tuple, dict] = {}
+
+
+async def _closed_count_cached(start: str, end: str, may_fetch: bool) -> dict | None:
+    key = (start, end)
+    hit = _CLOSED_COUNTS.get(key)
+    if hit and (time.monotonic() - hit["at"] < _CSAT_TTL_SECONDS or not may_fetch):
+        return hit
+    if not may_fetch:
+        return hit
+    try:
+        # Archived is always out: Pylon stamps resolved_at on it, but this
+        # org's archive is the discard bucket, not a resolution. On top of
+        # that, whatever the admin excludes from QC scope stays out too —
+        # one opinion (rules.excluded_states), same as every other surface.
+        import rules as qc_rules
+        dropped = tuple({*qc_rules.excluded_states(), "archived"})
+        internal_ids = await asyncio.to_thread(channels.internal_ticket_ids)
+        counts, complete = await pylon.count_resolved_issues(
+            date.fromisoformat(start), date.fromisoformat(end), dropped,
+            internal_ids=internal_ids,
+            internal_channels=set(channels.internal_channel_ids()))
+        hit = {"counts": counts, "complete": complete, "at": time.monotonic()}
+        _CLOSED_COUNTS[key] = hit
+        return hit
+    except pylon.PylonNotConfigured:
+        return hit
+    except Exception as e:
+        logger.warning("Closed-in-range count skipped for %s..%s: %s",
+                       start, end, e)
+        return hit
+
 
 def _csat_refresh_due(start: str, end: str) -> bool:
     now = time.monotonic()
@@ -1124,6 +1215,7 @@ def _csat_refresh_due(start: str, end: str) -> bool:
 async def get_weekly(week: str | None = None,
                     start: str | None = None,
                     end: str | None = None,
+                    channels_scope: str = "all",
                     user: dict = Depends(auth.require_user)):
     """Period-over-period support operations from the local ticket store.
 
@@ -1137,17 +1229,23 @@ async def get_weekly(week: str | None = None,
         _require_date(start)
     if end:
         _require_date(end)
+    if channels_scope not in channels.SCOPES:
+        raise HTTPException(400, "channels_scope must be all, external or internal")
     try:
-        return await asyncio.to_thread(
-            weekly.build, week, start=start, end=end)
+        payload = await asyncio.to_thread(
+            weekly.build, week, start=start, end=end,
+            channel_scope=channels_scope)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    payload["channel_scope"] = channels_scope
+    return payload
 
 
 @app.get("/api/weekly/csat")
 async def get_weekly_csat(week: str | None = None,
                          start: str | None = None,
                          end: str | None = None,
+                         channels_scope: str = "all",
                          user: dict = Depends(auth.require_user)):
     """Pull Pylon CSAT for the weekly window, then return the CSAT slice.
 
@@ -1166,6 +1264,8 @@ async def get_weekly_csat(week: str | None = None,
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
+    if channels_scope not in channels.SCOPES:
+        raise HTTPException(400, "channels_scope must be all, external or internal")
     fetched = 0
     error = None
     # Operators refresh CSAT from Pylon, throttled so a busy morning of
@@ -1183,14 +1283,39 @@ async def get_weekly_csat(week: str | None = None,
 
     try:
         payload = await asyncio.to_thread(
-            weekly.build, week, start=start, end=end)
+            weekly.build, week, start=start, end=end,
+            channel_scope=channels_scope)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+    # Response-rate denominators: tickets RESOLVED in each period (Pylon
+    # resolved_at search), regardless of creation date — attached here, not in
+    # weekly.build, so the existing dashboard logic stays untouched.
+    may_fetch = auth.can_run_qc(user)
+    curr_closed = await _closed_count_cached(
+        _curr_start.isoformat(), curr_end.isoformat(), may_fetch)
+    prev_closed = await _closed_count_cached(
+        prev_start.isoformat(), _prev_end.isoformat(), may_fetch)
+
+    # The cache holds the full internal/external split (scope-independent);
+    # the response carries the number for the REQUESTED scope.
+    scope_key = {"all": "total", "external": "external",
+                 "internal": "internal"}[channels_scope]
+
+    def pick(hit):
+        if not hit:
+            return None
+        return {"count": hit["counts"][scope_key], "complete": hit["complete"]}
 
     keys = ("agent", "pv_csat_avg", "cv_csat_avg",
             "pv_csat_total", "cv_csat_total",
             "pv_csat_award", "cv_csat_award")
     return {
+        "closed_range": {
+            "curr": pick(curr_closed),
+            "prev": pick(prev_closed),
+        },
+        "channel_scope": channels_scope,
         "csatPrev": payload["csatPrev"],
         "csatCurr": payload["csatCurr"],
         "agentTable": [{k: a.get(k) for k in keys} for a in payload["agentTable"]],
