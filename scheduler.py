@@ -293,6 +293,9 @@ async def run_pipeline(target: date, triggered_by: str,
                 try:
                     import channels
                     await channels.tag_all()
+                    # New tags must reach the cached response-rate
+                    # denominators now, not a TTL later.
+                    app._CLOSED_COUNTS.clear()
                 except Exception:
                     logger.exception("Channel tagging failed")
 

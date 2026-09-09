@@ -1026,6 +1026,20 @@ async def put_catalog(request: Request,
             "category": current["category"]}
 
 
+async def _tag_then_invalidate(full: bool = False,
+                               only: list[str] | None = None) -> dict:
+    """Tag, THEN clear the closed-count cache.
+
+    The denominators are cached with their internal/external split baked in;
+    a split computed against a half-built index must not outlive the tagging
+    that fixes it — in prod that read as "External only" showing the total
+    (219) instead of the true external count (137) for up to a TTL.
+    """
+    res = await channels.tag_all(full=full, only=only)
+    _CLOSED_COUNTS.clear()
+    return res
+
+
 @app.get("/api/admin/channels")
 async def get_channels(user: dict = Depends(auth.require_user)):
     """The internal-channel list and the tagger's per-channel health."""
@@ -1063,7 +1077,7 @@ async def put_channels(request: Request,
                 f"{len(cleaned)} internal channels")
     added = [c for c in cleaned if c not in before]
     if added:
-        asyncio.create_task(channels.tag_all(full=True, only=added))
+        asyncio.create_task(_tag_then_invalidate(full=True, only=added))
     return {"ok": True, "ids": cleaned, "tagging_started": added}
 
 
@@ -1071,7 +1085,7 @@ async def put_channels(request: Request,
 async def retag_channels(user: dict = Depends(auth.require_admin)):
     """Full re-sweep of every configured channel, in the background."""
     vault.audit(user["email"], "channels.retag", "full sweep")
-    asyncio.create_task(channels.tag_all(full=True))
+    asyncio.create_task(_tag_then_invalidate(full=True))
     return {"ok": True, "channels": channels.internal_channel_ids()}
 
 

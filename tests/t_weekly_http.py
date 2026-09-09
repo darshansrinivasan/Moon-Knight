@@ -132,6 +132,22 @@ try:
     client.get("/api/weekly/csat?start=2026-08-18&end=2026-08-20")
     check("second view reads the cache, no second crawl",
           len(fake_count.calls) == n)
+    # Tagging must flush the cached splits — a fresh index with a stale
+    # split showed prod's External denominator as the total.
+    import channels as _channels
+
+    async def fake_tag(full=False, only=None):
+        return {"channels": [], "complete": True}
+
+    real_tag = _channels.tag_all
+    _channels.tag_all = fake_tag
+    try:
+        import asyncio as _aio
+        _aio.run(appmod._tag_then_invalidate(full=True))
+        check("tagging invalidates the closed-count cache",
+              appmod._CLOSED_COUNTS == {})
+    finally:
+        _channels.tag_all = real_tag
 finally:
     _pylon.count_resolved_issues = real_count
     appmod._CLOSED_COUNTS.clear()
