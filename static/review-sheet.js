@@ -7,15 +7,20 @@
  * paying for.
  *
  * Contract: QCReviewSheet.open({date, number, mode, ticketId, pylonLink,
- * onReviewed}) fetches the frozen record from
- * /api/reportcard/ticket/{date}/{number} and renders it with the live
- * conversation beneath. Two modes, one policy: mode "review" (Report Card —
- * the ONE place verdicts are recorded, through /api/ticket/{id}/review; note
- * mandatory, revert lowercase) and mode "navigate" (Open Tickets — read-only,
- * with Dashboard / Report Card / Pylon buttons; the Report Card button is
- * disabled until the day's frozen record exists). `ticketId`/`pylonLink` are
- * fallbacks for the no-record case, where the frozen row can't supply them.
- * `onReviewed` fires after any successful verdict change. Also exported: CHECKS, MATRIX, cellState,
+ * onReviewed}). Two modes, one rendering vocabulary:
+ *
+ *   "review"   (Report Card) — the FROZEN record from
+ *              /api/reportcard/ticket/{date}/{number}, and the ONE place
+ *              verdicts are recorded (/api/ticket/{id}/review; note
+ *              mandatory, revert lowercase).
+ *   "navigate" (Open Tickets) — the LIVE record from /api/ticket/{id}:
+ *              current checks with their evidence, current grade with any
+ *              review overlay, conversation. Read-only, with Dashboard /
+ *              Report Card / Pylon buttons; the Report Card button is
+ *              disabled until the day's frozen record exists (checked with a
+ *              parallel frozen lookup).
+ *
+ * `onReviewed` fires after any successful verdict change (review mode). Also exported: CHECKS, MATRIX, cellState,
  * CELL_GLYPH — the one copy of the check vocabulary the Report Card's card
  * grid reads too.
  */
@@ -245,18 +250,131 @@
     $("rvs-scrim").hidden = false;
     $("rvs-close").focus({ preventScroll: true });
 
-    let d;
     try {
-      d = await QC.api(`/api/reportcard/ticket/${encodeURIComponent(opts.date)}`
-                       + `/${encodeURIComponent(opts.number)}`);
+      if (state.mode === "navigate") {
+        // Live record + (in parallel) whether a frozen record exists, which
+        // only gates the Report Card button.
+        const [live, frozen] = await Promise.all([
+          QC.api(`/api/ticket/${encodeURIComponent(opts.ticketId)}`),
+          QC.api(`/api/reportcard/ticket/${encodeURIComponent(opts.date)}`
+                 + `/${encodeURIComponent(opts.number)}`).catch(() => null),
+        ]);
+        if (!state || state.number !== opts.number) return;
+        state.data = { live, frozenExists: !!(frozen && frozen.ticket) };
+        renderLive(live, state.data.frozenExists);
+      } else {
+        const d = await QC.api(
+          `/api/reportcard/ticket/${encodeURIComponent(opts.date)}`
+          + `/${encodeURIComponent(opts.number)}`);
+        if (!state || state.number !== opts.number) return;
+        state.data = d;
+        render(d);
+      }
     } catch (e) {
+      if (!state || state.number !== opts.number) return;
       $("rvs-title").textContent = "Could not load the record";
       $("rvs-body").innerHTML = `<div class="rvs-empty">${esc(e.message)}</div>`;
+    }
+  }
+
+  // ── navigate mode: the ticket as it is NOW, same visual vocabulary ─────────
+  function renderLive(payload, frozenExists) {
+    const t = payload.ticket || {};
+    const why = payload.evidence || {};
+    const review = t.review || null;
+    const effective = (review && ["Pass", "Fail"].includes(review.decision))
+      ? review.decision : (t.overall_result || "Pending");
+    const badgeCls = { "Pass": "pass", "Fail": "fail",
+                       "Needs Review": "review" }[effective] || "pending";
+    const pylonLink = /^https?:\/\//i.test(t.link || "") ? t.link : "";
+
+    $("rvs-num").innerHTML = pylonLink
+      ? `<a href="${esc(pylonLink)}" target="_blank" rel="noopener noreferrer"
+           title="Open in Pylon">#${esc(String(t.number))}</a>`
+      : `#${esc(String(t.number || state.number))}`;
+    $("rvs-title").textContent = t.title || "(no title)";
+    $("rvs-meta").textContent =
+      `${t.assignee_name || "Unassigned"} · ${t.account_name || "—"} · live record`;
+    $("rvs-tags").innerHTML = `
+      <span class="rvs-badge ${badgeCls}">${esc(effective)}</span>
+      <span class="rvs-tag">${esc((t.state || "—").replace(/_/g, " "))}</span>
+      ${review
+        ? `<span class="rvs-tag">signed off · ${esc(review.reviewer_name || review.reviewer_email || "")}</span>` : ""}`;
+
+    const checks = MATRIX.map(([key]) => {
+      const st = cellState(key, t[key]);
+      const label = (CHECKS[key] || {}).label || key.toUpperCase();
+      const shown = t[key] || "—";
+      const reason = why[key]
+        ? `<div class="rvs-note-cell" style="margin-top:2px">${esc(why[key])}</div>` : "";
+      return `<div class="rvs-check">
+        <span class="rvs-cell c-${st}">${CELL_GLYPH[st]}</span>
+        <div style="flex:1">
+          <div class="rvs-check-head">
+            <span>${esc(key.toUpperCase())} · ${esc(label)}</span>
+            <span class="${GRADE_CLS[shown] || ""}">${esc(shown)}</span>
+          </div>
+          ${reason}
+        </div>
+      </div>`;
+    }).join("");
+
+    $("rvs-body").innerHTML = `
+      <section class="rvs-section">
+        <div class="rvs-section-title">Checks — current</div>
+        ${checks}
+      </section>
+      ${t.ai_notes ? `
+      <section class="rvs-section">
+        <div class="rvs-section-title">Notes</div>
+        <div class="rvs-note-cell">${esc(t.ai_notes)}</div>
+      </section>` : ""}
+      <section class="rvs-section">
+        <div class="rvs-section-title">Conversation</div>
+        <div class="rvs-msgs" id="rvs-msgs"></div>
+      </section>`;
+
+    renderMessages(payload.messages || []);
+    navFooterLive(frozenExists, pylonLink);
+  }
+
+  function renderMessages(msgs) {
+    const box = $("rvs-msgs");
+    if (!msgs.length) {
+      box.innerHTML = `<div class="rvs-note-cell">No messages.</div>`;
       return;
     }
-    if (!state || state.number !== opts.number) return;
-    state.data = d;
-    render(d);
+    box.innerHTML = msgs.map(m => {
+      const div = document.createElement("div");
+      div.innerHTML = m.message_html || "";
+      const text = (div.textContent || "").trim();
+      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : "";
+      const cls = `rvs-bubble ${m.is_customer ? "customer" : ""}${m.is_private ? " private" : ""}`;
+      const label = m.is_private ? `${m.author_name || ""} (private)`
+                                 : (m.author_name || "Unknown");
+      return `<div class="${cls}">
+        <div class="rvs-author ${m.is_customer ? "customer" : ""}">${esc(label)}</div>
+        <div>${esc(text)}</div>
+        <div class="rvs-time">${esc(ts)}</div>
+      </div>`;
+    }).join("");
+  }
+
+  function navFooterLive(frozenExists, pylonLink) {
+    const rcHref = `/reportcard?date=${encodeURIComponent(state.date)}`
+      + `&ticket=${encodeURIComponent(state.number)}`;
+    const dash = `/?date=${encodeURIComponent(state.date)}`
+      + `&ticket=${encodeURIComponent(state.ticketId)}`;
+    $("rvs-foot").innerHTML = `
+      <span class="rvs-who"></span>
+      <a class="rvs-btn" href="${esc(dash)}">Open in Dashboard</a>
+      ${frozenExists
+        ? `<a class="rvs-btn" href="${esc(rcHref)}">Open in Report Card</a>`
+        : `<button class="rvs-btn" disabled
+             title="No frozen record for ${esc(state.date)} yet — the Report Card has nothing to show until the day's snapshot exists">Open in Report Card</button>`}
+      ${pylonLink || state.pylonLink
+        ? `<a class="rvs-btn" href="${esc(pylonLink || state.pylonLink)}" target="_blank"
+             rel="noopener noreferrer">Open in Pylon</a>` : ""}`;
   }
 
   function dashLink(d) {
@@ -268,23 +386,6 @@
       : `/?date=${encodeURIComponent(d.date)}`;
   }
 
-  function navFooter(d) {
-    const t = d.ticket;
-    const pylon = (t && /^https?:\/\//i.test(t.link || "") && t.link)
-      || (/^https?:\/\//i.test(state.pylonLink || "") && state.pylonLink) || "";
-    const rcHref = `/reportcard?date=${encodeURIComponent(d.date)}`
-      + `&ticket=${encodeURIComponent(state.number)}`;
-    $("rvs-foot").innerHTML = `
-      <span class="rvs-who"></span>
-      <a class="rvs-btn" href="${esc(dashLink(d))}">Open in Dashboard</a>
-      ${t
-        ? `<a class="rvs-btn" href="${esc(rcHref)}">Open in Report Card</a>`
-        : `<button class="rvs-btn" disabled
-             title="No frozen record for ${esc(d.date)} yet — the Report Card has nothing to show until the day's snapshot exists">Open in Report Card</button>`}
-      ${pylon
-        ? `<a class="rvs-btn" href="${esc(pylon)}" target="_blank"
-             rel="noopener noreferrer">Open in Pylon</a>` : ""}`;
-  }
 
   function render(d) {
     const t = d.ticket;
@@ -308,10 +409,6 @@
       // pre-scheduler local copy). Today is deliberately not offered: the
       // snapshot slot is insert-once, and a partial noon capture would block
       // tonight's scheduled notary from writing the real record.
-      if (state.mode === "navigate") {
-        navFooter(d);
-        return;
-      }
       const today = new Date().toISOString().slice(0, 10);
       const isAdmin = !!(window.QC && QC.me && QC.me.role === "admin");
       if (noSnap && isAdmin && d.date < today) {
@@ -405,18 +502,14 @@
         </div>
       </section>`;
 
-    if (state.mode === "navigate") {
-      navFooter(d);
-    } else {
-      const who = t.review_decision
-        ? `Signed off ${t.review_decision} by ${t.reviewer_name || ""}`
-          + (t.review_note ? ` — “${t.review_note}”` : "")
-        : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
-      $("rvs-foot").innerHTML = `
-        <span class="rvs-who">${esc(who)}</span>
-        <button class="rvs-btn" id="rvs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
-      $("rvs-review-btn").addEventListener("click", () => openModal(t));
-    }
+    const who = t.review_decision
+      ? `Signed off ${t.review_decision} by ${t.reviewer_name || ""}`
+        + (t.review_note ? ` — “${t.review_note}”` : "")
+      : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
+    $("rvs-foot").innerHTML = `
+      <span class="rvs-who">${esc(who)}</span>
+      <button class="rvs-btn" id="rvs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
+    $("rvs-review-btn").addEventListener("click", () => openModal(t));
 
     loadConversation(t.ticket_id);
   }

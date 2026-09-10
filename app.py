@@ -1624,7 +1624,7 @@ async def get_ticket(ticket_id: str, user: dict = Depends(auth.require_user)):
                 SELECT t.*, a.name AS account_name, a.domain AS account_domain,
                        a.type AS account_type,
                        rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r6, rc.r7,
-                       rc.r8, rc.r9,
+                       rc.r8, rc.r9, rc.r10, rc.r11,
                        ac.a1, ac.a2, ac.a3, ac.a4, ac.a5, ac.ai_notes,
                        ac.overall_result, ac.checked_at AS ai_checked_at
                 FROM tickets t
