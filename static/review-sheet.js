@@ -6,13 +6,16 @@
  * a review is recorded" is exactly the two-homes drift this codebase keeps
  * paying for.
  *
- * Contract: QCReviewSheet.open({date, number, onReviewed}) fetches the frozen
- * record from /api/reportcard/ticket/{date}/{number}, renders it with the
- * live conversation beneath, and records reviews through the single
- * /api/ticket/{id}/review stream (note mandatory; revert is lowercase — the
- * server treats capital-R "Revert" as a sign-off needing a note).
- * `onReviewed` fires after any successful verdict change, so the host page
- * can refresh its own rows. Also exported: CHECKS, MATRIX, cellState,
+ * Contract: QCReviewSheet.open({date, number, mode, ticketId, pylonLink,
+ * onReviewed}) fetches the frozen record from
+ * /api/reportcard/ticket/{date}/{number} and renders it with the live
+ * conversation beneath. Two modes, one policy: mode "review" (Report Card —
+ * the ONE place verdicts are recorded, through /api/ticket/{id}/review; note
+ * mandatory, revert lowercase) and mode "navigate" (Open Tickets — read-only,
+ * with Dashboard / Report Card / Pylon buttons; the Report Card button is
+ * disabled until the day's frozen record exists). `ticketId`/`pylonLink` are
+ * fallbacks for the no-record case, where the frozen row can't supply them.
+ * `onReviewed` fires after any successful verdict change. Also exported: CHECKS, MATRIX, cellState,
  * CELL_GLYPH — the one copy of the check vocabulary the Report Card's card
  * grid reads too.
  */
@@ -228,6 +231,9 @@
   async function open(opts) {
     mount();
     state = { date: opts.date, number: opts.number,
+              mode: opts.mode || "review",
+              ticketId: opts.ticketId || null,
+              pylonLink: opts.pylonLink || null,
               onReviewed: opts.onReviewed || null, data: null };
     $("rvs-num").textContent = `#${opts.number}`;
     $("rvs-title").textContent = "Loading frozen record…";
@@ -254,7 +260,30 @@
   }
 
   function dashLink(d) {
-    return `/?date=${encodeURIComponent(d.date)}&ticket=${encodeURIComponent(state.number)}`;
+    // The dashboard's deep link matches by ticket UUID, not number.
+    const tid = (state.data && state.data.ticket && state.data.ticket.ticket_id)
+      || state.ticketId;
+    return tid
+      ? `/?date=${encodeURIComponent(d.date)}&ticket=${encodeURIComponent(tid)}`
+      : `/?date=${encodeURIComponent(d.date)}`;
+  }
+
+  function navFooter(d) {
+    const t = d.ticket;
+    const pylon = (t && /^https?:\/\//i.test(t.link || "") && t.link)
+      || (/^https?:\/\//i.test(state.pylonLink || "") && state.pylonLink) || "";
+    const rcHref = `/reportcard?date=${encodeURIComponent(d.date)}`
+      + `&ticket=${encodeURIComponent(state.number)}`;
+    $("rvs-foot").innerHTML = `
+      <span class="rvs-who"></span>
+      <a class="rvs-btn" href="${esc(dashLink(d))}">Open in Dashboard</a>
+      ${t
+        ? `<a class="rvs-btn" href="${esc(rcHref)}">Open in Report Card</a>`
+        : `<button class="rvs-btn" disabled
+             title="No frozen record for ${esc(d.date)} yet — the Report Card has nothing to show until the day's snapshot exists">Open in Report Card</button>`}
+      ${pylon
+        ? `<a class="rvs-btn" href="${esc(pylon)}" target="_blank"
+             rel="noopener noreferrer">Open in Pylon</a>` : ""}`;
   }
 
   function render(d) {
@@ -267,15 +296,47 @@
       $("rvs-title").textContent = "No frozen record yet";
       $("rvs-meta").innerHTML =
         `<a href="${esc(dashLink(d))}">open in live dashboard →</a>`;
+      const noSnap = d.hole || d.snapshot === null;
       $("rvs-body").innerHTML = `<div class="rvs-empty">${
-        d.hole || d.snapshot === null
+        noSnap
           ? esc(`${d.date} has no snapshot yet — the record is taken at the `
                 + `scheduled morning run, so this ticket becomes reviewable `
                 + `after that. Until then, work it from the live dashboard.`)
           : esc(`#${state.number} is not in ${d.date}'s frozen record — it was `
                 + `fetched after the snapshot was taken.`)}</div>`;
-      $("rvs-foot").innerHTML =
-        `<span class="rvs-who">Reviews judge the frozen record only.</span>`;
+      // Admins can close the gap on a PAST day right here (a hole, or a
+      // pre-scheduler local copy). Today is deliberately not offered: the
+      // snapshot slot is insert-once, and a partial noon capture would block
+      // tonight's scheduled notary from writing the real record.
+      if (state.mode === "navigate") {
+        navFooter(d);
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      const isAdmin = !!(window.QC && QC.me && QC.me.role === "admin");
+      if (noSnap && isAdmin && d.date < today) {
+        $("rvs-foot").innerHTML = `
+          <span class="rvs-who">Reviews judge the frozen record only.</span>
+          <button class="rvs-btn" id="rvs-capture">Capture ${esc(d.date)} snapshot now (admin backfill)</button>`;
+        $("rvs-capture").addEventListener("click", async () => {
+          const btn = $("rvs-capture");
+          btn.disabled = true;
+          try {
+            await QC.api(`/api/reportcard/capture/${encodeURIComponent(d.date)}`,
+                         { method: "POST" });
+            await open({ date: state.date, number: state.number,
+                         onReviewed: state.onReviewed });
+          } catch (e) {
+            btn.disabled = false;
+            btn.textContent = e.message;
+          }
+        });
+      } else {
+        $("rvs-foot").innerHTML =
+          `<span class="rvs-who">${noSnap && d.date >= today
+            ? "Today's record is taken at tomorrow's scheduled run."
+            : "Reviews judge the frozen record only."}</span>`;
+      }
       return;
     }
 
@@ -344,14 +405,18 @@
         </div>
       </section>`;
 
-    const who = t.review_decision
-      ? `Signed off ${t.review_decision} by ${t.reviewer_name || ""}`
-        + (t.review_note ? ` — “${t.review_note}”` : "")
-      : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
-    $("rvs-foot").innerHTML = `
-      <span class="rvs-who">${esc(who)}</span>
-      <button class="rvs-btn" id="rvs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
-    $("rvs-review-btn").addEventListener("click", () => openModal(t));
+    if (state.mode === "navigate") {
+      navFooter(d);
+    } else {
+      const who = t.review_decision
+        ? `Signed off ${t.review_decision} by ${t.reviewer_name || ""}`
+          + (t.review_note ? ` — “${t.review_note}”` : "")
+        : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
+      $("rvs-foot").innerHTML = `
+        <span class="rvs-who">${esc(who)}</span>
+        <button class="rvs-btn" id="rvs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
+      $("rvs-review-btn").addEventListener("click", () => openModal(t));
+    }
 
     loadConversation(t.ticket_id);
   }
