@@ -170,6 +170,20 @@ except ValueError:
     check("an unfrozen day cannot be exported", "ValueError", "ValueError")
 
 print()
+print("=== frozen_ticket: the shared review sheet's data contract ===")
+ft = reportcard.frozen_ticket(D1, 2)
+check("a frozen ticket comes back with its record",
+      (ft["ticket"]["ticket_id"], ft["ticket"]["overall_result"]),
+      ("t2", "Fail"))
+check("the delta rides along", ft["ticket"]["delta"], "remediated")
+ft2 = reportcard.frozen_ticket(D1, 424242)
+check("snapshotted day, unknown ticket -> ticket None, not an error",
+      (ft2["snapshot"] is not None, ft2["ticket"]), (True, None))
+ft3 = reportcard.frozen_ticket("2020-01-01", 1)
+check("unfetched day -> no snapshot, not a hole",
+      (ft3["snapshot"], ft3["hole"]), (None, False))
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

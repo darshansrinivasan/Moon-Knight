@@ -172,6 +172,7 @@
 </div>
 
 <script src="/static/shell.js"></script>
+<script src="/static/review-sheet.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => QC.esc(s);
@@ -256,7 +257,8 @@ function renderRows(tickets) {
       ? `<a href="${esc(t.link)}" target="_blank" rel="noopener noreferrer">#${esc(t.number ?? "—")}</a>`
       : `#${esc(t.number ?? "—")}`;
     return `<tr data-id="${esc(t.ticket_id)}" data-date="${esc(t.fetch_date || "")}"
-                title="Open QC detail — which checks passed and failed">
+                data-num="${esc(t.number ?? "")}"
+                title="Review this ticket's frozen record — sign-off happens right here">
       <td>${num}</td>
       <td>${esc(t.title || "(no title)")}</td>
       <td class="state-cell">${esc(stateLabel(t.state))}</td>
@@ -427,6 +429,17 @@ $("rows").addEventListener("click", (ev) => {
   if (ev.target.closest("a")) return;
   const tr = ev.target.closest("tr[data-id]");
   if (!tr || !tr.dataset.date) return;
+  // The review sheet opens IN PLACE — reviewing an open ticket used to be
+  // three pages (Open → Dashboard → Report Card); now it is zero. The sheet
+  // itself links to the live dashboard for the fix-it flow.
+  if (tr.dataset.num && window.QCReviewSheet) {
+    QCReviewSheet.open({
+      date: tr.dataset.date,
+      number: tr.dataset.num,
+      onReviewed: () => load(),   // sign-off names and chips refresh in place
+    });
+    return;
+  }
   location.href = `/?date=${encodeURIComponent(tr.dataset.date)}`
                 + `&ticket=${encodeURIComponent(tr.dataset.id)}`;
 });

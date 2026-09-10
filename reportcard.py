@@ -191,6 +191,47 @@ def day(date_str: str) -> dict:
             "summary": summary, "tickets": rows}
 
 
+def frozen_ticket(date_str: str, number: int) -> dict:
+    """One ticket's frozen record — the shared review sheet's data contract.
+
+    Same row shape day() produces, for one ticket, so the Open tab's embedded
+    sheet and the Report Card's sheet can never disagree about what a frozen
+    record contains. Missing states are explicit: `hole` (no snapshot for the
+    date) and `ticket: None` (snapshotted day, but this ticket was fetched
+    after the freeze).
+    """
+    with db.get_conn() as conn:
+        snap = conn.execute(
+            "SELECT * FROM day_snapshots WHERE snapshot_date = ?",
+            (date_str,)).fetchone()
+        if snap is None:
+            fetched = conn.execute(
+                "SELECT 1 FROM fetch_log WHERE fetch_date = ?",
+                (date_str,)).fetchone()
+            return {"date": date_str, "snapshot": None,
+                    "hole": bool(fetched), "ticket": None}
+        row = conn.execute(f"""
+            SELECT st.*,
+                   {_FROZEN_GRADE} AS effective_result,
+                   rev.decision AS review_decision,
+                   rev.reviewer_name, rev.note AS review_note,
+                   cur.overall_result AS current_result,
+                   cur.checked_at    AS current_checked_at,
+                   {EFFECTIVE_GRADE_SQL.replace('ac.', 'cur.')} AS current_effective
+            FROM snapshot_tickets st
+            LEFT JOIN ({LATEST_REVIEW_SQL}) rev ON rev.ticket_id = st.ticket_id
+            LEFT JOIN ai_checks cur ON cur.ticket_id = st.ticket_id
+            WHERE st.snapshot_date = ? AND st.number = ?
+        """, (date_str, number)).fetchone()
+    t = dict(row) if row else None
+    if t:
+        t["delta"] = _delta(t)
+    return {"date": date_str, "hole": False,
+            "snapshot": {"created_at": snap["created_at"],
+                         "created_by": snap["created_by"] or "scheduler"},
+            "ticket": t}
+
+
 def _delta(r: dict) -> str:
     """frozen → current, as the remediation vocabulary the page shows."""
     frozen, current = r.get("overall_result"), r.get("current_effective")

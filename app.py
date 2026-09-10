@@ -1773,6 +1773,14 @@ async def reportcard_backfill(request: Request,
     return res
 
 
+@app.get("/api/reportcard/ticket/{date_str}/{number}")
+async def reportcard_ticket(date_str: str, number: int,
+                            user: dict = Depends(auth.require_user)):
+    """One frozen record, for the shared review sheet (Open tab + Report Card)."""
+    _require_date(date_str)
+    return await asyncio.to_thread(reportcard.frozen_ticket, date_str, number)
+
+
 @app.get("/api/reportcard/export/{date_str}")
 async def reportcard_csv(date_str: str,
                          user: dict = Depends(auth.require_user)):

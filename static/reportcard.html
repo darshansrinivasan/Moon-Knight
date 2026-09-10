@@ -287,6 +287,7 @@
         </span>
         <button class="btn" id="rc-csv" title="Download this frozen day as raw CSV — the data the evaluation used">↓ Raw data CSV</button>
       </div>
+      <div class="hole-banner" id="rc-notice" hidden></div>
       <div class="kpis" id="rc-kpis"></div>
       <div class="rc-filterbar" id="rc-filterbar" hidden>
         <div class="assignee-ms" id="fa-ms">
@@ -371,56 +372,8 @@
   </div>
 </div>
 
-<div class="sheet-scrim" id="fs-scrim" hidden></div>
-<aside class="sheet" id="fs-sheet" hidden role="dialog" aria-modal="true"
-       aria-labelledby="fs-title">
-  <header class="sheet-head">
-    <div class="sheet-head-main">
-      <div class="sheet-num" id="fs-num"></div>
-      <h2 class="sheet-title" id="fs-title"></h2>
-      <div class="sheet-meta" id="fs-meta"></div>
-    </div>
-    <button class="sheet-close" id="fs-close" type="button"
-            aria-label="Close ticket detail">✕</button>
-  </header>
-  <div class="sheet-tags" id="fs-tags"></div>
-  <div class="sheet-body">
-    <section class="sheet-section">
-      <div class="sheet-section-title">Checks — as frozen at the snapshot</div>
-      <div id="fs-checks"></div>
-    </section>
-    <section class="sheet-section" id="fs-since-wrap">
-      <div class="sheet-section-title">Since the snapshot</div>
-      <div id="fs-since" style="font-size:12.5px"></div>
-    </section>
-    <section class="sheet-section" id="fs-notes-wrap">
-      <div class="sheet-section-title">Notes at the snapshot</div>
-      <div id="fs-notes" style="font-size:12.5px;color:var(--muted)"></div>
-    </section>
-    <section class="sheet-section">
-      <div class="sheet-section-title">Conversation (live)</div>
-      <div class="sheet-msgs" id="fs-msgs"></div>
-    </section>
-  </div>
-  <footer class="sheet-foot" id="fs-foot"></footer>
-</aside>
-
-<div class="modal-scrim" id="rv-scrim" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rv-title">
-    <h3 id="rv-title"></h3>
-    <p class="sub" id="rv-sub"></p>
-    <textarea id="rv-note" placeholder="Why — required. This note is the audit trail for changing the record."></textarea>
-    <div class="msg-line" id="rv-msg"></div>
-    <div class="row">
-      <button class="btn" id="rv-cancel">Cancel</button>
-      <button class="btn pass" id="rv-pass">Pass</button>
-      <button class="btn fail" id="rv-fail">Fail</button>
-      <button class="btn" id="rv-revert" title="Remove the human verdict; the frozen machine grade stands again">Revert to AI</button>
-    </div>
-  </div>
-</div>
-
 <script src="/static/shell.js"></script>
+<script src="/static/review-sheet.js"></script>
 <script>
 const esc = s => (window.QC ? QC.esc(s) : String(s));
 const $ = id => document.getElementById(id);
@@ -446,36 +399,8 @@ $("rc-tabs").addEventListener("click", e => {
 // ── frozen dashboard ─────────────────────────────────────────────────────────
 const GRADE_CLS = { "Pass": "g-Pass", "Fail": "g-Fail", "Needs Review": "g-NR" };
 
-// The same 14-column matrix as the live dashboard, reading FROZEN verdicts.
-// No "off" state here on purpose: the snapshot shows what was recorded, and a
-// check disabled later must not restyle history.
-const CHECKS = {
-  r1: { label: "Functionality" }, r2: { label: "Category" },
-  r3: { label: "Account" }, r4: { label: "Response Time" },
-  r5: { label: "Status Owner" }, r7: { label: "Rootly/Jira" },
-  r8: { label: "Oncall Check" }, r10: { label: "SpotAssist (advisory)" },
-  r11: { label: "Follow-through" },
-  a1: { label: "Cat. Accuracy" }, a2: { label: "Sentiment" },
-  a3: { label: "Response" }, a4: { label: "Status Check" },
-  a5: { label: "Closure" },
-};
-const MATRIX = [
-  ["r1", "Fn"], ["r2", "Ct"], ["r3", "Ac"], ["r4", "RT"],
-  ["r5", "SO"], ["r7", "RJ"], ["r8", "OC"], ["r10", "SA"], ["r11", "FT"],
-  ["a1", "CA"], ["a2", "Sn"], ["a3", "Rs"], ["a4", "SC"], ["a5", "Cl"],
-];
-const CELL_GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "–", none: "" };
-
-function cellState(key, v) {
-  if (v === null || v === undefined || v === "") return "none";
-  if (v === "N/A") return "na";
-  if (key === "a2") return "na";               // sentiment is never a verdict
-  if (v === "Pass" || v === "Good" || v === "Accurate" || v === "Consistent")
-    return "pass";
-  if (v === "Fail" || v === "Poor" || v === "Inaccurate" || v === "Inconsistent")
-    return "fail";
-  return "warn";                                // Needs Review / Needs Improvement
-}
+// One copy of the check vocabulary, owned by the shared review sheet.
+const { CHECKS, MATRIX, CELL_GLYPH, cellState } = QCReviewSheet;
 
 function matrixHtml(t) {
   return `<div class="mx" role="group" aria-label="Frozen check results">`
@@ -685,7 +610,7 @@ function renderFrozenCards(tickets, total) {
       delta = `<span class="chip ${esc(t.delta)}"${when}>${esc(DELTA_LABEL[t.delta] || t.delta)}</span>`;
     }
     return `<div class="ticket-card" id="rc-t-${esc(String(t.number))}"
-                 data-tid="${esc(t.ticket_id)}">
+                 data-tid="${esc(t.ticket_id)}" data-num="${esc(String(t.number))}">
       <div class="card-top">
         <span class="ticket-num">${safeLink === "#"
           ? `#${esc(String(t.number))}`
@@ -709,7 +634,7 @@ function renderFrozenCards(tickets, total) {
   }).join("");
 
   document.querySelectorAll("#rc-cards .ticket-card").forEach(card =>
-    card.addEventListener("click", () => openFrozenSheet(card.dataset.tid)));
+    card.addEventListener("click", () => openTicketSheet(card.dataset.num)));
 }
 
 // The three dropdowns, rebuilt per loaded day from FROZEN values.
@@ -859,172 +784,26 @@ $("fck-ms-clear").addEventListener("click", () => {
   renderFrozenDay();
 });
 
-// ── the slide-over: frozen record on top, live conversation beneath ─────────
-let fsTicketId = null;
-
-function closeFrozenSheet() {
-  fsTicketId = null;
-  $("fs-sheet").hidden = true;
-  $("fs-scrim").hidden = true;
-  document.querySelectorAll(".ticket-card.is-open")
-    .forEach(c => c.classList.remove("is-open"));
+// The slide-over IS the shared component (also embedded in the Open tab).
+// After a review it repaints itself; the host just refreshes the cards while
+// keeping the reader's scroll position.
+function openTicketSheet(number) {
+  QCReviewSheet.open({
+    date: $("rc-date").value,
+    number,
+    onReviewed: async () => {
+      const pane = document.querySelector(".content-pane");
+      const keep = pane ? pane.scrollTop : 0;
+      await loadDay($("rc-date").value);
+      if (pane) pane.scrollTop = keep;
+    },
+  });
 }
-$("fs-close").addEventListener("click", closeFrozenSheet);
-$("fs-scrim").addEventListener("click", closeFrozenSheet);
-document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && fsTicketId) closeFrozenSheet();
+
+$("rc-date").addEventListener("change", () => {
+  $("rc-notice").hidden = true;
+  loadDay($("rc-date").value);
 });
-
-async function openFrozenSheet(ticketId) {
-  const t = (currentDay?.tickets || []).find(x => x.ticket_id === ticketId);
-  if (!t) return;
-  fsTicketId = ticketId;
-
-  document.querySelectorAll(".ticket-card.is-open")
-    .forEach(c => c.classList.remove("is-open"));
-  const card = document.querySelector(
-    `.ticket-card[data-tid="${CSS.escape(ticketId)}"]`);
-  if (card) card.classList.add("is-open");
-
-  const official = t.effective_result || "Pending";
-  const badgeCls = { "Pass": "pass", "Fail": "fail",
-                     "Needs Review": "review" }[official] || "pending";
-  const pylonLink = /^https?:\/\//i.test(t.link || "") ? t.link : "";
-  $("fs-num").innerHTML = pylonLink
-    ? `<a class="tnum" href="${esc(pylonLink)}" target="_blank"
-         rel="noopener noreferrer" title="Open in Pylon">#${esc(String(t.number))}</a>`
-    : `#${esc(String(t.number))}`;
-  $("fs-title").textContent = t.title || "(no title)";
-  $("fs-meta").innerHTML =
-    `${esc(t.assignee_name || "Unassigned")} · ${esc(t.account_name || "—")} · frozen record · `
-    + `<a class="tnum" href="/?date=${esc(currentDay.date)}&ticket=${esc(String(t.number))}">live dashboard →</a>`;
-  $("fs-tags").innerHTML = `
-    <span class="overall-badge overall-${badgeCls}">${esc(official)}</span>
-    <span class="meta-tag">${esc((t.state || "—").replace(/_/g, " "))}</span>
-    ${t.delta && t.delta !== "unchanged"
-      ? `<span class="chip ${esc(t.delta)}">${esc(DELTA_LABEL[t.delta] || t.delta)}</span>` : ""}
-    ${t.review_decision
-      ? `<span class="review-mark">signed off · ${esc(t.reviewer_name || "")}</span>` : ""}`;
-
-  $("fs-checks").innerHTML = MATRIX.map(([key]) => {
-    const st = cellState(key, t[key]);
-    const label = (CHECKS[key] || {}).label || key.toUpperCase();
-    const shown = t[key] || "—";
-    return `<div class="sheet-check">
-      <span class="mx-cell c-${st}">${CELL_GLYPH[st]}</span>
-      <div style="flex:1">
-        <div class="sheet-check-head">
-          <span>${esc(key.toUpperCase())} · ${esc(label)}</span>
-          <span class="${GRADE_CLS[shown] || ""}">${esc(shown)}</span>
-        </div>
-      </div>
-    </div>`;
-  }).join("");
-
-  const cur = t.current_effective;
-  const when = t.current_checked_at
-    ? ` (as of ${esc(new Date(t.current_checked_at).toLocaleString())})` : "";
-  $("fs-since").innerHTML = (t.delta && t.delta !== "unchanged")
-    ? `Frozen ${gradeHtml(t.overall_result)} → currently ${gradeHtml(cur)}${when}.
-       The frozen record does not change; this is what happened after it.`
-    : `<span class="rc-note">No change — the live board still agrees with the snapshot.</span>`;
-
-  $("fs-notes-wrap").style.display = t.ai_notes ? "" : "none";
-  $("fs-notes").textContent = t.ai_notes || "";
-
-  const who = t.review_decision
-    ? `Signed off ${t.review_decision} by ${t.reviewer_name || ""}`
-      + (t.review_note ? ` — “${t.review_note}”` : "")
-    : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
-  $("fs-foot").innerHTML = `
-    <span class="who">${esc(who)}</span>
-    <button class="btn" id="fs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
-  $("fs-review-btn").addEventListener("click", () => openReview(t.ticket_id));
-
-  $("fs-sheet").hidden = false;
-  $("fs-scrim").hidden = false;
-  $("fs-close").focus({ preventScroll: true });
-
-  const msgs = $("fs-msgs");
-  msgs.innerHTML = `<div class="rc-note">Loading conversation…</div>`;
-  try {
-    const data = await QC.api(`/api/ticket/${encodeURIComponent(ticketId)}`);
-    if (fsTicketId !== ticketId) return;
-    renderMessages(msgs, data.messages || []);
-  } catch (e) {
-    if (fsTicketId !== ticketId) return;
-    msgs.innerHTML = `<div class="rc-note">${esc(e.message)}</div>`;
-  }
-}
-
-function renderMessages(container, messages) {
-  if (!messages.length) {
-    container.innerHTML = `<div class="rc-note">No messages.</div>`;
-    return;
-  }
-  container.innerHTML = messages.map(m => {
-    const div = document.createElement("div");
-    div.innerHTML = m.message_html || "";
-    const text = (div.textContent || "").trim();
-    const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : "";
-    const cls = `message-bubble ${m.is_customer ? "customer" : ""}${m.is_private ? " private" : ""}`;
-    const label = m.is_private ? `${m.author_name || ""} (private)` : (m.author_name || "Unknown");
-    return `<div class="${cls}">
-      <div class="msg-author ${m.is_customer ? "customer" : ""}">${esc(label)}</div>
-      <div>${esc(text)}</div>
-      <div class="msg-time">${esc(ts)}</div>
-    </div>`;
-  }).join("");
-}
-
-// ── review modal: the one place a human changes the record ──────────────────
-function openReview(ticketId) {
-  rvTicket = (currentDay?.tickets || []).find(t => t.ticket_id === ticketId);
-  if (!rvTicket) return;
-  $("rv-title").textContent = `Sign off #${rvTicket.number}`;
-  $("rv-sub").textContent =
-    `Frozen grade: ${rvTicket.overall_result || "not graded"} · your verdict `
-    + `overrides it in the Report Card AND every live view.`;
-  $("rv-note").value = "";
-  $("rv-msg").textContent = "";
-  $("rv-revert").style.display = rvTicket.review_decision ? "" : "none";
-  $("rv-scrim").hidden = false;
-  $("rv-note").focus();
-}
-
-async function sendReview(decision) {
-  if (!rvTicket) { $("rv-scrim").hidden = true; return; }
-  const note = $("rv-note").value.trim();
-  // The server's revert keyword is lowercase; "Revert" would be validated as
-  // a sign-off and demand a note it deliberately does not need.
-  if (decision !== "revert" && !note) {
-    $("rv-msg").textContent = "A note is required — it is the audit trail.";
-    return;
-  }
-  try {
-    await QC.api(`/api/ticket/${encodeURIComponent(rvTicket.ticket_id)}/review`, {
-      method: "POST", body: JSON.stringify({ decision, note }),
-    });
-    $("rv-scrim").hidden = true;
-    const reopen = fsTicketId;
-    const pane = document.querySelector(".content-pane");
-    const keepScroll = pane ? pane.scrollTop : 0;
-    await loadDay($("rc-date").value);   // re-read: the overlay changed
-    if (pane) pane.scrollTop = keepScroll;   // stay where the reviewer was
-    if (reopen) openFrozenSheet(reopen); // repaint the open sheet's verdict
-  } catch (e) {
-    $("rv-msg").textContent = e.message;
-  }
-}
-$("rv-pass").addEventListener("click", () => sendReview("Pass"));
-$("rv-fail").addEventListener("click", () => sendReview("Fail"));
-$("rv-revert").addEventListener("click", () => sendReview("revert"));
-$("rv-cancel").addEventListener("click", () => { $("rv-scrim").hidden = true; });
-document.addEventListener("keydown", e => {
-  if (e.key === "Escape") $("rv-scrim").hidden = true;
-});
-
-$("rc-date").addEventListener("change", () => loadDay($("rc-date").value));
 $("rc-csv").addEventListener("click", () => {
   const d = $("rc-date").value;
   if (!d) return;
@@ -1153,14 +932,35 @@ $("bf-go").addEventListener("click", async () => {
   const dates = await loadDates().catch(() => null);
   if (dates && dates.length) {
     const wanted = params.get("date");
-    const pick = (wanted && dates.some(x => x.date === wanted && !x.hole))
+    // A deep-linked date is honored even when it is a hole: silently showing
+    // some OTHER day would read as "my ticket vanished". The hole message
+    // explains itself; switching days does not.
+    const pick = (wanted && dates.some(x => x.date === wanted))
       ? wanted : (dates.find(x => !x.hole) || dates[0]).date;
     $("rc-date").value = pick;
     await loadDay(pick);
     const tnum = params.get("ticket");
-    if (tnum) {
-      const row = document.getElementById(`rc-t-${CSS.escape(tnum)}`);
-      if (row) { row.scrollIntoView({ block: "center" }); }
+    if (tnum && currentDay && currentDay.snapshot) {
+      const t = (currentDay.tickets || [])
+        .find(x => String(x.number) === String(tnum));
+      if (t) {
+        // The deep link's whole purpose: land ON the ticket, sheet open,
+        // ready to review — not just somewhere near it.
+        const row = document.getElementById(`rc-t-${CSS.escape(tnum)}`);
+        if (row) row.scrollIntoView({ block: "center" });
+        openTicketSheet(t.number);
+      } else {
+        const n = $("rc-notice");
+        n.hidden = false;
+        n.textContent = `#${tnum} is not in ${pick}'s frozen record — it was `
+          + `fetched after the snapshot was taken, so it becomes reviewable `
+          + `when its day's next snapshot exists.`;
+      }
+    } else if (tnum) {
+      const n = $("rc-notice");
+      n.hidden = false;
+      n.textContent = `#${tnum} cannot be reviewed yet: ${pick} has no `
+        + `snapshot, so there is no record to judge.`;
     }
   }
   loadRange("an-start", "an-end", "an-mix", renderAnalytics);
