@@ -235,10 +235,17 @@ def _ticket_row(ticket_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-# Checks a lead may adjudicate individually. R-checks only: A-checks carry the
-# model's judgment in non-binary vocabularies, and "some rules can be left at
-# fail even though the ticket passes" is a statement about RULES.
-OVERRIDABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")
+def _overridable_checks() -> dict:
+    """check → the verdicts a lead may set it to. One vocabulary source:
+    R-checks are Pass/Fail; A-checks use prompts.GRADES (the same enums the
+    model is constrained to), minus N/A — adjudicating TO not-applicable is
+    not a verdict."""
+    import prompts
+    vocab = {k: ("Pass", "Fail")
+             for k in ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")}
+    for k, vals in prompts.GRADES.items():
+        vocab[k] = tuple(v for v in vals if v != "N/A")
+    return vocab
 
 
 def clean_check_overrides(raw) -> dict:
@@ -252,17 +259,20 @@ def clean_check_overrides(raw) -> dict:
         return {}
     if not isinstance(raw, dict):
         raise ReviewInvalid("check_overrides must be an object of check: verdict")
+    vocab = _overridable_checks()
     out = {}
     for key, verdict in raw.items():
         k = str(key).strip().lower()
-        if k not in OVERRIDABLE_CHECKS:
+        if k not in vocab:
             raise ReviewInvalid(
-                f"'{k}' is not an adjustable check (rules only: "
-                f"{', '.join(OVERRIDABLE_CHECKS)})")
-        v = str(verdict).strip().title()
-        if v not in ("Pass", "Fail"):
-            raise ReviewInvalid(f"check_overrides.{k} must be Pass or Fail")
-        out[k] = v
+                f"'{k}' is not an adjustable check "
+                f"({', '.join(sorted(vocab))})")
+        want = str(verdict).strip().lower()
+        match = next((v for v in vocab[k] if v.lower() == want), None)
+        if match is None:
+            raise ReviewInvalid(
+                f"check_overrides.{k} must be one of: {', '.join(vocab[k])}")
+        out[k] = match
     return out
 
 

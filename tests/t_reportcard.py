@@ -187,12 +187,26 @@ check("the adjudication rides the frozen payload",
       ft["ticket"]["check_overrides"], {"r1": "Pass"})
 check("effective_check applies the overlay",
       reportcard.effective_check(ft["ticket"], "r1"), "Pass")
+rec2 = review_lib.accept_ticket("t2", {"email": "l@x", "name": "L",
+                                       "role": "admin"},
+                                "Pass", "note",
+                                {"a3": "good", "a1": "Needs Review"})
+check("A-checks adjust within their own vocabularies (case-forgiving)",
+      rec2["check_overrides"], {"a3": "Good", "a1": "Needs Review"})
 try:
     review_lib.accept_ticket("t2", {"email": "l@x", "name": "L", "role": "admin"},
                              "Pass", "note", {"a3": "Pass"})
-    check("A-checks are not adjustable", "no error", "ReviewInvalid")
+    check("a value outside the check's vocabulary is rejected",
+          "no error", "ReviewInvalid")
 except review_lib.ReviewInvalid:
-    check("A-checks are not adjustable", "ReviewInvalid", "ReviewInvalid")
+    check("a value outside the check's vocabulary is rejected",
+          "ReviewInvalid", "ReviewInvalid")
+try:
+    review_lib.accept_ticket("t2", {"email": "l@x", "name": "L", "role": "admin"},
+                             "Pass", "note", {"a5": "N/A"})
+    check("N/A is not an adjudication target", "no error", "ReviewInvalid")
+except review_lib.ReviewInvalid:
+    check("N/A is not an adjudication target", "ReviewInvalid", "ReviewInvalid")
 review_lib.accept_ticket("t2", {"email": "lead@x", "name": "Lead",
                                 "role": "admin"}, "revert")
 ft = reportcard.frozen_ticket(D1, 2)

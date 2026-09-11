@@ -180,16 +180,20 @@
     <div class="rvs-modal" role="dialog" aria-modal="true">
       <h3 id="rvs-mtitle"></h3>
       <p class="rvs-sub" id="rvs-msub"></p>
-      <textarea id="rvs-note" placeholder="Why — required. This note is the audit trail for changing the record."></textarea>
-      <details id="rvs-adjust" style="margin-top:10px">
-        <summary style="cursor:pointer;font-size:12.5px;color:var(--muted)">
-          Adjust rule verdicts (optional)</summary>
+      <div id="rvs-adjust" style="margin-bottom:10px">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <span style="font-size:12.5px;font-weight:600">Adjust verdicts — required</span>
+          <button class="rvs-btn" id="rvs-retain-all" type="button"
+                  style="padding:2px 8px;font-size:11px;margin-left:auto"
+                  title="Mark every unchosen check as keeping its scored verdict">Retain all remaining</button>
+        </div>
         <div style="font-size:11.5px;color:var(--muted);margin:6px 0">
-          Flip a rule the scorer got wrong for this ticket. Untouched rules
-          keep their scored verdict — a ticket can pass overall with an honest
-          fail left standing.</div>
-        <div id="rvs-adjust-list"></div>
-      </details>
+          Choose for every check: retain its scored verdict, or set the one the
+          scorer should have given. A ticket can still pass overall with an
+          honest fail retained.</div>
+        <div id="rvs-adjust-list" style="max-height:220px;overflow-y:auto"></div>
+      </div>
+      <textarea id="rvs-note" placeholder="Why — required. This note is the audit trail for changing the record."></textarea>
       <div class="rvs-msgline" id="rvs-mmsg"></div>
       <div class="rvs-row">
         <button class="rvs-btn" id="rvs-mcancel">Cancel</button>
@@ -224,6 +228,14 @@
       else if (!$("rvs-sheet").hidden) close();
     });
     $("rvs-mcancel").addEventListener("click", () => { $("rvs-mscrim").hidden = true; });
+    $("rvs-retain-all").addEventListener("click", () => {
+      const t = state && state.data && state.data.ticket;
+      if (!t) return;
+      for (const k of modalKeys) {
+        if (!(k in modalChoices)) modalChoices[k] = RETAIN;
+      }
+      renderAdjustList(t);
+    });
     $("rvs-mpass").addEventListener("click", () => sendReview("Pass"));
     $("rvs-mfail").addEventListener("click", () => sendReview("Fail"));
     // Lowercase on the wire: the server reads capital-R Revert as a sign-off
@@ -563,7 +575,24 @@
     }
   }
 
-  let modalOverrides = {};
+  // Every verdict a check can be adjudicated TO — mirrors the server's vocab
+  // (R-checks Pass/Fail; A-checks their model enums, minus N/A).
+  const ADJUST_VOCAB = {
+    r1: ["Pass", "Fail"], r2: ["Pass", "Fail"], r3: ["Pass", "Fail"],
+    r4: ["Pass", "Fail"], r5: ["Pass", "Fail"], r7: ["Pass", "Fail"],
+    r8: ["Pass", "Fail"], r10: ["Pass", "Fail"], r11: ["Pass", "Fail"],
+    a1: ["Pass", "Fail", "Needs Review"],
+    a2: ["Positive", "Neutral", "Concerned", "Frustrated", "Urgent"],
+    a3: ["Good", "Needs Improvement", "Poor"],
+    a4: ["Pass", "Fail", "Needs Review"],
+    a5: ["Pass", "Fail", "Needs Review"],
+  };
+  const RETAIN = "__retain__";
+
+  // key -> RETAIN or a vocabulary value. EVERY listed check must be chosen
+  // before a sign-off can be sent — adjudication is deliberate, not implied.
+  let modalChoices = {};
+  let modalKeys = [];
 
   function openModal(t) {
     $("rvs-mtitle").textContent = `Sign off #${t.number}`;
@@ -573,44 +602,54 @@
     $("rvs-note").value = "";
     $("rvs-mmsg").textContent = "";
     $("rvs-mrevert").style.display = t.review_decision ? "" : "none";
-    modalOverrides = Object.assign({}, t.check_overrides || {});
+    // Rows: every check whose scored value is a real verdict (N/A and
+    // not-evaluated have nothing to adjudicate).
+    modalKeys = MATRIX.map(([k]) => k).filter(k =>
+      ADJUST_VOCAB[k] && (ADJUST_VOCAB[k].includes(t[k])));
+    modalChoices = {};
+    const existing = t.check_overrides || {};
+    for (const k of modalKeys) {
+      if (k in existing) modalChoices[k] = existing[k];   // prior adjudication
+    }
     renderAdjustList(t);
-    $("rvs-adjust").open = Object.keys(modalOverrides).length > 0;
     $("rvs-mscrim").hidden = false;
     $("rvs-note").focus();
   }
 
-  const OVERRIDABLE = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11"];
-
   function renderAdjustList(t) {
     const list = $("rvs-adjust-list");
-    list.innerHTML = OVERRIDABLE.map(key => {
+    list.innerHTML = modalKeys.map(key => {
       const scored = t[key];
-      if (scored !== "Pass" && scored !== "Fail") return "";   // N/A etc: nothing to flip
       const label = (CHECKS[key] || {}).label || key.toUpperCase();
-      const eff = modalOverrides[key] || scored;
-      const adjusted = key in modalOverrides;
-      const flipTo = eff === "Fail" ? "Pass" : "Fail";
+      const choice = modalChoices[key];
+      const opts = [
+        { v: RETAIN, text: `Retain ${scored}` },
+        ...ADJUST_VOCAB[key].filter(v => v !== scored)
+          .map(v => ({ v, text: v })),
+      ].map(o => {
+        const on = choice === o.v || (o.v !== RETAIN && choice === o.v);
+        const sel = choice === o.v;
+        return `<button class="rvs-btn" data-adjust="${esc(key)}"
+                  data-value="${esc(o.v)}" type="button"
+                  style="padding:2px 8px;font-size:11px;${sel
+                    ? "border-color:var(--accent);color:var(--accent2)" : ""}">
+                  ${sel ? "● " : ""}${esc(o.text)}</button>`;
+      }).join(" ");
+      const undecided = !(key in modalChoices);
       return `<div class="rvs-check" style="align-items:center">
-        <div class="rvs-check-head">
+        <div class="rvs-check-head" style="flex-wrap:wrap;gap:6px">
           <span>${esc(key.toUpperCase())} · ${esc(label)}
-            ${adjusted ? `<span class="rvs-tag">adjusted</span>` : ""}</span>
-          <span>
-            <span class="${GRADE_CLS[eff] || ""}">${esc(eff)}</span>
-            <button class="rvs-btn" data-adjust="${esc(key)}"
-                    style="margin-left:8px;padding:2px 8px;font-size:11px">
-              ${adjusted ? "restore scored " + esc(scored) : "flip to " + esc(flipTo)}</button>
-          </span>
+            <span class="${GRADE_CLS[scored] || ""}">${esc(scored)}</span>
+            ${undecided ? `<span class="rvs-tag" style="color:var(--review)">choose</span>` : ""}</span>
+          <span>${opts}</span>
         </div>
       </div>`;
-    }).join("");
+    }).join("") || `<div class="rvs-note-cell">No graded checks on this ticket.</div>`;
+
     list.querySelectorAll("[data-adjust]").forEach(btn =>
       btn.addEventListener("click", (e) => {
         e.preventDefault();
-        const key = btn.dataset.adjust;
-        const scored = t[key];
-        if (key in modalOverrides) delete modalOverrides[key];
-        else modalOverrides[key] = scored === "Fail" ? "Pass" : "Fail";
+        modalChoices[btn.dataset.adjust] = btn.dataset.value;
         renderAdjustList(t);
       }));
   }
@@ -623,11 +662,24 @@
       $("rvs-mmsg").textContent = "A note is required — it is the audit trail.";
       return;
     }
+    if (decision !== "revert") {
+      const undecided = modalKeys.filter(k => !(k in modalChoices));
+      if (undecided.length) {
+        $("rvs-mmsg").textContent =
+          "Choose retain-or-adjust for every check — missing: "
+          + undecided.map(k => k.toUpperCase()).join(", ")
+          + '. "Retain all remaining" fills the rest.';
+        return;
+      }
+    }
     try {
+      const overrides = {};
+      for (const [k, v] of Object.entries(modalChoices)) {
+        if (v !== RETAIN && v !== t[k]) overrides[k] = v;
+      }
       await QC.api(`/api/ticket/${encodeURIComponent(t.ticket_id)}/review`, {
         method: "POST",
-        body: JSON.stringify({ decision, note,
-                               check_overrides: modalOverrides }),
+        body: JSON.stringify({ decision, note, check_overrides: overrides }),
       });
       $("rvs-mscrim").hidden = true;
       const cb = state.onReviewed;
