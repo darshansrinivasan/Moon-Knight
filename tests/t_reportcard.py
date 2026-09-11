@@ -170,6 +170,63 @@ except ValueError:
     check("an unfrozen day cannot be exported", "ValueError", "ValueError")
 
 print()
+print("=== check adjudications: an overlay on the record, never a rewrite ===")
+import review as review_lib
+with db.get_conn() as c:
+    c.execute("UPDATE snapshot_tickets SET r1='Fail' WHERE ticket_id='t2'")
+rec = review_lib.accept_ticket("t2", {"email": "lead@x", "name": "Lead",
+                                      "role": "admin"},
+                               "Pass", "r1 was a scorer mistake",
+                               {"r1": "Pass"})
+check("override stored on the review row", rec["check_overrides"], {"r1": "Pass"})
+d = reportcard.day(D1)
+t2 = next(t for t in d["tickets"] if t["ticket_id"] == "t2")
+check("the scored frozen verdict is untouched", t2["r1"], "Fail")
+ft = reportcard.frozen_ticket(D1, 2)
+check("the adjudication rides the frozen payload",
+      ft["ticket"]["check_overrides"], {"r1": "Pass"})
+check("effective_check applies the overlay",
+      reportcard.effective_check(ft["ticket"], "r1"), "Pass")
+try:
+    review_lib.accept_ticket("t2", {"email": "l@x", "name": "L", "role": "admin"},
+                             "Pass", "note", {"a3": "Pass"})
+    check("A-checks are not adjustable", "no error", "ReviewInvalid")
+except review_lib.ReviewInvalid:
+    check("A-checks are not adjustable", "ReviewInvalid", "ReviewInvalid")
+review_lib.accept_ticket("t2", {"email": "lead@x", "name": "Lead",
+                                "role": "admin"}, "revert")
+ft = reportcard.frozen_ticket(D1, 2)
+check("revert clears the adjudications with the verdict",
+      ft["ticket"]["check_overrides"], {})
+
+print()
+print("=== one_on_one: patterns respect adjudications, both bases, both periods ===")
+with db.get_conn() as c:
+    c.execute("UPDATE rule_checks SET r1='Fail', r4='Fail' WHERE ticket_id='t2'")
+    c.execute("UPDATE snapshot_tickets SET r1='Fail', r4='Fail'"
+              " WHERE ticket_id='t2'")
+oo = reportcard.one_on_one("Ann", D1, TODAY.isoformat())
+pat = {p["key"]: p for p in oo["patterns"]}
+check("frozen fails counted per check",
+      (pat["r1"]["curr"], pat["r4"]["curr"]), (1, 1))
+check("examples name the ticket", pat["r1"]["examples"][0]["number"], 2)
+check("daily timeline has the day",
+      any(x["date"] == D1 and x["checks"].get("r1") == 1 for x in oo["daily"]),
+      True)
+check("day-of-week rows cover the week", len(oo["day_of_week"]), 7)
+# The lead adjudicates r1 away — the pattern must stop counting it.
+review_lib.accept_ticket("t2", {"email": "lead@x", "name": "Lead",
+                                "role": "admin"},
+                         "Pass", "r1 wrongly scored", {"r1": "Pass"})
+oo2 = reportcard.one_on_one("Ann", D1, TODAY.isoformat())
+pat2 = {p["key"]: p for p in oo2["patterns"]}
+check("an adjudicated check leaves the miss patterns",
+      "r1" not in pat2, True)
+check("unadjudicated fails keep counting", pat2["r4"]["curr"], 1)
+review_lib.accept_ticket("t2", {"email": "lead@x", "name": "Lead",
+                                "role": "admin"}, "revert")
+
+print()
 print("=== frozen_ticket: the shared review sheet's data contract ===")
 ft = reportcard.frozen_ticket(D1, 2)
 check("a frozen ticket comes back with its record",

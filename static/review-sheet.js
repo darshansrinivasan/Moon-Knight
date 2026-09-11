@@ -181,6 +181,15 @@
       <h3 id="rvs-mtitle"></h3>
       <p class="rvs-sub" id="rvs-msub"></p>
       <textarea id="rvs-note" placeholder="Why — required. This note is the audit trail for changing the record."></textarea>
+      <details id="rvs-adjust" style="margin-top:10px">
+        <summary style="cursor:pointer;font-size:12.5px;color:var(--muted)">
+          Adjust rule verdicts (optional)</summary>
+        <div style="font-size:11.5px;color:var(--muted);margin:6px 0">
+          Flip a rule the scorer got wrong for this ticket. Untouched rules
+          keep their scored verdict — a ticket can pass overall with an honest
+          fail left standing.</div>
+        <div id="rvs-adjust-list"></div>
+      </details>
       <div class="rvs-msgline" id="rvs-mmsg"></div>
       <div class="rvs-row">
         <button class="rvs-btn" id="rvs-mcancel">Cancel</button>
@@ -301,17 +310,22 @@
       ${review
         ? `<span class="rvs-tag">signed off · ${esc(review.reviewer_name || review.reviewer_email || "")}</span>` : ""}`;
 
+    const overrides = (review && review.check_overrides) || {};
     const checks = MATRIX.map(([key]) => {
-      const st = cellState(key, t[key]);
+      const eff = overrides[key] || t[key];
+      const st = cellState(key, eff);
       const label = (CHECKS[key] || {}).label || key.toUpperCase();
-      const shown = t[key] || "—";
+      const shown = eff || "—";
+      const adjusted = key in overrides
+        ? `<span class="rvs-tag" title="Scored ${esc(t[key] || "—")} — adjusted by ${esc((review && review.reviewer_name) || "the reviewer")}">adjusted</span>`
+        : "";
       const reason = why[key]
         ? `<div class="rvs-note-cell" style="margin-top:2px">${esc(why[key])}</div>` : "";
       return `<div class="rvs-check">
         <span class="rvs-cell c-${st}">${CELL_GLYPH[st]}</span>
         <div style="flex:1">
           <div class="rvs-check-head">
-            <span>${esc(key.toUpperCase())} · ${esc(label)}</span>
+            <span>${esc(key.toUpperCase())} · ${esc(label)} ${adjusted}</span>
             <span class="${GRADE_CLS[shown] || ""}">${esc(shown)}</span>
           </div>
           ${reason}
@@ -460,14 +474,20 @@
       ${t.review_decision
         ? `<span class="rvs-tag">signed off · ${esc(t.reviewer_name || "")}</span>` : ""}`;
 
+    const overrides = t.check_overrides || {};
     const checks = MATRIX.map(([key]) => {
-      const st = cellState(key, t[key]);
+      const scored = t[key];
+      const eff = overrides[key] || scored;
+      const st = cellState(key, eff);
       const label = (CHECKS[key] || {}).label || key.toUpperCase();
-      const shown = t[key] || "—";
+      const shown = eff || "—";
+      const adjusted = key in overrides
+        ? `<span class="rvs-tag" title="Scored ${esc(scored || "—")} — adjusted by ${esc(t.reviewer_name || "the reviewer")}">adjusted · scored ${esc(scored || "—")}</span>`
+        : "";
       return `<div class="rvs-check">
         <span class="rvs-cell c-${st}">${CELL_GLYPH[st]}</span>
         <div class="rvs-check-head">
-          <span>${esc(key.toUpperCase())} · ${esc(label)}</span>
+          <span>${esc(key.toUpperCase())} · ${esc(label)} ${adjusted}</span>
           <span class="${GRADE_CLS[shown] || ""}">${esc(shown)}</span>
         </div>
       </div>`;
@@ -543,6 +563,8 @@
     }
   }
 
+  let modalOverrides = {};
+
   function openModal(t) {
     $("rvs-mtitle").textContent = `Sign off #${t.number}`;
     $("rvs-msub").textContent =
@@ -551,8 +573,46 @@
     $("rvs-note").value = "";
     $("rvs-mmsg").textContent = "";
     $("rvs-mrevert").style.display = t.review_decision ? "" : "none";
+    modalOverrides = Object.assign({}, t.check_overrides || {});
+    renderAdjustList(t);
+    $("rvs-adjust").open = Object.keys(modalOverrides).length > 0;
     $("rvs-mscrim").hidden = false;
     $("rvs-note").focus();
+  }
+
+  const OVERRIDABLE = ["r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11"];
+
+  function renderAdjustList(t) {
+    const list = $("rvs-adjust-list");
+    list.innerHTML = OVERRIDABLE.map(key => {
+      const scored = t[key];
+      if (scored !== "Pass" && scored !== "Fail") return "";   // N/A etc: nothing to flip
+      const label = (CHECKS[key] || {}).label || key.toUpperCase();
+      const eff = modalOverrides[key] || scored;
+      const adjusted = key in modalOverrides;
+      const flipTo = eff === "Fail" ? "Pass" : "Fail";
+      return `<div class="rvs-check" style="align-items:center">
+        <div class="rvs-check-head">
+          <span>${esc(key.toUpperCase())} · ${esc(label)}
+            ${adjusted ? `<span class="rvs-tag">adjusted</span>` : ""}</span>
+          <span>
+            <span class="${GRADE_CLS[eff] || ""}">${esc(eff)}</span>
+            <button class="rvs-btn" data-adjust="${esc(key)}"
+                    style="margin-left:8px;padding:2px 8px;font-size:11px">
+              ${adjusted ? "restore scored " + esc(scored) : "flip to " + esc(flipTo)}</button>
+          </span>
+        </div>
+      </div>`;
+    }).join("");
+    list.querySelectorAll("[data-adjust]").forEach(btn =>
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        const key = btn.dataset.adjust;
+        const scored = t[key];
+        if (key in modalOverrides) delete modalOverrides[key];
+        else modalOverrides[key] = scored === "Fail" ? "Pass" : "Fail";
+        renderAdjustList(t);
+      }));
   }
 
   async function sendReview(decision) {
@@ -565,7 +625,9 @@
     }
     try {
       await QC.api(`/api/ticket/${encodeURIComponent(t.ticket_id)}/review`, {
-        method: "POST", body: JSON.stringify({ decision, note }),
+        method: "POST",
+        body: JSON.stringify({ decision, note,
+                               check_overrides: modalOverrides }),
       });
       $("rvs-mscrim").hidden = true;
       const cb = state.onReviewed;

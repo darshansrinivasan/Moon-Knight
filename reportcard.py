@@ -158,6 +158,7 @@ def day(date_str: str) -> dict:
                    {_FROZEN_GRADE} AS effective_result,
                    rev.decision AS review_decision,
                    rev.reviewer_name, rev.note AS review_note,
+                   rev.check_overrides AS _overrides_json,
                    cur.overall_result AS current_result,
                    cur.checked_at    AS current_checked_at,
                    {EFFECTIVE_GRADE_SQL.replace('ac.', 'cur.')} AS current_effective
@@ -172,6 +173,7 @@ def day(date_str: str) -> dict:
                "pending": 0, "remediated": 0, "outstanding": 0,
                "regressed": 0}
     for r in rows:
+        r["check_overrides"] = _row_overrides(r)
         grade = r["effective_result"]
         if grade == "Pass":
             summary["pass"] += 1
@@ -215,6 +217,7 @@ def frozen_ticket(date_str: str, number: int) -> dict:
                    {_FROZEN_GRADE} AS effective_result,
                    rev.decision AS review_decision,
                    rev.reviewer_name, rev.note AS review_note,
+                   rev.check_overrides AS _overrides_json,
                    cur.overall_result AS current_result,
                    cur.checked_at    AS current_checked_at,
                    {EFFECTIVE_GRADE_SQL.replace('ac.', 'cur.')} AS current_effective
@@ -225,11 +228,30 @@ def frozen_ticket(date_str: str, number: int) -> dict:
         """, (date_str, number)).fetchone()
     t = dict(row) if row else None
     if t:
+        t["check_overrides"] = _row_overrides(t)
         t["delta"] = _delta(t)
     return {"date": date_str, "hole": False,
             "snapshot": {"created_at": snap["created_at"],
                          "created_by": snap["created_by"] or "scheduler"},
             "ticket": t}
+
+
+def _row_overrides(r: dict) -> dict:
+    """The active review's per-check adjudications for this row, parsed.
+
+    Applied only while a Pass/Fail review is active — a revert clears the
+    check-level record along with the overall, one lifecycle for both.
+    """
+    import review as review_mod
+    raw = r.pop("_overrides_json", None)
+    if r.get("review_decision") not in ("Pass", "Fail"):
+        return {}
+    return review_mod.parse_check_overrides(raw)
+
+
+def effective_check(r: dict, key: str):
+    """One check's verdict with any lead adjudication applied."""
+    return (r.get("check_overrides") or {}).get(key, r.get(key))
 
 
 def _delta(r: dict) -> str:
@@ -340,6 +362,187 @@ def backfill(start: str, end: str, created_by: str) -> dict:
             "skipped_existing": len(have)}
 
 
+# ── 1:1 coaching view ─────────────────────────────────────────────────────────
+# The lead's per-person story over a range: which checks keep failing, how the
+# days went, what got fixed vs what's still standing — frozen basis (with the
+# marked live fallback), adjudications applied, so the numbers are the same
+# ones the record shows and a lead's own corrections are respected.
+
+_PATTERN_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11",
+                   "a1", "a3", "a4", "a5")
+_ADVISORY = {"r10", "r11"}
+_FAIL_VALUES = {"Fail", "Poor", "Inaccurate", "Inconsistent"}
+
+
+def _person_rows(person: str, start: str, end: str) -> tuple[list[dict], int, int]:
+    """(rows, frozen_days, live_days) for one assignee over a range.
+
+    Frozen rows carry the FROZEN attribution (a reassignment cannot move a
+    fail into or out of someone's 1:1); live-fallback rows exist only for
+    dates without a snapshot and are marked `basis: live`.
+    """
+    frozen_days, live_days = _range_dates(start, end)
+    rows: list[dict] = []
+    with db.get_conn() as conn:
+        if frozen_days:
+            marks = ",".join("?" for _ in frozen_days)
+            for r in conn.execute(f"""
+                SELECT st.*, st.snapshot_date AS day,
+                       {_FROZEN_GRADE} AS effective_result,
+                       rev.decision AS review_decision,
+                       rev.reviewer_name, rev.note AS review_note,
+                       rev.check_overrides AS _overrides_json,
+                       {EFFECTIVE_GRADE_SQL.replace('ac.', 'cur.')} AS current_effective
+                FROM snapshot_tickets st
+                LEFT JOIN ({LATEST_REVIEW_SQL}) rev ON rev.ticket_id = st.ticket_id
+                LEFT JOIN ai_checks cur ON cur.ticket_id = st.ticket_id
+                WHERE st.snapshot_date IN ({marks}) AND st.assignee_name = ?
+            """, (*frozen_days, person)).fetchall():
+                row = dict(r)
+                row["basis"] = "frozen"
+                row["check_overrides"] = _row_overrides(row)
+                row["delta"] = _delta(row)
+                rows.append(row)
+        if live_days:
+            import rules as qc_rules
+            clause, extra = qc_rules.excluded_state_clause("t")
+            scope = f" AND {clause}" if clause else ""
+            marks = ",".join("?" for _ in live_days)
+            check_cols = ", ".join(
+                f"rc.{c}" for c in _PATTERN_CHECKS if c.startswith("r"))
+            a_cols = ", ".join(
+                f"ac.{c}" for c in _PATTERN_CHECKS if c.startswith("a"))
+            for r in conn.execute(f"""
+                SELECT t.id AS ticket_id, t.number, t.title, t.link, t.state,
+                       t.assignee_name, t.fetch_date AS day,
+                       {check_cols}, {a_cols}, ac.overall_result, ac.ai_notes,
+                       {EFFECTIVE_GRADE_SQL} AS effective_result,
+                       rev.decision AS review_decision,
+                       rev.reviewer_name, rev.note AS review_note,
+                       rev.check_overrides AS _overrides_json
+                FROM tickets t
+                LEFT JOIN rule_checks rc ON rc.ticket_id = t.id
+                LEFT JOIN ai_checks   ac ON ac.ticket_id = t.id
+                LEFT JOIN ({LATEST_REVIEW_SQL}) rev ON rev.ticket_id = t.id
+                WHERE t.fetch_date IN ({marks}) AND t.deleted_at IS NULL
+                  AND t.assignee_name = ? {scope}
+            """, (*live_days, person, *extra)).fetchall():
+                row = dict(r)
+                row["basis"] = "live"
+                row["check_overrides"] = _row_overrides(row)
+                row["delta"] = "unchanged"
+                rows.append(row)
+    return rows, len(frozen_days), len(live_days)
+
+
+def _check_fails(row: dict) -> list[str]:
+    """The checks this row fails, AFTER lead adjudications."""
+    return [k for k in _PATTERN_CHECKS
+            if effective_check(row, k) in _FAIL_VALUES]
+
+
+def one_on_one(person: str, start: str, end: str) -> dict:
+    """Everything a lead needs on one screen for a 1:1, deterministically."""
+    rows, frozen_days, live_days = _person_rows(person, start, end)
+
+    span = (date_cls.fromisoformat(end) - date_cls.fromisoformat(start)).days + 1
+    prev_end = (date_cls.fromisoformat(start) - timedelta(days=1)).isoformat()
+    prev_start = (date_cls.fromisoformat(start)
+                  - timedelta(days=span)).isoformat()
+    prev_rows, _, _ = _person_rows(person, prev_start, prev_end)
+
+    def graded(rs):
+        return [r for r in rs if r.get("effective_result")
+                in ("Pass", "Fail", "Needs Review")]
+
+    cur_g, prev_g = graded(rows), graded(prev_rows)
+
+    def rate(rs):
+        n = len(rs)
+        return round(sum(1 for r in rs
+                         if r["effective_result"] == "Pass") / n * 100, 1) if n else None
+
+    # Per-check patterns, current vs previous, worst first, with examples.
+    def fail_counts(rs):
+        out = {k: 0 for k in _PATTERN_CHECKS}
+        for r in rs:
+            for k in _check_fails(r):
+                out[k] += 1
+        return out
+
+    cur_fails, prev_fails = fail_counts(rows), fail_counts(prev_rows)
+    patterns = []
+    for k in _PATTERN_CHECKS:
+        if not cur_fails[k] and not prev_fails[k]:
+            continue
+        examples = [{
+            "number": r["number"], "title": r["title"], "date": r["day"],
+            "delta": r["delta"], "basis": r["basis"],
+            # The frozen advice note is the WHY — a coaching brief without it
+            # can only restate counts.
+            "note": (r.get("ai_notes") or "")[:280],
+        } for r in sorted(rows, key=lambda x: x["day"], reverse=True)
+          if k in _check_fails(r)][:3]
+        patterns.append({
+            "key": k, "advisory": k in _ADVISORY,
+            "curr": cur_fails[k], "prev": prev_fails[k],
+            "delta": cur_fails[k] - prev_fails[k],
+            "examples": examples,
+        })
+    patterns.sort(key=lambda p: (-p["curr"], p["key"]))
+
+    # Daily timeline + day-of-week clustering (both, as asked).
+    daily: dict = {}
+    dow = {i: {"graded": 0, "fails": 0} for i in range(7)}
+    for r in rows:
+        day = r["day"]
+        cell = daily.setdefault(day, {"date": day, "graded": 0, "fails": 0,
+                                      "checks": {}})
+        is_graded = r.get("effective_result") in ("Pass", "Fail", "Needs Review")
+        failing = _check_fails(r)
+        if is_graded:
+            cell["graded"] += 1
+        if r.get("effective_result") == "Fail":
+            cell["fails"] += 1
+        for k in failing:
+            cell["checks"][k] = cell["checks"].get(k, 0) + 1
+        wd = date_cls.fromisoformat(day).weekday()
+        if is_graded:
+            dow[wd]["graded"] += 1
+            if r.get("effective_result") == "Fail":
+                dow[wd]["fails"] += 1
+
+    # Remediation split over the frozen rows: fixed vs still standing.
+    remediated = sum(1 for r in rows if r["delta"] == "remediated")
+    outstanding = sum(1 for r in rows if r["delta"] == "outstanding")
+
+    return {
+        "person": person,
+        "start": start, "end": end,
+        "prev_start": prev_start, "prev_end": prev_end,
+        "basis": {"frozen_days": frozen_days, "live_days": live_days},
+        "summary": {
+            "graded": len(cur_g),
+            "fails": sum(1 for r in cur_g if r["effective_result"] == "Fail"),
+            "pass_rate": rate(cur_g),
+            "prev_graded": len(prev_g),
+            "prev_fails": sum(1 for r in prev_g
+                              if r["effective_result"] == "Fail"),
+            "prev_pass_rate": rate(prev_g),
+            "remediated": remediated,
+            "outstanding": outstanding,
+            "r10_misses": cur_fails.get("r10", 0),
+            "r11_silences": cur_fails.get("r11", 0),
+        },
+        "patterns": patterns,
+        "daily": sorted(daily.values(), key=lambda x: x["date"]),
+        "day_of_week": [
+            {"day": name, "graded": dow[i]["graded"], "fails": dow[i]["fails"]}
+            for i, name in enumerate(
+                ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"))],
+    }
+
+
 # ── rewardable metrics ────────────────────────────────────────────────────────
 # Numbers a reward can safely hang on, computed only from the frozen record and
 # the live delta — so they measure what people DID about what the morning
@@ -428,6 +631,69 @@ def rewards(weeks: int = 4) -> dict:
         })
     out.sort(key=lambda x: (-(x["remediation_rate"] or -1), -x["graded"]))
     return {"start": start, "end": end, "weeks": weeks, "people": out}
+
+
+def one_on_one_brief(person: str, start: str, end: str,
+                     triggered_by: str) -> dict:
+    """A short Gemini-written coaching brief over the 1:1 data. Real money —
+    only ever on an explicit button press, cost returned and filed in qc_runs
+    under '1on1:<start>' exactly like the report chat's spend."""
+    import json as json_mod
+
+    from qc_runner import PLAIN_TEXT, RunStats, _call_gemini
+
+    data = one_on_one(person, start, end)
+    if not data["summary"]["graded"] and not data["patterns"]:
+        raise ValueError("No graded tickets in this period — nothing to summarize")
+
+    payload = {k: data[k] for k in ("summary", "patterns", "daily",
+                                    "day_of_week")}
+    prompt = (
+        f"You are preparing a support team lead for a 1:1 with {person}.\n"
+        f"Period {start}..{end}, compared to {data['prev_start']}..{data['prev_end']}.\n"
+        "Data (QC check failures; 'advisory' items are habits, not ticket "
+        "failures; 'remediated' means fixed after being caught):\n"
+        f"{json_mod.dumps(payload)}\n\n"
+        "Write a coaching brief in plain text, under 250 words, three "
+        "sections: Strengths (call out real positives — improvements, "
+        "remediation), Patterns (the 2-3 recurring miss types, with counts "
+        "and trend vs previous period), Talking points (specific, kind, "
+        "actionable — reference ticket numbers from the examples). Never "
+        "invent numbers or tickets not present in the data."
+    )
+    stats = RunStats()
+    text = _call_gemini(
+        prompt, stats,
+        system=("You are an experienced, kind support team lead preparing "
+                "for a 1:1. You write short, specific, human coaching briefs "
+                "in plain prose — no JSON, no markdown syntax (no ** or #), "
+                "no invented numbers."),
+        # Thinking tokens bill against this cap on 2.5 models; 2048 truncated
+        # the brief mid-sentence.
+        schema=PLAIN_TEXT, max_output=8192)
+    now = _utc_now_iso()
+    with db.get_conn() as conn:
+        conn.execute("""
+            INSERT INTO qc_runs (date, triggered_by, started_at, finished_at,
+                                 status, total, scored, skipped, model_used,
+                                 prompt_tokens, output_tokens, cost_usd,
+                                 cached_tokens, thought_tokens, cost_estimated,
+                                 config_json)
+            VALUES (?, ?, ?, ?, 'success', ?, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (f"1on1:{start}", triggered_by, now, now,
+              data["summary"]["graded"], stats.model_summary(),
+              stats.prompt_tokens, stats.output_tokens,
+              round(stats.cost_usd(), 6), stats.cached_tokens,
+              stats.thought_tokens, 1 if stats.cost_is_estimated() else 0,
+              json_mod.dumps({"one_on_one": True, "person": person,
+                              "start": start, "end": end})))
+    return {"brief": text.strip(), "cost_usd": round(stats.cost_usd(), 6),
+            "model": stats.model_summary(),
+            "cost_estimated": stats.cost_is_estimated()}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ── CSV export ────────────────────────────────────────────────────────────────

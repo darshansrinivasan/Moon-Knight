@@ -270,6 +270,7 @@
       <button class="rc-tab" data-view="analytics">Frozen Analytics</button>
       <button class="rc-tab" data-view="board">Frozen Leaderboard</button>
       <button class="rc-tab" data-view="rewards">Rewardable Metrics</button>
+      <button class="rc-tab" data-view="oneonone" id="tab-oneonone" hidden>1:1 Review</button>
     </div>
 
     <div id="view-day">
@@ -350,6 +351,35 @@
       </table></div>
     </div>
 
+    <div id="view-oneonone" hidden>
+      <div class="rc-bar">
+        <label class="rc-note" for="oo-person">Person</label>
+        <select id="oo-person"></select>
+        <label class="rc-note">From <input type="date" id="oo-start"></label>
+        <label class="rc-note">To <input type="date" id="oo-end"></label>
+        <button class="btn" id="oo-go">Apply</button>
+        <span class="rc-note" id="oo-basis"></span>
+        <div class="spacer"></div>
+        <button class="btn" id="oo-brief-btn"
+                title="Gemini writes a short coaching brief from this period's data. Costs real money per click; the cost is shown with the result.">✨ Summarize for 1:1</button>
+      </div>
+      <div class="kpis" id="oo-kpis"></div>
+      <div class="hole-banner" id="oo-brief" hidden style="white-space:pre-wrap"></div>
+      <h2 class="sec-h" style="font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:14px 0 8px">Miss patterns — this period vs previous</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Check</th><th>This period</th><th>Previous</th><th>Trend</th>
+        <th>Recent examples — click to open</th></tr></thead>
+        <tbody id="oo-patterns"><tr><td colspan="5" class="empty">Pick a person.</td></tr></tbody>
+      </table></div>
+      <h2 style="font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:18px 0 8px">Daily pattern</h2>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Date</th><th>Graded</th><th>Fails</th><th>Failing checks</th></tr></thead>
+        <tbody id="oo-daily"></tbody>
+      </table></div>
+      <h2 style="font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:18px 0 8px">Day-of-week clustering</h2>
+      <div class="kpis" id="oo-dow"></div>
+    </div>
+
     <div id="view-rewards" hidden>
       <div class="rc-bar">
         <label class="rc-note" for="rw-weeks">Window</label>
@@ -384,7 +414,7 @@ let rvTicket = null;          // ticket under review in the modal
 
 // ── sub-views ────────────────────────────────────────────────────────────────
 function showView(name) {
-  for (const v of ["day", "analytics", "board", "rewards"]) {
+  for (const v of ["day", "analytics", "board", "rewards", "oneonone"]) {
     $("view-" + v).hidden = v !== name;
   }
   document.querySelectorAll(".rc-tab").forEach(b =>
@@ -403,11 +433,14 @@ const GRADE_CLS = { "Pass": "g-Pass", "Fail": "g-Fail", "Needs Review": "g-NR" }
 const { CHECKS, MATRIX, CELL_GLYPH, cellState } = QCReviewSheet;
 
 function matrixHtml(t) {
+  const overrides = t.check_overrides || {};
   return `<div class="mx" role="group" aria-label="Frozen check results">`
     + MATRIX.map(([key, short]) => {
-        const st = cellState(key, t[key]);
+        const eff = overrides[key] || t[key];
+        const st = cellState(key, eff);
         const label = (CHECKS[key] || {}).label || key.toUpperCase();
-        const shown = t[key] || "not evaluated";
+        const shown = (eff || "not evaluated")
+          + (key in overrides ? ` (adjusted; scored ${t[key] || "—"})` : "");
         return `<span class="mx-cell c-${st}" title="${esc(label)}: ${esc(shown)}"
                       aria-label="${esc(label + " " + shown)}">${CELL_GLYPH[st]}</span>`;
       }).join("") + `</div>`;
@@ -859,6 +892,127 @@ function renderBoard(d) {
 $("an-go").addEventListener("click", () => loadRange("an-start", "an-end", "an-mix", renderAnalytics));
 $("lb-go").addEventListener("click", () => loadRange("lb-start", "lb-end", "lb-mix", renderBoard));
 
+// ── 1:1 review: one person's miss patterns, for the coaching conversation ───
+let ooToken = 0;
+let ooData = null;
+
+async function loadOoPeople() {
+  try {
+    const d = await QC.api("/api/reportcard/oneonone/people");
+    $("oo-person").innerHTML = (d.people || []).map(n =>
+      `<option value="${esc(n)}">${esc(n)}</option>`).join("")
+      || `<option value="">No people in scope</option>`;
+  } catch (e) {
+    $("oo-person").innerHTML = `<option value="">${esc(e.message)}</option>`;
+  }
+}
+
+async function loadOneOnOne() {
+  const person = $("oo-person").value;
+  const start = $("oo-start").value, end = $("oo-end").value;
+  if (!person || !start || !end) return;
+  const token = ++ooToken;
+  $("oo-patterns").innerHTML =
+    `<tr class="sk-row" aria-hidden="true"><td colspan="5"><span class="sk sk-line" style="width:55%"></span></td></tr>`;
+  $("oo-brief").hidden = true;
+  let d;
+  try {
+    d = await QC.api(`/api/reportcard/oneonone?person=${encodeURIComponent(person)}`
+                     + `&start=${start}&end=${end}`);
+  } catch (e) {
+    if (token !== ooToken) return;
+    $("oo-patterns").innerHTML = `<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  if (token !== ooToken) return;
+  ooData = d;
+
+  const s2 = d.summary;
+  const pp = (a, b) => (a === null || b === null) ? ""
+    : ` <span class="${a - b >= 0 ? "delta-pos" : "delta-neg"}">(${a - b >= 0 ? "+" : ""}${Math.round((a - b) * 10) / 10} pp)</span>`;
+  $("oo-basis").textContent = d.basis.live_days
+    ? `${d.basis.frozen_days} frozen days · ${d.basis.live_days} not frozen (live grades, marked)`
+    : `${d.basis.frozen_days} frozen days`;
+  $("oo-kpis").innerHTML = `
+    <div class="kpi"><b>${s2.graded}</b><span>graded (prev ${s2.prev_graded})</span></div>
+    <div class="kpi fail"><b>${s2.fails}</b><span>fails (prev ${s2.prev_fails})</span></div>
+    <div class="kpi ${((s2.pass_rate ?? 0) >= (s2.prev_pass_rate ?? 0)) ? "pass" : "fail"}">
+      <b>${s2.pass_rate === null ? "—" : s2.pass_rate + "%"}</b>
+      <span>pass rate${pp(s2.pass_rate, s2.prev_pass_rate)}</span></div>
+    <div class="kpi rem"><b>${s2.remediated}</b><span>remediated since freeze</span></div>
+    <div class="kpi fail"><b>${s2.outstanding}</b><span>still failing</span></div>
+    <div class="kpi"><b>${s2.r10_misses}</b><span>SpotAssist skips (advisory)</span></div>
+    <div class="kpi"><b>${s2.r11_silences}</b><span>gone-silent tickets (advisory)</span></div>`;
+
+  const trend = p => p.delta === 0
+    ? `<span class="rc-note">same</span>`
+    : p.delta > 0
+      ? `<span class="delta-neg">▲ +${p.delta}</span>`
+      : `<span class="delta-pos">▼ ${p.delta}</span>`;
+  $("oo-patterns").innerHTML = (d.patterns || []).map(p => {
+    const label = (CHECKS[p.key] || {}).label || p.key.toUpperCase();
+    const ex = (p.examples || []).map(x =>
+      `<button class="btn" style="padding:2px 8px;font-size:11px"
+               data-oo-num="${esc(String(x.number))}" data-oo-date="${esc(x.date)}"
+               title="${esc(x.title || "")}${x.basis === "live" ? " (live-basis day)" : ""}">
+         #${esc(String(x.number))}${x.delta === "remediated" ? " ✓fixed" : ""}</button>`
+    ).join(" ");
+    return `<tr>
+      <td>${esc(p.key.toUpperCase())} · ${esc(label)}${p.advisory ? ` <span class="rc-note">(advisory)</span>` : ""}</td>
+      <td class="num g-Fail">${p.curr}</td>
+      <td class="num">${p.prev}</td>
+      <td>${trend(p)}</td>
+      <td>${ex || `<span class="rc-note">—</span>`}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">No misses in either period — bring compliments to this 1:1.</td></tr>`;
+  $("oo-patterns").querySelectorAll("[data-oo-num]").forEach(b =>
+    b.addEventListener("click", () => QCReviewSheet.open({
+      date: b.dataset.ooDate, number: b.dataset.ooNum,
+      onReviewed: loadOneOnOne,      // adjudications feed straight back
+    })));
+
+  $("oo-daily").innerHTML = (d.daily || []).map(x => `
+    <tr><td>${esc(x.date)}</td><td class="num">${x.graded}</td>
+    <td class="num ${x.fails ? "g-Fail" : ""}">${x.fails}</td>
+    <td class="rc-note">${esc(Object.entries(x.checks || {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `${k.toUpperCase()}×${n}`).join("  ") || "—")}</td></tr>`
+  ).join("") || `<tr><td colspan="4" class="empty">No tickets in this range.</td></tr>`;
+
+  $("oo-dow").innerHTML = (d.day_of_week || []).map(x => {
+    const rate = x.graded ? Math.round(x.fails / x.graded * 100) : null;
+    return `<div class="kpi${rate !== null && rate >= 25 ? " fail" : ""}">
+      <b>${rate === null ? "—" : rate + "%"}</b>
+      <span>${esc(x.day)} · ${x.fails} of ${x.graded}</span></div>`;
+  }).join("");
+}
+
+$("oo-go").addEventListener("click", loadOneOnOne);
+$("oo-person").addEventListener("change", loadOneOnOne);
+
+$("oo-brief-btn").addEventListener("click", async () => {
+  const btn = $("oo-brief-btn");
+  if (!ooData) return;
+  btn.disabled = true;
+  btn.textContent = "✨ Writing…";
+  try {
+    const d = await QC.api("/api/reportcard/oneonone/brief", {
+      method: "POST",
+      body: JSON.stringify({ person: ooData.person,
+                             start: ooData.start, end: ooData.end }),
+    });
+    $("oo-brief").hidden = false;
+    $("oo-brief").textContent = d.brief
+      + `\n\n— ${d.model} · $${d.cost_usd}${d.cost_estimated ? " (estimated)" : ""}`;
+  } catch (e) {
+    $("oo-brief").hidden = false;
+    $("oo-brief").textContent = e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "✨ Summarize for 1:1";
+  }
+});
+
 // ── rewardable metrics ───────────────────────────────────────────────────────
 async function loadRewards() {
   const token = ++rwToken;
@@ -920,6 +1074,14 @@ $("bf-go").addEventListener("click", async () => {
   if (window.QC && QC.me && QC.me.role === "admin") {
     $("rc-admin-tools").hidden = false;
   }
+  if (window.QC && QC.me && QC.me.can_review_any) {
+    $("tab-oneonone").hidden = false;
+    const ooEnd = new Date(); ooEnd.setDate(ooEnd.getDate() - 1);
+    const ooStart = new Date(); ooStart.setDate(ooStart.getDate() - 7);
+    $("oo-start").value = ooStart.toISOString().slice(0, 10);
+    $("oo-end").value = ooEnd.toISOString().slice(0, 10);
+    loadOoPeople().then(() => { if ($("oo-person").value) loadOneOnOne(); });
+  }
   const params = new URLSearchParams(location.search);
 
   const end = new Date(), start = new Date();
@@ -969,7 +1131,7 @@ $("bf-go").addEventListener("click", async () => {
 
   let view = params.get("view") || "";
   try { view = view || localStorage.getItem("qc.rc.view") || "day"; } catch { view = view || "day"; }
-  showView(["day", "analytics", "board", "rewards"].includes(view) ? view : "day");
+  showView(["day", "analytics", "board", "rewards", "oneonone"].includes(view) ? view : "day");
 })();
 </script>
 </body>

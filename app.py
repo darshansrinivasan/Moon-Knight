@@ -1666,15 +1666,20 @@ async def review_ticket(ticket_id: str, request: Request,
     body = await request.json()
     decision = body.get("decision") or ""
     note = body.get("note") or ""
+    check_overrides = body.get("check_overrides")
     try:
-        record = await asyncio.to_thread(review.accept_ticket, ticket_id, user, decision, note)
+        record = await asyncio.to_thread(review.accept_ticket, ticket_id, user,
+                                         decision, note, check_overrides)
     except review.ReviewDenied as e:
         raise HTTPException(403, str(e))
     except review.ReviewInvalid as e:
         raise HTTPException(400, str(e))
+    adjusted = record.get("check_overrides") or {}
     vault.audit(
         user["email"], "ticket.review",
-        f"{ticket_id} {record['decision']}" + (" (kept AI)" if record["kept_ai"] else ""),
+        f"{ticket_id} {record['decision']}"
+        + (" (kept AI)" if record["kept_ai"] else "")
+        + (f" adjusted={','.join(sorted(adjusted))}" if adjusted else ""),
     )
     if record["decision"] == "Revert":
         return {"ok": True, "review": None}
@@ -1685,6 +1690,7 @@ async def review_ticket(ticket_id: str, request: Request,
         "reviewer_name": record["reviewer_name"],
         "reviewed_at": record["reviewed_at"],
         "note": record["note"],
+        "check_overrides": record.get("check_overrides") or {},
     }}
 
 
@@ -1779,6 +1785,78 @@ async def reportcard_ticket(date_str: str, number: int,
     """One frozen record, for the shared review sheet (Open tab + Report Card)."""
     _require_date(date_str)
     return await asyncio.to_thread(reportcard.frozen_ticket, date_str, number)
+
+
+def _oneonone_scope(user: dict) -> set | None:
+    """Who this user may open 1:1s for. None = everyone (admin).
+
+    'Team lead' is the review-coverage reviewer — the one roster concept the
+    app has. A member with no coverage has no team, so no access at all.
+    """
+    if user["role"] == "admin":
+        return None
+    covered = review.assignees_for(user)
+    if not covered:
+        raise HTTPException(
+            403, "The 1:1 view is for team leads (review-coverage owners) "
+                 "and administrators.")
+    return covered
+
+
+@app.get("/api/reportcard/oneonone/people")
+async def oneonone_people(user: dict = Depends(auth.require_user)):
+    covered = _oneonone_scope(user)
+
+    def load():
+        with db.get_conn() as conn:
+            names = [r["assignee_name"] for r in conn.execute(
+                "SELECT DISTINCT assignee_name FROM snapshot_tickets"
+                " WHERE assignee_name IS NOT NULL AND assignee_name != ''"
+                " ORDER BY assignee_name").fetchall()]
+        return names
+
+    names = await asyncio.to_thread(load)
+    if covered is not None:
+        names = [n for n in names if n in covered]
+    return {"people": names}
+
+
+@app.get("/api/reportcard/oneonone")
+async def oneonone(person: str, start: str, end: str,
+                   user: dict = Depends(auth.require_user)):
+    covered = _oneonone_scope(user)
+    if covered is not None and person not in covered:
+        raise HTTPException(403, "That person is not in your review coverage.")
+    _require_date(start)
+    _require_date(end)
+    if start > end:
+        raise HTTPException(400, "start must be on or before end")
+    if (date.fromisoformat(end) - date.fromisoformat(start)).days > 92:
+        raise HTTPException(400, "Pick a range of 92 days or less")
+    return await asyncio.to_thread(reportcard.one_on_one, person, start, end)
+
+
+@app.post("/api/reportcard/oneonone/brief")
+async def oneonone_brief(request: Request,
+                         user: dict = Depends(auth.require_user)):
+    """The AI coaching brief — explicit button, real Vertex spend, cost shown."""
+    covered = _oneonone_scope(user)
+    body = await request.json()
+    person = str(body.get("person") or "")
+    start = _require_date(str(body.get("start") or "")).isoformat()
+    end = _require_date(str(body.get("end") or "")).isoformat()
+    if covered is not None and person not in covered:
+        raise HTTPException(403, "That person is not in your review coverage.")
+    try:
+        result = await asyncio.to_thread(
+            reportcard.one_on_one_brief, person, start, end, user["email"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
+    vault.audit(user["email"], "oneonone.brief",
+                f"{person} {start}..{end} ${result['cost_usd']}")
+    return result
 
 
 @app.get("/api/reportcard/export/{date_str}")

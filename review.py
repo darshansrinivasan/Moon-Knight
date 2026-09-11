@@ -9,6 +9,7 @@ Slack directory, identified by email so it matches Google sign-in). App
 admins (super-admins) can review every ticket regardless of coverage.
 """
 
+import json
 from datetime import datetime, timezone
 
 import db
@@ -142,6 +143,17 @@ def can_review_ticket(user: dict, ticket: dict) -> bool:
     return name in covered
 
 
+def parse_check_overrides(raw) -> dict:
+    """Stored JSON → dict, defensively. {} means no adjudications."""
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+        return loaded if isinstance(loaded, dict) else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
 def latest_review(ticket_id: str) -> dict | None:
     with db.get_conn() as conn:
         row = conn.execute(
@@ -190,6 +202,7 @@ def apply_effective_grades(tickets: list[dict]) -> list[dict]:
             "reviewer_name": rev["reviewer_name"],
             "reviewed_at": rev["reviewed_at"],
             "note": rev.get("note") or "",
+            "check_overrides": parse_check_overrides(rev.get("check_overrides")),
         } if rev else None
     return tickets
 
@@ -222,7 +235,39 @@ def _ticket_row(ticket_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> dict:
+# Checks a lead may adjudicate individually. R-checks only: A-checks carry the
+# model's judgment in non-binary vocabularies, and "some rules can be left at
+# fail even though the ticket passes" is a statement about RULES.
+OVERRIDABLE_CHECKS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r10", "r11")
+
+
+def clean_check_overrides(raw) -> dict:
+    """Validate {check: verdict} adjudications, or raise ReviewInvalid.
+
+    An overlay, never a rewrite: stored on the review row, applied only while
+    that review is active, gone on revert — same lifecycle as the overall
+    verdict, so the check-level record has the same audit trail.
+    """
+    if raw in (None, {}, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise ReviewInvalid("check_overrides must be an object of check: verdict")
+    out = {}
+    for key, verdict in raw.items():
+        k = str(key).strip().lower()
+        if k not in OVERRIDABLE_CHECKS:
+            raise ReviewInvalid(
+                f"'{k}' is not an adjustable check (rules only: "
+                f"{', '.join(OVERRIDABLE_CHECKS)})")
+        v = str(verdict).strip().title()
+        if v not in ("Pass", "Fail"):
+            raise ReviewInvalid(f"check_overrides.{k} must be Pass or Fail")
+        out[k] = v
+    return out
+
+
+def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "",
+                  check_overrides: dict | None = None) -> dict:
     """
     Sign off one ticket.
 
@@ -230,6 +275,9 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> 
       - `Pass` / `Fail` — override (or confirm) the overall grade
       - `accept` — keep the AI overall; rejected if the AI grade is not Pass or Fail
       - `revert` — clear the latest sign-off; effective grade becomes the AI overall
+
+    `check_overrides` (optional, Pass/Fail decisions only): per-rule
+    adjudications shown everywhere the checks are shown, marked as adjusted.
     """
     ticket = _ticket_row(ticket_id)
     if not ticket:
@@ -267,6 +315,8 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> 
         elif decision not in DECISIONS:
             raise ReviewInvalid("Decision must be Pass, Fail, accept, or revert")
 
+    overrides = {} if decision == "Revert" else clean_check_overrides(check_overrides)
+
     record = {
         "ticket_id": ticket_id,
         "decision": decision,
@@ -275,14 +325,17 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "") -> 
         "reviewer_name": user.get("name") or user["email"],
         "note": (note or "").strip()[:500],
         "reviewed_at": _now(),
+        "check_overrides": overrides,
     }
     with db.get_conn() as conn:
         conn.execute(
             "INSERT INTO ticket_reviews"
-            " (ticket_id, decision, kept_ai, reviewer_email, reviewer_name, note, reviewed_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " (ticket_id, decision, kept_ai, reviewer_email, reviewer_name,"
+            "  note, reviewed_at, check_overrides)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (record["ticket_id"], record["decision"], record["kept_ai"],
              record["reviewer_email"], record["reviewer_name"],
-             record["note"], record["reviewed_at"]),
+             record["note"], record["reviewed_at"],
+             json.dumps(overrides) if overrides else None),
         )
     return record

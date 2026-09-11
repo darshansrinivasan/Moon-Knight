@@ -62,6 +62,7 @@ _ADDED_COLUMNS = [
     # Survey responses often have account_id and no issue_id.
     "ALTER TABLE csat_events ADD COLUMN account_id TEXT",
     "ALTER TABLE day_snapshots ADD COLUMN created_by TEXT",
+    "ALTER TABLE ticket_reviews ADD COLUMN check_overrides TEXT",
     # Pylon's own first-response / resolution clocks. Reconstructing them
     # from created_at → first support message made Slack/chat tickets look
     # like a 1-minute FRT while the issue page showed hours.
@@ -399,7 +400,11 @@ def init_db():
             reviewer_email  TEXT NOT NULL,
             reviewer_name   TEXT,
             note            TEXT,
-            reviewed_at     TEXT NOT NULL
+            reviewed_at     TEXT NOT NULL,
+            -- Optional per-check adjudication, e.g. {"r1": "Pass"}. An overlay
+            -- read on top of the SCORED verdicts, never a rewrite of them —
+            -- applies only while this review is the active (latest) one.
+            check_overrides TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_reviews_ticket ON ticket_reviews(ticket_id, id);
 

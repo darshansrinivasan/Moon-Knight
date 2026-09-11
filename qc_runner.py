@@ -778,6 +778,14 @@ def _system_prompt(overrides: dict | None = None) -> str:
                                  else qc_rules.current())
 
 
+# Sentinel for callers that want prose, not structured output. `schema=None`
+# means "the QC grading schema" for historical reasons, so a third state is
+# needed — without it, the 1:1 coaching brief came back as a graded-ticket
+# JSON object, because the default schema forces the shape no matter what the
+# prompt asks for.
+PLAIN_TEXT = "plain-text"
+
+
 def _generate_once(client, model_name: str, prompt: str,
                    stats: "RunStats | None",
                    overrides: dict | None = None,
@@ -789,8 +797,10 @@ def _generate_once(client, model_name: str, prompt: str,
     `system` and `schema` default to the QC rubric; another caller (the
     functionality check) passes its own and inherits everything else — the
     pinned generation settings, retries and the model cascade — rather than
-    growing a second copy of them.
+    growing a second copy of them. `schema=PLAIN_TEXT` disables structured
+    output entirely (prose callers: the 1:1 brief).
     """
+    plain = schema is PLAIN_TEXT or schema == PLAIN_TEXT
     response = client.models.generate_content(
         model=model_name,
         contents=prompt,
@@ -804,8 +814,10 @@ def _generate_once(client, model_name: str, prompt: str,
             # caller expecting a long structured answer (the report chat's
             # breakdowns) must raise it or the JSON is silently truncated.
             max_output_tokens=max_output or MAX_OUTPUT_TOKENS,
-            response_mime_type="application/json",
-            response_schema=schema if schema is not None else RESPONSE_SCHEMA,
+            response_mime_type="text/plain" if plain else "application/json",
+            response_schema=None if plain
+                            else (schema if schema is not None
+                                  else RESPONSE_SCHEMA),
         ),
     )
     usage = getattr(response, "usage_metadata", None) or getattr(response, "usage", None)
