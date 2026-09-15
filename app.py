@@ -1614,6 +1614,42 @@ async def get_day(date_str: str, user: dict = Depends(auth.require_user)):
     }
 
 
+@app.get("/api/closed-sweep")
+async def closed_sweep_list(user: dict = Depends(auth.require_user)):
+    """The latest closure sweep's tickets, as a reviewable cross-date list.
+
+    The set comes from the sweep run's own recorded ids — the run already
+    decided (via Pylon's resolved_at search) what "closed in the window" means,
+    so this endpoint replays that decision instead of re-deriving it from
+    ticket fields that only update on refetch.
+    """
+    def load():
+        with db.get_conn() as conn:
+            run = conn.execute(
+                "SELECT id, started_at, finished_at, status, config_json"
+                " FROM qc_runs WHERE date = ? ORDER BY id DESC LIMIT 1",
+                (openqc.CLOSED_SWEEP_LABEL,)).fetchone()
+        if not run:
+            return None, []
+        try:
+            cfg = json.loads(run["config_json"] or "{}")
+        except json.JSONDecodeError:
+            cfg = {}
+        tickets = db.get_tickets_by_ids(cfg.get("ticket_ids") or [])
+        review.annotate_tickets(tickets, user)
+        info = {"run_id": run["id"], "started_at": run["started_at"],
+                "status": run["status"],
+                "window_hours": cfg.get("window_hours"),
+                "resolved_between": cfg.get("resolved_between"),
+                # Pre-ids runs can't list their set; the UI says so instead of
+                # showing an empty list that reads as "nothing closed".
+                "has_ticket_ids": "ticket_ids" in cfg}
+        return info, tickets
+
+    run, tickets = await asyncio.to_thread(load)
+    return {"run": run, "tickets": tickets}
+
+
 # ── single ticket detail with messages ───────────────────────────────────────
 
 @app.get("/api/ticket/{ticket_id}")
@@ -2399,6 +2435,8 @@ async def list_runs(date: str | None = None, user: dict = Depends(auth.require_u
         "schedule":  scheduler.next_run_description(),
         "settings":  {
             "schedule_enabled": vault.get_setting("schedule_enabled"),
+            "schedule_open_qc": vault.get_setting("schedule_open_qc"),
+            "schedule_closed_qc": vault.get_setting("schedule_closed_qc"),
             "schedule_time":    vault.get_setting("schedule_time"),
             "schedule_tz":      vault.get_setting("schedule_tz"),
             "schedule_target":  vault.get_setting("schedule_target"),

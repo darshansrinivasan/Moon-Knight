@@ -115,6 +115,18 @@
           <input type="checkbox" id="schedule_enabled">
           <label for="schedule_enabled">Run automatically every day</label>
         </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="schedule_closed_qc">
+          <label for="schedule_closed_qc"
+                 title="Tickets that closed since yesterday's run left the open set before their final state was judged. This re-QCs exactly those each morning and reports final-state fails in the Slack summary.">
+            Also QC tickets closed in the last 24h (final-state check)</label>
+        </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="schedule_open_qc">
+          <label for="schedule_open_qc"
+                 title="After the day's run: re-fetch the whole open backlog from Pylon and QC it, so still-open tickets are re-examined every morning. Unchanged tickets cost nothing — only changed content is re-graded.">
+            Also re-fetch &amp; QC all open tickets each morning</label>
+        </div>
         <div class="sched-grid">
           <div class="field">
             <label for="schedule_time">Time of day</label>
@@ -133,7 +145,7 @@
           </div>
         </div>
         <div class="actions">
-          <button data-save="schedule_enabled,schedule_time,schedule_tz,schedule_target">Save schedule</button>
+          <button data-save="schedule_enabled,schedule_open_qc,schedule_closed_qc,schedule_time,schedule_tz,schedule_target">Save schedule</button>
           <button class="ghost" id="run-now">▶ Run now</button>
         </div>
         <div class="msg" id="msg-schedule"></div>
@@ -218,6 +230,8 @@ function renderNextRun(sched) {
 
 function fillSchedule(s) {
   $("schedule_enabled").checked = s.schedule_enabled === "1";
+  $("schedule_open_qc").checked = s.schedule_open_qc === "1";
+  $("schedule_closed_qc").checked = s.schedule_closed_qc === "1";
   $("schedule_time").value = s.schedule_time || "";
   $("schedule_tz").value = s.schedule_tz || "";
   $("schedule_target").value = s.schedule_target || "yesterday";
@@ -403,7 +417,9 @@ document.querySelector("[data-save]").addEventListener("click", async () => {
   // These inputs are empty until /api/runs resolves, and this handler binds at
   // parse time. Saving during that window used to wipe the stored schedule
   // time and timezone, so send only fields that actually hold a value.
-  const body = { schedule_enabled: $("schedule_enabled").checked ? "1" : "0" };
+  const body = { schedule_enabled: $("schedule_enabled").checked ? "1" : "0",
+                 schedule_open_qc: $("schedule_open_qc").checked ? "1" : "0",
+                 schedule_closed_qc: $("schedule_closed_qc").checked ? "1" : "0" };
   const held = [];
   for (const key of ["schedule_time", "schedule_tz", "schedule_target"]) {
     const value = ($(key).value || "").trim();

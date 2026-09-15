@@ -641,6 +641,34 @@ def get_day_tickets(date_str: str):
         return [dict(r) for r in rows]
 
 
+def get_tickets_by_ids(ids: list[str]) -> list[dict]:
+    """A cross-date ticket list (the closure sweep's review set).
+
+    Same scope discipline as get_day_tickets — excluded states stay out even
+    if they were in the id list, so archived closures never reach a reviewer.
+    Slim columns on purpose: this feeds a list view, not the day panel.
+    """
+    if not ids:
+        return []
+    clause, extra = _scope_clause("t")
+    scope = f" AND {clause}" if clause else ""
+    marks = ",".join("?" for _ in ids)
+    with get_conn() as conn:
+        rows = conn.execute(f"""
+            SELECT
+                t.id, t.number, t.title, t.link, t.state, t.fetch_date,
+                t.assignee_name,
+                a.name AS account_name,
+                ac.overall_result, ac.checked_at AS ai_checked_at
+            FROM tickets t
+            LEFT JOIN accounts  a  ON t.account_id = a.id
+            LEFT JOIN ai_checks ac ON t.id = ac.ticket_id
+            WHERE t.id IN ({marks}) AND t.deleted_at IS NULL{scope}
+            ORDER BY t.number
+        """, (*ids, *extra)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def excluded_ticket_count(date_str: str) -> int:
     """How many of a day's tickets are out of scope for evaluation.
 

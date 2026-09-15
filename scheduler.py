@@ -230,6 +230,7 @@ async def run_pipeline(target: date, triggered_by: str,
 
     date_str = target.isoformat()
     trigger_date = trigger_date or date_str
+    sweep_note = None
     if notify_slack is None:
         notify_slack = vault.get_setting("slack_enabled") == "1"
 
@@ -298,11 +299,32 @@ async def run_pipeline(target: date, triggered_by: str,
                     app._CLOSED_COUNTS.clear()
                 except Exception:
                     logger.exception("Channel tagging failed")
+                # Open-backlog QC: a ticket created last week and still open
+                # keeps evolving after its birthday grade — re-examine the
+                # whole open set every morning. Fingerprints make unchanged
+                # tickets free; only genuinely changed content re-bills.
+                # Ordered AFTER the snapshot on purpose: the day's record
+                # freezes first, then live grades move.
+                if vault.get_setting("schedule_open_qc") == "1":
+                    try:
+                        await _run_open_qc()
+                    except Exception:
+                        logger.exception("Scheduled open-ticket QC failed")
+                # Final-state QC for tickets that CLOSED since yesterday's
+                # run — they left the open set before their closure was ever
+                # judged. Findings ride the morning report as one line; the
+                # frozen records stay untouched.
+                if vault.get_setting("schedule_closed_qc") == "1":
+                    try:
+                        sweep_note = await _run_closed_sweep()
+                    except Exception:
+                        logger.exception("Scheduled closure sweep failed")
 
             slack_ok = None
             if notify_slack:
                 try:
-                    await slack.post_day_report(date_str)
+                    await slack.post_day_report(date_str,
+                                                extra_note=sweep_note)
                     slack_ok = 1
                 except Exception as e:
                     logger.error("Slack post failed for %s: %s", date_str, e)
@@ -331,6 +353,52 @@ async def run_pipeline(target: date, triggered_by: str,
                         "Could not post failure notice for %s", date_str
                     )
             raise
+
+
+async def _run_closed_sweep() -> str | None:
+    """Run the closure sweep; return the morning report's one-line summary."""
+    import openqc
+
+    with db.advisory_lock("qc:closed-sweep", "scheduler",
+                          ttl_seconds=LOCK_TTL_SECONDS):
+        res = await openqc.sweep_closed(hours=24, triggered_by="scheduler")
+    logger.info("Closure sweep: found=%s refreshed=%s scored=%s skipped=%s "
+                "fails=%s", res["found"], res["refreshed"], res["scored"],
+                res["skipped"], res["fail_numbers"])
+    if not res["found"]:
+        return None
+    fails = res["fail_numbers"]
+    note = (f"Closure sweep: {res['found']} ticket"
+            f"{'s' if res['found'] != 1 else ''} closed in the last 24h "
+            f"re-QC'd in their final state")
+    if fails:
+        shown = ", ".join(f"#{n}" for n in fails[:5])
+        more = f" +{len(fails) - 5} more" if len(fails) > 5 else ""
+        note += f" — {len(fails)} final-state fail"
+        note += f"{'s' if len(fails) != 1 else ''}: {shown}{more}"
+    else:
+        note += " — no final-state fails"
+    if not res["complete"]:
+        note += " (Pylon search incomplete — some closures may be missing)"
+    return note
+
+
+async def _run_open_qc() -> dict:
+    """Refetch the open backlog from Pylon, then QC it — the scheduled twin of
+    the Open tab's two buttons, under the SAME lock names so a human clicking
+    at 09:31 cannot run concurrently with this."""
+    import app          # noqa: F401 — ensures module wiring, like run_pipeline
+    import openqc
+
+    with db.advisory_lock("fetch:open", "scheduler", ttl_seconds=1800):
+        refetched = await openqc.refetch_open()
+    with db.advisory_lock("qc:open", "scheduler", ttl_seconds=3600):
+        result = await asyncio.to_thread(openqc.run, "scheduler")
+    logger.info(
+        "Scheduled open QC: found=%s stored=%s scored=%s skipped=%s",
+        refetched.get("found_open"), refetched.get("stored"),
+        result.get("scored"), result.get("skipped"))
+    return {"refetch": refetched, **result}
 
 
 # ── loop ──────────────────────────────────────────────────────────────────────

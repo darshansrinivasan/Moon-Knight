@@ -433,7 +433,8 @@ async def search_issue_refs(search_filter: dict,
                 return refs, False
             new = 0
             for i in page.issues:
-                refs.append({"id": i.get("id"), "number": i.get("number")})
+                refs.append({"id": i.get("id"), "number": i.get("number"),
+                             "created_at": i.get("created_at")})
                 if known_ids is None or i.get("id") not in known_ids:
                     new += 1
             if not page.has_next:

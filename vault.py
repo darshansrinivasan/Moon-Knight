@@ -248,6 +248,15 @@ SETTING_SPECS = [
     {"key": "share_sheet_visibility", "default": "domain"},
     {"key": "dashboard_base_url", "env": "QC_BASE_URL",             "default": ""},
     {"key": "schedule_enabled",   "legacy_env": "SCHEDULE_ENABLED", "default": "0", "bool": True},
+    # After the day's pipeline: refetch the open backlog and QC it, so a
+    # long-lived open ticket is re-examined every morning it is still open
+    # (interim measure — the full lifecycle sweep also catches tickets that
+    # CLOSED between runs; see the 1:1/lifecycle design note).
+    {"key": "schedule_open_qc",   "default": "1", "bool": True},
+    # Final-state QC for tickets closed in the last 24h — they leave the open
+    # set before their closure is judged; this is the only trigger that sees
+    # them. Findings ride the morning Slack report as one line.
+    {"key": "schedule_closed_qc", "default": "1", "bool": True},
     {"key": "schedule_time",      "legacy_env": "SCHEDULE_TIME",    "default": "09:30"},
     {"key": "schedule_tz",        "legacy_env": "SCHEDULE_TZ",      "default": "Asia/Kolkata"},
     {"key": "schedule_target",    "legacy_env": "SCHEDULE_TARGET",  "default": "yesterday"},

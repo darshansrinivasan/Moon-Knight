@@ -416,6 +416,100 @@ except ValueError:
     check("reversed backfill range rejected", True, True)
 
 print()
+print("=== closure sweep: window shape, unknown-ticket dating, fail line ===")
+import asyncio as _aio
+from datetime import datetime as _dt, timezone as _tz
+
+import pylon as _pylon
+import qc_runner as _qcr
+
+
+async def fake_refs(search_filter, known_ids=None):
+    fake_refs.filter = search_filter
+    return [{"id": "cs1", "number": 9101, "created_at": "2026-02-03T10:00:00Z"},
+            {"id": "cs2", "number": 9102, "created_at": None}], True
+
+
+async def fake_refresh(date_by_id):
+    fake_refresh.dates = dict(date_by_id)
+    return {"requested": len(date_by_id), "stored": len(date_by_id),
+            "rescored": 0, "deleted": 0, "kept_reviewed": 0, "failed": 0,
+            "scoring_failures": None}
+
+
+def fake_exec(label, triggered_by, clause, params, config_extra=None):
+    fake_exec.label = label
+    fake_exec.params = list(params)
+    fake_exec.config_extra = dict(config_extra or {})
+    # behave like the real executor: the grade lands DURING the run, so its
+    # checked_at is after the sweep's start timestamp
+    with db.get_conn() as c:
+        c.execute("INSERT OR REPLACE INTO ai_checks (ticket_id,fetch_date,"
+                  "overall_result,checked_at) VALUES ('cs1','2026-02-03',"
+                  "'Fail', ?)", (_dt.now(_tz.utc).isoformat(),))
+    return {"scored": 2, "skipped": 0}
+
+with db.get_conn() as c:
+    c.execute("INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,state,"
+              "source,customer_portal_visible,fetched_at) VALUES"
+              " ('cs2',9102,'2026-05-05','known','closed','email',1,'x')")
+    c.execute("INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,state,"
+              "source,customer_portal_visible,fetched_at) VALUES"
+              " ('cs1',9101,'2026-02-03','unknown-before','closed','email',1,'x')")
+
+real = (_pylon.search_issue_refs, openqc._refresh_by_id, _qcr._execute_run)
+_pylon.search_issue_refs = fake_refs
+openqc._refresh_by_id = fake_refresh
+_qcr._execute_run = fake_exec
+try:
+    res = _aio.run(openqc.sweep_closed(hours=24, triggered_by="t"))
+finally:
+    _pylon.search_issue_refs, openqc._refresh_by_id, _qcr._execute_run = real
+
+check("the search filters on resolved_at time_range",
+      (fake_refs.filter["field"], fake_refs.filter["operator"]),
+      ("resolved_at", "time_range"))
+check("known ticket keeps its original fetch_date",
+      fake_refresh.dates.get("cs2"), "2026-05-05")
+check("scoring runs under the closed-sweep label with exactly the found ids",
+      (fake_exec.label, sorted(fake_exec.params)), ("closed", ["cs1", "cs2"])),
+check("final-state fails are named for the morning report",
+      res["fail_numbers"], [9101])
+check("summary counts flow through",
+      (res["found"], res["scored"], res["complete"]), (2, 2, True))
+
+print()
+print("=== closed-sweep review list: the run's recorded ids ARE the set ===")
+# The dashboard's Closed (24h) queue replays the swept ids from the run's
+# config — if the sweep stops recording them, the queue silently goes empty.
+check("sweep records its ticket ids in the run config",
+      fake_exec.config_extra.get("ticket_ids"), ["cs1", "cs2"])
+
+rows = db.get_tickets_by_ids(["cs1", "cs2"])
+check("get_tickets_by_ids returns the set ordered by number",
+      [(r["id"], r["fetch_date"]) for r in rows],
+      [("cs1", "2026-02-03"), ("cs2", "2026-05-05")])
+check("empty id list is an empty list, not a full scan",
+      db.get_tickets_by_ids([]), [])
+
+# A deleted ticket must fall out of the review queue even if the sweep saw it.
+with db.get_conn() as c:
+    c.execute("UPDATE tickets SET deleted_at='x' WHERE id='cs2'")
+check("deleted tickets drop out of the review list",
+      [r["id"] for r in db.get_tickets_by_ids(["cs1", "cs2"])], ["cs1"])
+
+# Excluded states use the ONE shared predicate — an excluded closure that
+# slipped into the window must not reach a reviewer.
+vault.set_raw_setting("qc_rules_json", '{"excluded_states": ["closed"]}', "t")
+qc_rules.invalidate()
+try:
+    check("excluded states drop out of the review list",
+          [r["id"] for r in db.get_tickets_by_ids(["cs1"])], [])
+finally:
+    vault.set_raw_setting("qc_rules_json", '{"excluded_states": ["spam"]}', "t")
+    qc_rules.invalidate()
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

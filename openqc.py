@@ -29,7 +29,7 @@ reconstructible from its own row.
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import db
 import qc_runner
@@ -586,6 +586,82 @@ async def refetch_open() -> dict:
         "kept_reviewed": stale["kept_reviewed"],
         "scoring_failures": result["failures"] or None,
     }
+
+
+CLOSED_SWEEP_LABEL = "closed"
+
+
+async def sweep_closed(hours: int = 24, triggered_by: str = "scheduler") -> dict:
+    """Final-state QC for tickets RESOLVED in the last `hours`.
+
+    The gap this closes: a ticket that closes between two morning runs exits
+    the open set before its final state — the closure itself, A5, the last
+    response — is ever QC'd. Pylon's resolved_at search names exactly those
+    tickets; they are refreshed by id (never-fetched ones get their created-
+    day as fetch_date, same keying as a day fetch) and scored through the
+    fingerprint gate. Archived closures are refreshed too but stay out of
+    scoring scope — archiving is the discard bucket.
+    """
+    import pylon
+
+    now = datetime.now(timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    lo = (now - timedelta(hours=hours)).strftime(fmt)
+    hi = now.strftime(fmt)
+    sweep_started = now.isoformat()
+
+    refs, complete = await pylon.search_issue_refs(
+        {"field": "resolved_at", "operator": "time_range", "values": [lo, hi]})
+    ids = [r["id"] for r in refs if r.get("id")]
+    if not ids:
+        return {"found": 0, "complete": complete, "refreshed": 0,
+                "scored": 0, "skipped": 0, "fail_numbers": []}
+
+    def created_day(ref):
+        import pylon
+        ts = ref.get("created_at") or ""
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            return dt.astimezone(pylon._IST).date().isoformat()
+        except (TypeError, ValueError):
+            return now.astimezone(pylon._IST).date().isoformat()
+
+    with db.get_conn() as conn:
+        marks = ",".join("?" for _ in ids)
+        known = {r["id"]: r["fetch_date"] for r in conn.execute(
+            f"SELECT id, fetch_date FROM tickets WHERE id IN ({marks})", ids)}
+    date_by_id = {r["id"]: known.get(r["id"]) or created_day(r)
+                  for r in refs if r.get("id")}
+
+    refreshed = await _refresh_by_id(date_by_id)
+
+    result = qc_runner._execute_run(
+        CLOSED_SWEEP_LABEL, triggered_by,
+        f"t.id IN ({','.join('?' for _ in ids)})", list(ids),
+        config_extra={"closed_sweep": True, "window_hours": hours,
+                      "resolved_between": [lo, hi],
+                      # The swept ids ARE the reviewable set — the dashboard's
+                      # "Closed (24h)" list replays them from here rather than
+                      # re-deriving "recently closed" from ticket fields.
+                      "ticket_ids": sorted(ids)})
+
+    # The final-state fails found by THIS sweep, for the morning report's
+    # attention line (posture: report it, don't re-freeze it).
+    with db.get_conn() as conn:
+        marks = ",".join("?" for _ in ids)
+        fail_numbers = [r["number"] for r in conn.execute(f"""
+            SELECT t.number FROM tickets t
+            JOIN ai_checks ac ON ac.ticket_id = t.id
+            WHERE t.id IN ({marks}) AND ac.overall_result = 'Fail'
+              AND ac.checked_at >= ?
+            ORDER BY t.number
+        """, (*ids, sweep_started))]
+
+    return {"found": len(ids), "complete": complete,
+            "refreshed": refreshed["stored"],
+            "scored": result.get("scored", 0),
+            "skipped": result.get("skipped", 0),
+            "fail_numbers": fail_numbers}
 
 
 def run(triggered_by: str, start: str | None = None, end: str | None = None,

@@ -337,6 +337,8 @@ def _summary_blocks(s: dict, base_url: str) -> list:
     if s["rule_fails"]:
         top = ", ".join(f"{RULE_LABELS[k]} ({n})" for k, n in s["rule_fails"][:3])
         lines.append(f"\u2022 Most common rule failures: {top}")
+    if s.get("sweep_note"):
+        lines.append(f"\u2022 {_esc(s['sweep_note'])}")
     if s.get("spotassist_misses"):
         n_missed = sum(n for _, n in s["spotassist_misses"])
         top = ", ".join(f"{_esc(name)} ({n})"
@@ -545,9 +547,16 @@ async def _post_report(summary: dict, channel: str | None,
             "mention_mode": mode, "unresolved_names": unresolved}
 
 
-async def post_day_report(date_str: str, channel: str | None = None) -> dict:
-    """Post the day's QC report: a summary, then per-person detail in a thread."""
+async def post_day_report(date_str: str, channel: str | None = None,
+                          extra_note: str | None = None) -> dict:
+    """Post the day's QC report: a summary, then per-person detail in a thread.
+
+    `extra_note` is one extra Analysis line — the closure sweep reports its
+    final-state findings here so late failures get attention without touching
+    any frozen record."""
     summary = build_summary(date_str)
+    if extra_note:
+        summary["sweep_note"] = extra_note
     rate = f"{summary['pass_rate']}%" if summary["pass_rate"] is not None else "\u2014"
     return await _post_report(
         summary, channel,

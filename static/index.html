@@ -1130,6 +1130,29 @@
   .bd-tickets a:hover { text-decoration: underline; }
   .bd-note { flex-basis: 100%; font-size: 11px; color: var(--muted); }
 
+  /* Closed (24h) — the closure sweep's review queue. Unlike its .refetch-btn
+     siblings this button is not day-scoped, so it is always shown. */
+  .sweep-btn { display: flex; }
+  .sweep-btn.on { border-color: var(--accent); color: var(--text); }
+  .sweep-meta { color: var(--muted); font-size: 12px; padding: 2px 0 10px; }
+  .sweep-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 9px 12px; margin-bottom: 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  .sweep-row:hover { border-color: var(--accent); }
+  .sweep-row .ticket-num { flex: none; }
+  .sweep-row .sweep-title { flex: 1; min-width: 200px; }
+  .sweep-row .sweep-title a { color: var(--text); text-decoration: none; }
+  .sweep-row .sweep-title a:hover { color: var(--accent2); }
+  .sweep-day { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .sweep-review-btn {
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--accent2); cursor: pointer; padding: 3px 10px; font-size: 12px;
+  }
+  .sweep-review-btn:hover { border-color: var(--accent); }
+
   /* scrollbars */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -1195,6 +1218,8 @@
           <div id="assignee-ms-list"></div>
         </div>
       </div>
+      <button class="refetch-btn sweep-btn" id="sweep-btn"
+              title="Review the closure sweep's set — tickets that closed in the last 24h, final-state QCed this morning">✔ Closed (24h)</button>
       <button class="refetch-btn" id="refetch-btn" title="Re-fetch from Pylon to pick up new tickets">↻ Refetch</button>
       <button class="qc-btn" id="qc-btn" title="Run AI quality checks (A1–A5) for this day">▶ Run QC</button>
       <button class="refetch-btn download-btn" id="download-btn" title="Download QC results as CSV" style="display:none">↓ CSV</button>
@@ -1215,6 +1240,16 @@
         <div class="icon">📅</div>
         <p>Click any day on the calendar to load its tickets.</p>
       </div>
+    </div>
+    <!-- Closed (24h): the closure sweep's set as a review queue. Its own
+         container, because applyFilters repaints #ticket-list on every filter
+         change and must never clobber the list a reviewer is working. -->
+    <div id="sweep-panel" hidden>
+      <div class="sweep-meta" id="sweep-meta"></div>
+      <!-- .filter-bar is display:none until a day loads; this one is governed
+           by the sweep panel's own hidden state instead. -->
+      <div class="filter-bar" id="sweep-chips" style="display:flex"></div>
+      <div id="sweep-list"></div>
     </div>
   </div>
 
@@ -1396,6 +1431,7 @@
 </div>
 
 <script src="/static/shell.js"></script>
+<script src="/static/review-sheet.js"></script>
 <script>
 // ── state ────────────────────────────────────────────────────────────────────
 const today = new Date();
@@ -1594,6 +1630,9 @@ async function renderCalendar() {
 
 // ── day selection ────────────────────────────────────────────────────────────
 async function selectDay(dateStr) {
+  // Picking a day is a statement of intent: leave the sweep queue, show the
+  // day. Without this the day loads under the hidden ticket list.
+  if (sweepMode) setSweepMode(false);
   selDate = dateStr;
   document.querySelectorAll(".day-cell").forEach(c => {
     c.classList.toggle("selected", c.dataset.date === dateStr);
@@ -2867,7 +2906,192 @@ function applyFilters() {
     : `${allTickets.length} tickets`;
   const cost = formatCost(lastRun, daySpend);
   document.getElementById("panel-meta").textContent = cost ? `${tickets} · ${cost}` : tickets;
+  if (sweepMode) renderSweep();
 }
+
+// ── Closed (24h): the closure sweep's set as a review queue ──────────────────
+// The set is the sweep run's own recorded ids (/api/closed-sweep), not a local
+// guess at "recently closed". Rows open the shared review sheet on each
+// ticket's OWN snapshot date — reviews still judge the frozen record, this
+// list only removes the date-chasing.
+let sweepMode = false;
+let sweepData = null;   // {run, tickets}
+let sweepGrade = "";    // "" | Pass | Fail | Needs Review | pending | unreviewed
+let sweepSavedTitle = "";
+let sweepSavedMeta = "";
+const SWEEP_HIDE = ["refetch-btn", "qc-btn", "download-btn", "slack-btn",
+                    "filter-bar", "check-ms", "state-ms"];
+const sweepSavedDisplay = {};
+
+function sweepScoped() {
+  let rows = (sweepData && sweepData.tickets) || [];
+  if (selectedGroups.size > 0) rows = rows.filter(ticketInSelectedGroups);
+  if (selectedAssignees.size > 0)
+    rows = rows.filter(t => selectedAssignees.has(t.assignee_name || "Unassigned"));
+  return rows;
+}
+
+function sweepVisible() {
+  const rows = sweepScoped();
+  if (sweepGrade === "pending")    return rows.filter(t => !t.overall_result);
+  if (sweepGrade === "unreviewed") return rows.filter(t => t.ai_result && !t.review);
+  if (sweepGrade)                  return rows.filter(t => t.overall_result === sweepGrade);
+  return rows;
+}
+
+function renderSweepChips() {
+  const rows = sweepScoped();
+  const counts = {
+    "": rows.length,
+    "Pass": rows.filter(t => t.overall_result === "Pass").length,
+    "Fail": rows.filter(t => t.overall_result === "Fail").length,
+    "Needs Review": rows.filter(t => t.overall_result === "Needs Review").length,
+    "pending": rows.filter(t => !t.overall_result).length,
+    "unreviewed": rows.filter(t => t.ai_result && !t.review).length,
+  };
+  const LABELS = [["", "All"], ["Pass", "Pass"], ["Fail", "Fail"],
+                  ["Needs Review", "Needs Review"], ["pending", "Pending"],
+                  ["unreviewed", "Unreviewed"]];
+  const host = document.getElementById("sweep-chips");
+  host.innerHTML = `<span class="filter-label">Verdict</span>` + LABELS.map(([v, label]) =>
+    `<button class="status-pill${sweepGrade === v ? " active" : ""}"
+             data-sweep-grade="${esc(v)}">${esc(label)} (${counts[v]})</button>`).join("");
+  host.querySelectorAll("[data-sweep-grade]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      sweepGrade = btn.dataset.sweepGrade === sweepGrade ? "" : btn.dataset.sweepGrade;
+      renderSweep();
+    }));
+}
+
+function renderSweep() {
+  const meta = document.getElementById("sweep-meta");
+  const list = document.getElementById("sweep-list");
+  if (!sweepData) { meta.textContent = "Loading the latest closure sweep…"; return; }
+
+  const run = sweepData.run;
+  if (!run) {
+    meta.textContent = "No closure sweep has run yet — turn on “Also QC tickets closed in the last 24h” in Runs → schedule, and this list fills at the next morning run.";
+    document.getElementById("sweep-chips").innerHTML = "";
+    list.innerHTML = "";
+    return;
+  }
+  if (!run.has_ticket_ids) {
+    meta.textContent = `The last sweep (${new Date(run.started_at).toLocaleString()}) predates this list and did not record its ticket set — reviewable from the next morning run onward.`;
+    document.getElementById("sweep-chips").innerHTML = "";
+    list.innerHTML = "";
+    return;
+  }
+
+  const win = run.resolved_between
+    ? ` · closed between ${new Date(run.resolved_between[0]).toLocaleString()} and ${new Date(run.resolved_between[1]).toLocaleString()}`
+    : "";
+  meta.textContent = `Sweep ran ${new Date(run.started_at).toLocaleString()}${win} · ${sweepData.tickets.length} ticket${sweepData.tickets.length === 1 ? "" : "s"}`;
+  renderSweepChips();
+
+  const rows = sweepVisible();
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty-state"><div class="icon">🎉</div>
+      <p>${sweepData.tickets.length ? "No swept tickets match these filters." : "Nothing closed in the sweep window."}</p></div>`;
+    return;
+  }
+  list.innerHTML = rows.map(t => {
+    const overall = t.overall_result || "Pending";
+    const safeLink = /^https?:\/\//i.test(t.link || "") ? t.link : "#";
+    const signed = t.review
+      ? `<span class="meta-tag" title="Signed off ${esc(t.review.decision)} by ${esc(t.review.reviewer_name || t.review.reviewer_email)}${t.review.note ? ` — “${esc(t.review.note)}”` : ""}">signed off</span>`
+      : "";
+    return `<div class="sweep-row" data-num="${esc(String(t.number))}" tabindex="0" role="button"
+                 aria-label="Ticket ${esc(String(t.number))}: ${esc(t.title || "(no title)")}">
+      <span class="ticket-num">#${esc(String(t.number))}</span>
+      <span class="sweep-title"><a href="${esc(safeLink)}" target="_blank" rel="noopener noreferrer"
+        onclick="event.stopPropagation()">${esc(t.title) || "(no title)"}</a></span>
+      <span class="meta-tag state">${esc((t.state || "—").replace(/_/g, " "))}</span>
+      <span class="meta-tag">${esc(t.assignee_name || "Unassigned")}</span>
+      <span class="sweep-day" title="Snapshot day — the frozen record this review judges">${esc(t.fetch_date || "—")}</span>
+      <span class="overall-badge overall-${overallClass(t.overall_result)}">${esc(overall)}</span>
+      ${signed}
+      <button class="sweep-review-btn">${t.can_review ? (t.review ? "Change verdict" : "Review") : "View"}</button>
+    </div>`;
+  }).join("");
+  list.querySelectorAll(".sweep-row").forEach(row => {
+    const open = () => openSweepSheet(row.dataset.num);
+    row.addEventListener("click", (ev) => {
+      if (ev.target.closest("a")) return;
+      open();
+    });
+    row.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+    });
+  });
+}
+
+function openSweepSheet(numStr) {
+  const t = (sweepData && sweepData.tickets || []).find(x => String(x.number) === numStr);
+  if (!t) return;
+  QCReviewSheet.open({
+    date: t.fetch_date,
+    number: t.number,
+    onReviewed: () => loadSweep(true),
+  });
+}
+
+async function loadSweep(force) {
+  if (sweepData && !force) { renderSweep(); return; }
+  const hadData = !!sweepData;
+  try {
+    sweepData = await getJSON("/api/closed-sweep");
+  } catch (e) {
+    document.getElementById("sweep-meta").textContent = e.message;
+    return;
+  }
+  if (!sweepMode) return;
+  // Entering with no day loaded: the group/assignee pickers are empty, so feed
+  // them the sweep's own people. A loaded day keeps its pickers untouched.
+  if (!hadData && allTickets.length === 0 && sweepData.tickets.length) {
+    populateGroupFilter(sweepData.tickets);
+    populateAssigneeFilter(sweepData.tickets);
+  }
+  renderSweep();
+}
+
+function setSweepMode(on) {
+  if (on === sweepMode) return;
+  sweepMode = on;
+  const btn = document.getElementById("sweep-btn");
+  btn.classList.toggle("on", on);
+  document.getElementById("sweep-panel").hidden = !on;
+  document.getElementById("ticket-list").style.display = on ? "none" : "";
+  const title = document.getElementById("panel-title");
+  const metaEl = document.getElementById("panel-meta");
+  if (on) {
+    sweepSavedTitle = title.textContent;
+    sweepSavedMeta = metaEl.textContent;
+    title.textContent = "Closed in the last 24h";
+    metaEl.textContent = "";
+    SWEEP_HIDE.forEach(id => {
+      const el = document.getElementById(id);
+      sweepSavedDisplay[id] = el.style.display;
+      el.style.display = "none";
+    });
+    loadSweep();
+  } else {
+    title.textContent = sweepSavedTitle;
+    metaEl.textContent = sweepSavedMeta;
+    SWEEP_HIDE.forEach(id => {
+      document.getElementById(id).style.display = sweepSavedDisplay[id] || "";
+    });
+    if (allTickets.length) {
+      populateGroupFilter(allTickets);
+      populateAssigneeFilter(allTickets);
+      applyFilters();
+    } else {
+      populateGroupFilter([]);
+      populateAssigneeFilter([]);
+    }
+  }
+}
+
+document.getElementById("sweep-btn").addEventListener("click", () => setSweepMode(!sweepMode));
 
 // ── right rail ───────────────────────────────────────────────────────────────
 // The check legend is derived from CHECKS, so a renamed check cannot drift out

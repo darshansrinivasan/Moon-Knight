@@ -65,6 +65,39 @@
   }
 
   .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .assignee-ms { position: relative; display: inline-block; }
+  .assignee-ms[hidden] { display: none; }  /* display rule above would beat the hidden attribute */
+  .assignee-ms-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); color: var(--muted); font-size: 12px;
+    padding: 4px 24px 4px 8px; cursor: pointer; white-space: nowrap;
+    max-width: 190px; overflow: hidden; text-overflow: ellipsis;
+    position: relative;
+  }
+  .assignee-ms-btn::after {
+    content: "▾"; position: absolute; right: 7px; top: 50%;
+    transform: translateY(-50%); font-size: 10px; color: var(--muted);
+  }
+  .assignee-ms-btn:hover, .assignee-ms-btn.open { border-color: var(--accent); color: var(--text); }
+  .assignee-ms-dropdown {
+    position: absolute; top: calc(100% + 4px); left: 0; min-width: 200px;
+    max-height: 260px; overflow-y: auto; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 4px 16px rgba(0,0,0,.18); z-index: 200; display: none;
+    padding: 4px 0;
+  }
+  .assignee-ms-dropdown.open { display: block; }
+  .assignee-ms-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    cursor: pointer; font-size: 12px; color: var(--text); user-select: none;
+  }
+  .assignee-ms-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .assignee-ms-item input { accent-color: var(--accent); cursor: pointer; }
+  .assignee-ms-clear {
+    display: block; width: 100%; text-align: left; padding: 6px 12px;
+    background: none; border: none; color: var(--accent2); cursor: pointer;
+    font: inherit; font-size: 12px;
+  }
   /* The chips are the QC-result filter, not just counters: click one to see
      only those tickets, click it again (or the total) for everything. */
   .chip {
@@ -155,6 +188,15 @@
         <span class="pill-label">Status</span>
       </div>
 
+      <div class="assignee-ms" id="group-ms" style="margin-bottom:12px" hidden>
+        <button class="assignee-ms-btn" id="group-ms-btn"
+                title="Filter by review-coverage group (APAC, EMEA, …) — matches each ticket's assignee against the Admin rosters">All groups</button>
+        <div class="assignee-ms-dropdown" id="group-ms-dropdown">
+          <button class="assignee-ms-clear" id="group-ms-clear">All groups</button>
+          <div id="group-ms-list"></div>
+        </div>
+      </div>
+
       <div class="result-line" id="result-line"></div>
 
       <div class="chips" id="chips"></div>
@@ -179,6 +221,8 @@ const esc = s => QC.esc(s);
 
 let selStates = new Set();   // lowercase status values; empty = all open
 let gradeFilter = "";        // "" = all; "Pass" / "Fail" / "Needs Review" / "pending"
+let coverages = [];          // review-coverage groups (APAC, EMEA, …) from Admin
+const selectedGroups = new Set();   // coverage ids as strings, plus "ungrouped"
 let lastTickets = [];        // the fetched list; the grade filter subsets it client-side
 let lastSummary = { total: 0, pass: 0, fail: 0, review: 0, pending: 0 };
 let loadToken = 0;
@@ -226,13 +270,37 @@ function renderPills(counts) {
 
 function gradeOf(t) { return t.overall_result || "pending"; }
 
+// The same group semantics as the dashboard: a ticket belongs to a group when
+// its assignee is on that coverage roster; "ungrouped" catches everyone else.
+function inSelectedGroups(t) {
+  if (selectedGroups.size === 0) return true;
+  const name = t.assignee_name || "Unassigned";
+  const inAny = coverages.some(c => (c.assignees || []).includes(name));
+  if (selectedGroups.has("ungrouped") && !inAny) return true;
+  return coverages.some(c =>
+    selectedGroups.has(String(c.id)) && (c.assignees || []).includes(name));
+}
+
+function groupScoped() {
+  return selectedGroups.size ? lastTickets.filter(inSelectedGroups)
+                             : lastTickets;
+}
+
 function visibleTickets() {
-  return gradeFilter ? lastTickets.filter(t => gradeOf(t) === gradeFilter)
-                     : lastTickets;
+  const scoped = groupScoped();
+  return gradeFilter ? scoped.filter(t => gradeOf(t) === gradeFilter) : scoped;
 }
 
 function renderChips() {
-  const s = lastSummary;
+  let s = lastSummary;
+  if (selectedGroups.size) {
+    const rows = groupScoped();
+    s = { total: rows.length,
+          pass: rows.filter(t => gradeOf(t) === "Pass").length,
+          fail: rows.filter(t => gradeOf(t) === "Fail").length,
+          review: rows.filter(t => gradeOf(t) === "Needs Review").length,
+          pending: rows.filter(t => gradeOf(t) === "pending").length };
+  }
   const chip = (grade, n, label, cls = "") => `
     <button type="button" class="chip ${cls}${gradeFilter === grade ? " active" : ""}"
             data-grade="${esc(grade)}"
@@ -411,6 +479,68 @@ $("all-time").addEventListener("click", () => {
 $("run-btn").addEventListener("click", runQC);
 $("refetch-btn").addEventListener("click", refetchOpen);
 $("slack-report-btn").addEventListener("click", sendOpenReport);
+
+function updateGroupBtn() {
+  const btn = $("group-ms-btn");
+  if (selectedGroups.size === 0) btn.textContent = "All groups";
+  else if (selectedGroups.size === 1) {
+    const id = [...selectedGroups][0];
+    const c = coverages.find(x => String(x.id) === id);
+    btn.textContent = id === "ungrouped" ? "Ungrouped" : (c ? c.name : id);
+  } else btn.textContent = `${selectedGroups.size} groups`;
+}
+
+function renderGroupFilter() {
+  const ms = $("group-ms");
+  if (!coverages.length) { ms.hidden = true; return; }
+  ms.hidden = false;
+  const list = $("group-ms-list");
+  const rows = [...coverages.map(c => ({ id: String(c.id), name: c.name })),
+                { id: "ungrouped", name: "Ungrouped" }];
+  list.innerHTML = rows.map(g => `
+    <label class="assignee-ms-item">
+      <input type="checkbox" value="${esc(g.id)}"
+             ${selectedGroups.has(g.id) ? "checked" : ""}>
+      ${esc(g.name)}
+    </label>`).join("");
+  list.querySelectorAll("input").forEach(cb =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedGroups.add(cb.value);
+      else selectedGroups.delete(cb.value);
+      updateGroupBtn();
+      renderChips();
+      renderRows(visibleTickets());
+    }));
+  updateGroupBtn();
+}
+
+(function wireGroupFilter() {
+  const btn = $("group-ms-btn"), drop = $("group-ms-dropdown");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+  $("group-ms-clear").addEventListener("click", () => {
+    selectedGroups.clear();
+    renderGroupFilter();
+    renderChips();
+    renderRows(visibleTickets());
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("group-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+  QC.ready.then(async () => {
+    try {
+      const d = await QC.api("/api/review/coverages");
+      coverages = d.coverages || [];
+      renderGroupFilter();
+    } catch { /* no coverages: the picker simply stays hidden */ }
+  });
+})();
 
 // QC-result filter: the chips are toggles, client-side over the loaded list.
 $("chips").addEventListener("click", (ev) => {
