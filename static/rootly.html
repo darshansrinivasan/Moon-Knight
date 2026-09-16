@@ -555,8 +555,9 @@ function renderRows() {
                  : esc(i.jira_key || "—")}</td>
       <td>${i.pylon_ticket_number
         ? (safeHref(i.pylon_link)
-            ? `<a href="${esc(i.pylon_link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">#${esc(String(i.pylon_ticket_number))}</a>`
-            : `#${esc(String(i.pylon_ticket_number))}`)
+            ? `<a href="${esc(i.pylon_link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
+                 title="Open #${esc(String(i.pylon_ticket_number))} in Pylon">#${esc(String(i.pylon_ticket_number))}</a>`
+            : `<span title="Link appears once this ticket is fetched into Pylon QC — a constructed URL could point at a mistyped number">#${esc(String(i.pylon_ticket_number))}</span>`)
         : "—"}</td>
       <td>${!i.pylon_ticket_number ? "—"
         : i.pylon_state
