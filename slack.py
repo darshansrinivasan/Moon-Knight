@@ -52,7 +52,10 @@ class NotTheDeployment(RuntimeError):
 # Methods that write into the workspace. Reads (auth.test, users.list) stay
 # available locally, since they are how an admin checks their token works.
 _WRITE_METHODS = frozenset({"chat.postMessage", "chat.update",
-                            "chat.postEphemeral", "files.upload"})
+                            "chat.postEphemeral", "files.upload",
+                            # Joining mutates the workspace too (membership
+                            # plus a visible "joined" event in the channel).
+                            "conversations.join"})
 
 
 def may_post() -> bool:
@@ -66,6 +69,21 @@ def may_post() -> bool:
     return vault.may_act_outward()
 
 
+# Slack rate limits per method tier (conversations.join is ~20/min). A bulk
+# pass over incident channels WILL trip it, and treating the 429 as failure is
+# what left two thirds of the channels unjoined on the first Rootly QC run.
+# Honour Retry-After and wait it out, up to a per-call budget.
+RATELIMIT_MAX_WAIT = 300
+
+
+async def _ratelimit_pause(r, waited: float) -> float:
+    delay = min(max(float(r.headers.get("Retry-After", "30") or 30), 1), 60)
+    if waited + delay > RATELIMIT_MAX_WAIT:
+        raise RuntimeError("Slack ratelimited beyond the retry budget")
+    await asyncio.sleep(delay)
+    return waited + delay
+
+
 async def _post(method: str, payload: dict) -> dict:
     if method in _WRITE_METHODS and not may_post():
         raise NotTheDeployment(
@@ -74,19 +92,24 @@ async def _post(method: str, payload: dict) -> dict:
             "would post into the team's channel alongside production. Set "
             "allow_local_side_effects in Admin if you mean to send from here."
         )
-    async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
-            f"{SLACK_API}/{method}",
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {_token()}",
-                "Content-Type":  "application/json; charset=utf-8",
-            },
-        )
-    data = r.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack {method} failed: {data.get('error', 'unknown error')}")
-    return data
+    waited = 0.0
+    while True:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(
+                f"{SLACK_API}/{method}",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {_token()}",
+                    "Content-Type":  "application/json; charset=utf-8",
+                },
+            )
+        data = r.json() if r.content else {}
+        if r.status_code == 429 or data.get("error") == "ratelimited":
+            waited = await _ratelimit_pause(r, waited)
+            continue
+        if not data.get("ok"):
+            raise RuntimeError(f"Slack {method} failed: {data.get('error', 'unknown error')}")
+        return data
 
 
 async def test_auth() -> dict:
@@ -679,16 +702,71 @@ _DIR_TTL = 600
 
 
 async def _api_get(method: str, params: dict | None = None) -> dict:
-    async with httpx.AsyncClient(timeout=25) as client:
-        r = await client.get(
-            f"{SLACK_API}/{method}",
-            params=params or {},
-            headers={"Authorization": f"Bearer {_token()}"},
-        )
-    data = r.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Slack {method} failed: {data.get('error', 'unknown error')}")
-    return data
+    waited = 0.0
+    while True:
+        async with httpx.AsyncClient(timeout=25) as client:
+            r = await client.get(
+                f"{SLACK_API}/{method}",
+                params=params or {},
+                headers={"Authorization": f"Bearer {_token()}"},
+            )
+        data = r.json() if r.content else {}
+        if r.status_code == 429 or data.get("error") == "ratelimited":
+            waited = await _ratelimit_pause(r, waited)
+            continue
+        if not data.get("ok"):
+            raise RuntimeError(f"Slack {method} failed: {data.get('error', 'unknown error')}")
+        return data
+
+
+async def channel_history(channel_id: str, limit: int = 200,
+                          oldest: str | None = None) -> list[dict]:
+    """One channel's messages, oldest first — the Rootly QC narrative source.
+
+    A read, so it is not gated by may_post. Needs channels:history (public) /
+    groups:history (private) on the bot token AND bot membership in the
+    channel; callers treat not_in_channel / missing_scope as "unreadable",
+    reported per incident, never as a scoring failure.
+
+    Membership is self-healing for PUBLIC channels: Rootly creates a fresh
+    channel per incident, so the bot starts inside none of them — on
+    not_in_channel the bot joins (channels:join) and retries once. The join is
+    a workspace write (membership + a visible "joined" event), so it rides the
+    same deployment guard as posting; a local copy reports the miss instead.
+    """
+    msgs: list[dict] = []
+    cursor = None
+    joined = False
+    while len(msgs) < limit:
+        params: dict = {"channel": channel_id,
+                        "limit": min(200, limit - len(msgs))}
+        if oldest:
+            params["oldest"] = oldest
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            data = await _api_get("conversations.history", params)
+        except RuntimeError as e:
+            if "not_in_channel" not in str(e) or joined:
+                raise
+            joined = True
+            try:
+                await _post("conversations.join", {"channel": channel_id})
+            except NotTheDeployment:
+                raise RuntimeError(
+                    "not_in_channel — auto-join refused: this is not the "
+                    "deployed instance (the deployment joins and reads on its "
+                    "next run)") from e
+            except Exception as join_err:
+                raise RuntimeError(
+                    f"not_in_channel — auto-join failed: {join_err}") from e
+            continue        # joined; retry the same page
+        msgs.extend(data.get("messages") or [])
+        cursor = (data.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+    msgs.reverse()          # Slack returns newest first
+    return msgs
 
 
 async def _refresh_directory() -> None:

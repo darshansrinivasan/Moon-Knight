@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin · Rootly QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; margin-bottom: 16px; max-width: 760px;
+  }
+  .panel h3 { font-size: 14px; margin-bottom: 4px; }
+  input[type="password"], input[type="text"], select {
+    width: 100%; max-width: 420px; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--text); border-radius: 8px;
+    padding: 7px 10px; font-size: 12.5px; font-family: inherit;
+  }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .btn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .btn.primary {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-color: var(--color-accent); color: var(--color-accent); font-weight: 700;
+  }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .state-pill {
+    font-size: 11px; padding: 2px 10px; border-radius: 999px; font-weight: 700;
+  }
+  .state-pill.set { background: color-mix(in srgb, var(--pass) 18%, transparent); color: var(--pass); }
+  .state-pill.unset { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
+  label.toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; cursor: pointer; }
+  label.toggle input { accent-color: var(--color-accent); cursor: pointer; }
+</style>
+</head>
+<body class="shell" data-page="rootly-admin">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+
+<header class="app-header">
+  <h1>Rootly Admin</h1>
+  <span class="muted">The token, the Pylon-ticket field, and the morning schedule.</span>
+  <div class="spacer"></div>
+</header>
+<div class="app-body">
+  <div class="content-pane">
+
+    <div class="panel">
+      <h3>Rootly API token <span class="state-pill unset" id="token-state">not set</span></h3>
+      <p class="hint">From Rootly → Settings → API Keys. Stored encrypted; never shown back.</p>
+      <div class="row">
+        <input type="password" id="token" placeholder="rootly_… token" autocomplete="off">
+        <button class="btn primary" id="token-save">Save token</button>
+        <button class="btn" id="token-test">Test</button>
+        <span class="msg" id="token-msg"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Pylon ticket field</h3>
+      <p class="hint">The Rootly custom field that holds the related Pylon ticket (URL or number).
+        When an incident has no value there, the shared Jira issue is used as the fallback join.
+        Leave unset to rely on Jira alone.</p>
+      <div class="row">
+        <select id="field-select" hidden></select>
+        <button class="btn" id="field-detect">Detect fields from Rootly</button>
+        <button class="btn primary" id="field-save" hidden>Save field</button>
+        <span class="msg" id="field-msg"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Schedule</h3>
+      <p class="hint">Runs as a step of the existing morning pipeline, after the Pylon work:
+        fetch open incidents, evaluate the rules, AI-score what changed. Cost appears in Runs
+        under <b>rootly</b>.</p>
+      <div class="row">
+        <label class="toggle">
+          <input type="checkbox" id="sched-cb">
+          Run Rootly QC every morning
+        </label>
+        <button class="btn primary" id="sched-save">Save schedule</button>
+        <span class="msg" id="sched-msg"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Slack access</h3>
+      <p class="hint">AI checks read each incident's Slack channel with the existing QC bot token.
+        That token needs the <b>channels:history</b> scope (and <b>groups:history</b> for private
+        channels), and the bot must be in the channel. An unreadable channel never fails the run —
+        the incident is judged on its Rootly record alone and the AI notes say so.</p>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+let savedField = "";
+
+async function load() {
+  let d;
+  try {
+    d = await QC.api("/api/rootly/admin");
+  } catch (e) {
+    QC.show($("token-msg"), e.message, "err");
+    return;
+  }
+  savedField = d.pylon_field || "";
+  const pill = $("token-state");
+  pill.textContent = d.token_set ? "set" : "not set";
+  pill.className = "state-pill " + (d.token_set ? "set" : "unset");
+  $("sched-cb").checked = d.schedule_rootly_qc === "1";
+  if (savedField) {
+    QC.show($("field-msg"), `Saved field id: ${savedField}. Detect to change it.`, "info");
+  }
+}
+
+$("token-save").addEventListener("click", async () => {
+  const btn = $("token-save");
+  btn.disabled = true;
+  try {
+    await QC.api("/api/admin/credentials/rootly_api_token", {
+      method: "PUT",
+      body: JSON.stringify({ value: $("token").value }),
+    });
+    $("token").value = "";
+    QC.show($("token-msg"), "Token saved.", "ok");
+    await load();
+  } catch (e) {
+    QC.show($("token-msg"), e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("token-test").addEventListener("click", async () => {
+  const btn = $("token-test");
+  btn.disabled = true;
+  try {
+    const d = await QC.api("/api/admin/credentials/rootly_api_token/test",
+                           { method: "POST" });
+    QC.show($("token-msg"), d.message || (d.ok ? "Token works." : "Test failed."),
+            d.ok ? "ok" : "err");
+  } catch (e) {
+    QC.show($("token-msg"), e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("field-detect").addEventListener("click", async () => {
+  const btn = $("field-detect");
+  btn.disabled = true;
+  try {
+    const d = await QC.api("/api/rootly/fields");
+    const fields = d.fields || [];
+    const sel = $("field-select");
+    sel.innerHTML = `<option value="">— none (Jira join only) —</option>` +
+      fields.map(f => `<option value="${esc(String(f.id))}" ${String(f.id) === savedField ? "selected" : ""}>
+        ${esc(f.name || f.slug || f.id)}${f.kind ? ` (${esc(f.kind)})` : ""}</option>`).join("");
+    sel.hidden = false;
+    $("field-save").hidden = false;
+    QC.show($("field-msg"), `${fields.length} fields found — pick the one that holds the Pylon ticket.`, "info");
+  } catch (e) {
+    QC.show($("field-msg"), e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("field-save").addEventListener("click", async () => {
+  const btn = $("field-save");
+  btn.disabled = true;
+  try {
+    await QC.api("/api/rootly/admin", {
+      method: "POST",
+      body: JSON.stringify({ pylon_field: $("field-select").value }),
+    });
+    savedField = $("field-select").value;
+    QC.show($("field-msg"), savedField ? "Field saved — used on the next fetch."
+                                       : "Cleared — the Jira join alone links tickets.", "ok");
+  } catch (e) {
+    QC.show($("field-msg"), e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("sched-save").addEventListener("click", async () => {
+  const btn = $("sched-save");
+  btn.disabled = true;
+  try {
+    await QC.api("/api/rootly/admin", {
+      method: "POST",
+      body: JSON.stringify({ schedule_rootly_qc: $("sched-cb").checked }),
+    });
+    QC.show($("sched-msg"), $("sched-cb").checked
+      ? "On — tomorrow's pipeline includes Rootly QC."
+      : "Off — Rootly QC runs only from the buttons.", "ok");
+  } catch (e) {
+    QC.show($("sched-msg"), e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+QC.ready.then(me => {
+  if (me && me.role !== "admin") {
+    ["token-save", "token-test", "field-detect", "field-save", "sched-save"]
+      .forEach(id => {
+        $(id).disabled = true;
+        $(id).title = "Only admins can change Rootly settings";
+      });
+  }
+});
+load();
+</script>
+</body>
+</html>

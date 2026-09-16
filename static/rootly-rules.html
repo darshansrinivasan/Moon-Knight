@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rules · Rootly QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; margin-bottom: 16px; max-width: 760px;
+  }
+  .panel h3 { font-size: 14px; margin-bottom: 4px; }
+  .panel .hint { margin-bottom: 12px; }
+  .check-row {
+    display: flex; gap: 10px; align-items: baseline; padding: 8px 0;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 6%, transparent);
+    font-size: 13px;
+  }
+  .check-row label { display: flex; gap: 10px; align-items: baseline; cursor: pointer; flex: 1; }
+  .check-row input { accent-color: var(--color-accent); cursor: pointer; }
+  .check-row .key { color: var(--muted); font-size: 11px; min-width: 32px; text-transform: uppercase; }
+  .check-row .desc { color: var(--muted); font-size: 12px; }
+  .num-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+  .num-row label { font-size: 12.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .num-row input {
+    width: 70px; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 5px 8px; font-size: 12.5px;
+    font-family: inherit;
+  }
+  textarea {
+    width: 100%; min-height: 70px; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--text); border-radius: 8px;
+    padding: 8px 10px; font-size: 12.5px; font-family: inherit; resize: vertical;
+  }
+  .save-row { display: flex; gap: 12px; align-items: center; margin-top: 6px; }
+  .save-btn {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+    border-radius: 8px; padding: 7px 18px; font-size: 12.5px; font-weight: 700;
+    cursor: pointer; font-family: inherit;
+  }
+  .save-btn:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body class="shell" data-page="rootly-rules">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+
+<header class="app-header">
+  <h1>Rootly QC Rules</h1>
+  <span class="muted">What an incident is judged on. The scorer, the list and the CSV all read this one config.</span>
+  <div class="spacer"></div>
+</header>
+<div class="app-body">
+  <div class="content-pane">
+
+    <div class="panel">
+      <h3>Checks</h3>
+      <p class="hint">Unchecking a rule removes it from scoring and from the overall grade everywhere — it does not hide past results.</p>
+      <div id="checks"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Update cadence (IR5)</h3>
+      <p class="hint">Hours without any activity — the incident channel's last message, else the record's last update — before the check fails.</p>
+      <div class="num-row">
+        <label>SEV1 <input type="number" id="cad-sev1" min="1" max="720"> h</label>
+        <label>SEV2 <input type="number" id="cad-sev2" min="1" max="720"> h</label>
+        <label>All other severities <input type="number" id="cad-default" min="1" max="720"> h</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Status freshness (IR6)</h3>
+      <p class="hint">Hours since the incident last moved lifecycle stage (approximated from its stage timestamps) before it counts as stuck.</p>
+      <div class="num-row">
+        <label>Stuck after <input type="number" id="stuck" min="1" max="2160"> h</label>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Excluded statuses</h3>
+      <p class="hint">One status per line, on top of resolved / closed / cancelled — e.g. <b>in_triage</b> to keep triage noise ungraded. Excluded incidents are not fetched, scored or counted.</p>
+      <textarea id="excluded" placeholder="in_triage"></textarea>
+    </div>
+
+    <div class="save-row">
+      <button class="save-btn" id="save">Save rules</button>
+      <span class="msg" id="msg"></span>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+
+const DESCRIPTIONS = {
+  ir1: "A severity is assigned.",
+  ir2: "The incident has roles filled (N/A when the API hides role data).",
+  ir3: "A Jira issue is linked on the incident.",
+  ir4: "A Pylon support ticket is linked — custom field first, shared Jira issue as fallback.",
+  ir5: "The channel/record was updated within the cadence window below.",
+  ir6: "The incident is not stuck in one lifecycle stage past the limit below.",
+  ir7: "The summary field is not empty.",
+  ia1: "AI: the summary genuinely describes what happened and its impact.",
+  ia2: "AI: the Slack updates are substantive and regular for the severity.",
+  ia3: "AI: who or what the incident is pending on — informational, never grades.",
+  ia4: "AI: the Slack narrative does not contradict the Rootly status.",
+};
+
+let labels = {};
+
+function renderChecks(rules) {
+  const disabled = new Set(rules.disabled_checks || []);
+  $("checks").innerHTML = Object.keys(DESCRIPTIONS).map(k => `
+    <div class="check-row">
+      <label>
+        <input type="checkbox" data-check="${esc(k)}" ${disabled.has(k) ? "" : "checked"}>
+        <span class="key">${esc(k)}</span>
+        <span><b>${esc(labels[k] || k)}</b> <span class="desc">— ${esc(DESCRIPTIONS[k])}</span></span>
+      </label>
+    </div>`).join("");
+}
+
+async function load() {
+  let d;
+  try {
+    d = await QC.api("/api/rootly/rules");
+  } catch (e) {
+    QC.show($("msg"), e.message, "err");
+    return;
+  }
+  labels = d.checks || {};
+  renderChecks(d.rules);
+  $("cad-sev1").value = d.rules.cadence_hours.sev1;
+  $("cad-sev2").value = d.rules.cadence_hours.sev2;
+  $("cad-default").value = d.rules.cadence_hours.default;
+  $("stuck").value = d.rules.stuck_hours;
+  $("excluded").value = (d.rules.excluded_statuses || []).join("\n");
+}
+
+$("save").addEventListener("click", async () => {
+  const btn = $("save");
+  btn.disabled = true;
+  const disabled = [...document.querySelectorAll("[data-check]")]
+    .filter(cb => !cb.checked).map(cb => cb.dataset.check);
+  try {
+    await QC.api("/api/rootly/rules", {
+      method: "POST",
+      body: JSON.stringify({
+        disabled_checks: disabled,
+        cadence_hours: { sev1: $("cad-sev1").value, sev2: $("cad-sev2").value,
+                         default: $("cad-default").value },
+        stuck_hours: $("stuck").value,
+        excluded_statuses: $("excluded").value.split("\n"),
+      }),
+    });
+    QC.show($("msg"), "Saved — the next run scores with these rules.", "ok");
+  } catch (e) {
+    QC.show($("msg"), e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+QC.ready.then(me => {
+  if (me && me.role !== "admin") {
+    $("save").disabled = true;
+    $("save").title = "Only admins can change the rules";
+  }
+});
+load();
+</script>
+</body>
+</html>

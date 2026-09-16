@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open Incidents · Rootly QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .controls .side { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .btn-primary, .btn-quiet {
+    border-radius: 8px; padding: 6px 16px; font-size: 12.5px; font-weight: 700;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn-primary {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border: 1px solid var(--color-accent); color: var(--color-accent);
+  }
+  .btn-quiet { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-quiet:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  .btn-primary:disabled, .btn-quiet:disabled { opacity: .5; cursor: default; }
+
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 16px; text-align: center; cursor: pointer; font-family: inherit;
+  }
+  .chip b { display: block; font-size: 20px; }
+  .chip span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .chip.active { border-color: var(--color-accent); }
+  .chip.c-pass b { color: var(--pass); }
+  .chip.c-fail b { color: var(--fail); }
+  .chip.c-review b { color: var(--review); }
+  .chip.c-pending b { color: var(--muted); }
+
+  .grade { font-weight: 700; font-size: 12px; white-space: nowrap; }
+  .grade.pass { color: var(--pass); }
+  .grade.fail { color: var(--fail); }
+  .grade.review { color: var(--review); }
+  .grade.pending { color: var(--muted); }
+
+  /* Compact check matrix — same visual vocabulary as the Pylon dashboard. */
+  .cells { display: inline-flex; gap: 2px; }
+  .cell {
+    width: 16px; height: 20px; border-radius: 3px; display: inline-flex;
+    align-items: center; justify-content: center; font-size: 9px; font-weight: 600;
+  }
+  .cell.pass { background: var(--pass); color: #10201a; }
+  .cell.fail { background: var(--fail); color: #20111a; }
+  .cell.warn { background: var(--review); color: #241a0d; }
+  .cell.na   { background: color-mix(in srgb, var(--color-text) 7%, transparent);
+               border: 1px solid color-mix(in srgb, var(--color-text) 14%, transparent);
+               color: var(--muted); }
+  .cell.none { background: transparent;
+               border: 1px dashed color-mix(in srgb, var(--color-text) 18%, transparent); }
+
+  tr.inc-row { cursor: pointer; }
+  tr.inc-row:hover td { background: color-mix(in srgb, var(--color-text) 4%, transparent); }
+  tr.inc-detail td { background: var(--surface2); }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 6px 2px; }
+  @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+  .detail-grid h4 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); margin-bottom: 6px;
+  }
+  .why { font-size: 12px; padding: 5px 0; display: flex; gap: 8px;
+         border-bottom: 1px solid color-mix(in srgb, var(--color-text) 6%, transparent); }
+  .why .k { color: var(--muted); min-width: 150px; }
+  .pending-tag {
+    display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+    max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .slack-chan {
+    display: inline-block; max-width: 150px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+  }
+  .pylon-state {
+    display: inline-block; font-size: 11px; padding: 1px 8px;
+    border-radius: 999px; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--muted);
+    text-transform: capitalize; white-space: nowrap;
+  }
+  .sev { font-weight: 700; font-size: 11px; text-transform: uppercase; }
+  .sev.s1 { color: var(--fail); }
+  .sev.s2 { color: var(--review); }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+  .pills .pill-label {
+    font-size: 11px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px; margin-right: 4px;
+  }
+  .state-pill {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-size: 11.5px; padding: 3px 11px;
+    border-radius: 12px; cursor: pointer; font-family: inherit;
+    transition: border-color .15s, color .15s;
+  }
+  .state-pill.active {
+    border-color: var(--color-accent); color: var(--color-accent);
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  .assignee-ms { position: relative; display: inline-block; }
+  .assignee-ms[hidden] { display: none; }
+  .assignee-ms-btn {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--muted); font-size: 12px;
+    padding: 5px 24px 5px 10px; cursor: pointer; white-space: nowrap;
+    max-width: 230px; overflow: hidden; text-overflow: ellipsis;
+    position: relative; font-family: inherit;
+  }
+  .assignee-ms-btn::after {
+    content: "▾"; position: absolute; right: 8px; top: 50%;
+    transform: translateY(-50%); font-size: 9px;
+  }
+  .assignee-ms-btn:hover, .assignee-ms-btn.open { border-color: var(--color-accent); color: var(--text); }
+  .assignee-ms-dropdown {
+    display: none; position: absolute; right: 0; top: calc(100% + 4px);
+    min-width: 280px; max-height: 380px; overflow-y: auto; z-index: 30;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 6px;
+    box-shadow: var(--shadow-lg);
+  }
+  .assignee-ms-dropdown.open { display: block; }
+  .assignee-ms-item {
+    display: flex; gap: 8px; align-items: center; width: 100%;
+    padding: 6px 8px; border-radius: 6px; font-size: 12.5px; cursor: pointer;
+    background: none; border: none; color: var(--text); text-align: left;
+    font-family: inherit;
+  }
+  .assignee-ms-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .assignee-ms-item input { accent-color: var(--color-accent); cursor: pointer; }
+  .assignee-ms-item.is-zero { opacity: .45; }
+  .assignee-ms-clear {
+    display: block; width: 100%; text-align: left; padding: 6px 8px;
+    background: none; border: none; border-bottom: 1px solid var(--border);
+    color: var(--color-accent); font-size: 12px; cursor: pointer;
+    font-family: inherit; margin-bottom: 4px;
+  }
+  .check-row-active { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+  .check-verdicts { padding: 0 0 4px 18px; }
+
+  .banner {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin-bottom: 14px; font-size: 13px; color: var(--muted);
+  }
+  .banner a { color: var(--color-accent); }
+  .meta-line { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .status-line { font-size: 12px; margin-left: 8px; }
+  .status-line.err { color: var(--fail); }
+  .status-line.ok { color: var(--pass); }
+  .empty { color: var(--muted); text-align: center; padding: 28px 0; }
+</style>
+</head>
+<body class="shell" data-page="rootly">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+
+<header class="app-header">
+  <h1>Open Incidents</h1>
+  <span class="muted">Every non-terminal Rootly incident, evaluated against the Rules — re-taken each morning.</span>
+  <div class="spacer"></div>
+</header>
+<div class="app-body">
+  <div class="content-pane">
+
+    <div id="banner" class="banner" hidden></div>
+
+    <div class="controls">
+      <span class="meta-line" id="meta-line" style="margin:0"></span>
+      <div class="side">
+        <span class="status-line" id="status-line"></span>
+        <div class="assignee-ms" id="pylon-ms" hidden>
+          <button class="assignee-ms-btn" id="pylon-ms-btn"
+                  title="Filter by the linked Pylon ticket's status — including incidents whose ticket is not synced or missing">All Pylon statuses</button>
+          <div class="assignee-ms-dropdown" id="pylon-ms-dropdown">
+            <button class="assignee-ms-clear" id="pylon-ms-clear">All Pylon statuses</button>
+            <div id="pylon-ms-list"></div>
+          </div>
+        </div>
+        <div class="assignee-ms" id="check-ms" hidden>
+          <button class="assignee-ms-btn" id="check-ms-btn"
+                  title="Filter by one check's verdict — pick the check, then Pass/Fail/Good/Poor">All checks</button>
+          <div class="assignee-ms-dropdown" id="check-ms-dropdown">
+            <button class="assignee-ms-clear" id="check-ms-clear">All checks</button>
+            <div id="check-ms-list"></div>
+          </div>
+        </div>
+        <a class="btn-quiet" id="csv-btn" href="/api/rootly/export.csv" style="text-decoration:none">↓ CSV</a>
+        <button class="btn-quiet" id="fetch-btn" hidden>↻ Re-fetch incidents</button>
+        <button class="btn-primary" id="qc-btn" hidden>▶ Run QC</button>
+      </div>
+    </div>
+
+    <div class="pills" id="pills" hidden>
+      <span class="pill-label">Status</span>
+    </div>
+
+    <div class="chips" id="chips"></div>
+
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>#</th><th>Title</th><th>Severity</th><th>Status</th>
+        <th>Jira</th><th>Pylon</th><th>Pylon status</th><th>Slack</th><th>Pending on</th><th>Checks</th><th>QC</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="11" class="empty">Loading…</td></tr></tbody>
+    </table></div>
+
+  </div>
+</div>
+</div>
+
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => QC.esc(s);
+
+let incidents = [];
+let checkLabels = {};
+let gradeFilter = "";
+const selStatuses = new Set();   // lowercase incident statuses; empty = all
+const selPylon = new Set();      // pylon_state values, plus "not_synced" / "no_ticket"
+let checkFilter = { key: "", value: "" };
+let disabledChecks = new Set();
+let loadToken = 0;
+
+const MATRIX = [["ir1","Sv"],["ir2","Cm"],["ir3","Ji"],["ir4","Py"],
+                ["ir5","Up"],["ir6","St"],["ir7","Sm"],
+                ["ia1","SQ"],["ia2","CQ"],["ia4","SC"]];
+const GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "–", none: "" };
+
+function cellState(v) {
+  if (v === null || v === undefined || v === "") return "none";
+  if (v === "N/A") return "na";
+  if (v === "Pass" || v === "Good" || v === "Consistent") return "pass";
+  if (v === "Fail" || v === "Poor" || v === "Inconsistent") return "fail";
+  return "warn";
+}
+
+function gradeOf(i) { return i.overall_result || "pending"; }
+function gradeCls(g) {
+  return { "Pass": "pass", "Fail": "fail", "Needs Review": "review" }[g] || "pending";
+}
+function sevCls(slug) {
+  const s = (slug || "").toLowerCase();
+  return s.startsWith("sev1") ? "s1" : s.startsWith("sev2") ? "s2" : "";
+}
+function safeHref(u) { return /^https?:\/\//i.test(u || "") ? u : ""; }
+
+// Each check keeps its own verdict vocabulary — an IA check never fails, it
+// reads Poor or Inconsistent, and offering "Fail" for it would filter nothing.
+function verdictsFor(key) {
+  if (key === "ia1" || key === "ia2")
+    return [["Poor", "Poor"], ["Good", "Good"], ["N/A", "N/A"],
+            ["not_evaluated", "Not evaluated"]];
+  if (key === "ia4")
+    return [["Inconsistent", "Inconsistent"], ["Consistent", "Consistent"],
+            ["N/A", "N/A"], ["not_evaluated", "Not evaluated"]];
+  return [["Fail", "Fail"], ["Pass", "Pass"], ["N/A", "N/A"],
+          ["not_evaluated", "Not evaluated"]];
+}
+
+function checkMatches(i, key, value) {
+  const v = i[key];
+  if (value === "not_evaluated") return v === null || v === undefined || v === "";
+  return v === value;
+}
+
+function pylonBucket(i) {
+  if (!i.pylon_ticket_number) return "no_ticket";
+  return i.pylon_state ? i.pylon_state.toLowerCase() : "not_synced";
+}
+
+function statusScoped() {
+  let rows = incidents;
+  if (selStatuses.size > 0) {
+    rows = rows.filter(i => selStatuses.has((i.status || "").toLowerCase()));
+  }
+  if (selPylon.size > 0) {
+    rows = rows.filter(i => selPylon.has(pylonBucket(i)));
+  }
+  return rows;
+}
+
+function visible() {
+  let rows = statusScoped();
+  if (gradeFilter) rows = rows.filter(i => gradeOf(i) === gradeFilter);
+  if (checkFilter.key && checkFilter.value) {
+    rows = rows.filter(i => checkMatches(i, checkFilter.key, checkFilter.value));
+  }
+  return rows;
+}
+
+function filtersActive() {
+  return gradeFilter !== "" || selStatuses.size > 0 || selPylon.size > 0
+         || (checkFilter.key !== "" && checkFilter.value !== "");
+}
+
+// The button says what it will do: a filtered view turns Run QC into a scoped,
+// FORCED re-score of exactly the incidents on screen.
+function updateQcBtn() {
+  const btn = $("qc-btn");
+  if (filtersActive()) {
+    const n = visible().length;
+    btn.textContent = `▶ Re-run QC on ${n} filtered`;
+    btn.title = `Re-fetches from Rootly first, then force re-scores exactly these ${n} incidents — the unchanged-content skip is bypassed, so each one bills`;
+    btn.disabled = n === 0;
+  } else {
+    btn.textContent = "▶ Run QC";
+    btn.title = "Re-fetches from Rootly first, then rules + AI over the whole open set — unchanged incidents are skipped and never re-bill";
+    btn.disabled = false;
+  }
+}
+
+function updatePylonBtn() {
+  const btn = $("pylon-ms-btn");
+  const NAMES = { not_synced: "Not synced", no_ticket: "No ticket" };
+  if (selPylon.size === 0) btn.textContent = "All Pylon statuses";
+  else if (selPylon.size === 1) {
+    const v = [...selPylon][0];
+    btn.textContent = "Pylon: " + (NAMES[v] || v.replace(/_/g, " "));
+  } else btn.textContent = `Pylon: ${selPylon.size} statuses`;
+}
+
+function populatePylonFilter() {
+  const ms = $("pylon-ms");
+  ms.hidden = incidents.length === 0;
+  const counts = {};
+  incidents.forEach(i => {
+    const b = pylonBucket(i);
+    counts[b] = (counts[b] || 0) + 1;
+  });
+  // Real ticket statuses first, then the two link-health buckets.
+  const states = Object.keys(counts)
+    .filter(k => k !== "not_synced" && k !== "no_ticket").sort();
+  const rows = [...states.map(k => [k, k.replace(/_/g, " ")]),
+                ...(counts.not_synced ? [["not_synced", "Not synced"]] : []),
+                ...(counts.no_ticket ? [["no_ticket", "No ticket"]] : [])];
+  $("pylon-ms-list").innerHTML = rows.map(([v, name]) => `
+    <label class="assignee-ms-item" style="text-transform:capitalize">
+      <input type="checkbox" value="${esc(v)}" ${selPylon.has(v) ? "checked" : ""}>
+      ${esc(name)} <span class="muted">(${counts[v]})</span>
+    </label>`).join("");
+  $("pylon-ms-list").querySelectorAll("input").forEach(cb =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) selPylon.add(cb.value);
+      else selPylon.delete(cb.value);
+      updatePylonBtn();
+      renderChips();
+      renderRows();
+      updateQcBtn();
+    }));
+  updatePylonBtn();
+}
+
+(function wirePylonDropdown() {
+  const btn = $("pylon-ms-btn"), drop = $("pylon-ms-dropdown");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+  $("pylon-ms-clear").addEventListener("click", () => {
+    selPylon.clear();
+    populatePylonFilter();
+    renderChips();
+    renderRows();
+    updateQcBtn();
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("pylon-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
+
+function updateCheckBtn() {
+  const btn = $("check-ms-btn");
+  if (!checkFilter.key || !checkFilter.value) {
+    btn.textContent = "All checks";
+    return;
+  }
+  const label = checkLabels[checkFilter.key] || checkFilter.key.toUpperCase();
+  const verdict = (verdictsFor(checkFilter.key)
+    .find(([v]) => v === checkFilter.value) || [checkFilter.value,
+                                                checkFilter.value])[1];
+  btn.textContent = `${label}: ${verdict}`;
+}
+
+function checkFilterChanged() {
+  populateCheckFilter();
+  updateCheckBtn();
+  renderChips();
+  renderRows();
+  updateQcBtn();
+}
+
+function populateCheckFilter() {
+  const ms = $("check-ms");
+  const keys = MATRIX.map(([k]) => k).filter(k => !disabledChecks.has(k));
+  ms.hidden = incidents.length === 0;
+  // A filter pointing at a since-disabled check must release its grip rather
+  // than silently hiding incidents for a rule that no longer counts.
+  if (checkFilter.key && !keys.includes(checkFilter.key)) {
+    checkFilter = { key: "", value: "" };
+  }
+  const list = $("check-ms-list");
+  list.innerHTML = keys.map(key => {
+    const label = checkLabels[key] || key.toUpperCase();
+    const verdicts = verdictsFor(key);
+    const badN = incidents.filter(i => checkMatches(i, key, verdicts[0][0])).length;
+    const active = checkFilter.key === key;
+    const sub = !active ? "" : `
+      <div class="check-verdicts">${verdicts.map(([v, name]) => {
+        const n = incidents.filter(i => checkMatches(i, key, v)).length;
+        return `
+        <label class="assignee-ms-item${n ? "" : " is-zero"}">
+          <input type="radio" name="check-verdict" value="${esc(v)}"
+                 ${checkFilter.value === v ? "checked" : ""}>
+          ${esc(name)} <span class="muted">(${n})</span>
+        </label>`;
+      }).join("")}</div>`;
+    return `
+      <button class="assignee-ms-item${active ? " check-row-active" : ""}"
+              data-check-key="${esc(key)}" type="button">
+        ${esc(key.toUpperCase())} · ${esc(label)}
+        <span class="muted">(${badN} ${esc(verdicts[0][1].toLowerCase())})</span>
+      </button>${sub}`;
+  }).join("");
+
+  list.querySelectorAll("[data-check-key]").forEach(row => {
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();     // choosing a check expands it; don't close yet
+      const key = row.dataset.checkKey;
+      // Re-clicking the active check collapses it back to "no filter";
+      // opening one defaults to its bad verdict — what people come to find.
+      checkFilter = checkFilter.key === key
+        ? { key: "", value: "" }
+        : { key, value: verdictsFor(key)[0][0] };
+      checkFilterChanged();
+    });
+  });
+  list.querySelectorAll("input[name=check-verdict]").forEach(rb => {
+    rb.addEventListener("change", (e) => {
+      e.stopPropagation();
+      checkFilter.value = rb.value;
+      checkFilterChanged();
+    });
+  });
+  updateCheckBtn();
+}
+
+(function wireCheckDropdown() {
+  const btn = $("check-ms-btn"), drop = $("check-ms-dropdown");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+  $("check-ms-clear").addEventListener("click", () => {
+    checkFilter = { key: "", value: "" };
+    checkFilterChanged();
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("check-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
+
+function renderPills() {
+  const pills = $("pills");
+  const counts = {};
+  incidents.forEach(i => {
+    const st = (i.status || "").toLowerCase();
+    counts[st] = (counts[st] || 0) + 1;
+  });
+  const names = Object.keys(counts).sort();
+  pills.hidden = names.length === 0;
+  pills.innerHTML = `<span class="pill-label">Status</span>` + names.map(st => `
+    <button class="state-pill ${selStatuses.has(st) ? "active" : ""}" data-status="${esc(st)}"
+            title="Show only ${esc(st.replace(/_/g, " "))} incidents">
+      ${esc(st.replace(/_/g, " "))} (${counts[st]})
+    </button>`).join("");
+  pills.querySelectorAll("[data-status]").forEach(b =>
+    b.addEventListener("click", () => {
+      const st = b.dataset.status;
+      if (selStatuses.has(st)) selStatuses.delete(st);
+      else selStatuses.add(st);
+      renderPills();
+      renderChips();
+      renderRows();
+      updateQcBtn();
+    }));
+}
+
+function renderChips() {
+  const scoped = statusScoped();
+  const counts = { total: scoped.length,
+    "Pass": 0, "Fail": 0, "Needs Review": 0, "pending": 0 };
+  scoped.forEach(i => { counts[gradeOf(i)] = (counts[gradeOf(i)] || 0) + 1; });
+  const spec = [["", "Open in scope", counts.total, ""],
+                ["Pass", "Pass", counts["Pass"], "c-pass"],
+                ["Fail", "Fail", counts["Fail"], "c-fail"],
+                ["Needs Review", "Needs review", counts["Needs Review"], "c-review"],
+                ["pending", "Pending QC", counts["pending"], "c-pending"]];
+  $("chips").innerHTML = spec.map(([v, label, n, cls]) => `
+    <button class="chip ${cls} ${gradeFilter === v && v ? "active" : ""}" data-grade="${esc(v)}"
+            title="${v ? `Show only ${esc(label)} incidents` : "Show all"}">
+      <b>${n}</b><span>${esc(label)}</span>
+    </button>`).join("");
+}
+
+function whyRows(i) {
+  const why = i.reasons || {};
+  return MATRIX.map(([k]) => {
+    const val = i[k];
+    if (val === undefined && !why[k]) return "";
+    return `<div class="why">
+      <span class="k">${esc(k.toUpperCase())} · ${esc(checkLabels[k] || k)}</span>
+      <span class="grade ${cellState(val)}">${esc(val ?? "—")}</span>
+      <span>${esc(why[k] || "")}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderRows() {
+  const rows = visible();
+  if (!rows.length) {
+    $("rows").innerHTML = `<tr><td colspan="11" class="empty">${
+      incidents.length ? "No incidents match these filters."
+                       : "No open incidents stored — re-fetch to pull them from Rootly."}</td></tr>`;
+    return;
+  }
+  $("rows").innerHTML = rows.map(i => {
+    const url = safeHref(i.url);
+    const jira = safeHref(i.jira_url);
+    const g = gradeOf(i);
+    const cells = MATRIX.map(([k, short]) => {
+      const st = cellState(i[k]);
+      const why = (i.reasons || {})[k] || "";
+      return `<span class="cell ${st}" title="${esc(checkLabels[k] || k)}: ${esc(i[k] ?? "not evaluated")}${why ? " — " + esc(why) : ""}">${GLYPH[st]}</span>`;
+    }).join("");
+    return `<tr class="inc-row" data-id="${esc(i.id)}" tabindex="0">
+      <td>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">INC-${esc(String(i.sequential_id ?? "—"))}</a>`
+                : `INC-${esc(String(i.sequential_id ?? "—"))}`}</td>
+      <td>${esc(i.title || "(no title)")}</td>
+      <td><span class="sev ${sevCls(i.severity)}">${esc(i.severity_name || i.severity || "—")}</span></td>
+      <td>${esc((i.status || "—").replace(/_/g, " "))}</td>
+      <td>${jira ? `<a href="${esc(jira)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(i.jira_key)}</a>`
+                 : esc(i.jira_key || "—")}</td>
+      <td>${i.pylon_ticket_number
+        ? (safeHref(i.pylon_link)
+            ? `<a href="${esc(i.pylon_link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">#${esc(String(i.pylon_ticket_number))}</a>`
+            : `#${esc(String(i.pylon_ticket_number))}`)
+        : "—"}</td>
+      <td>${!i.pylon_ticket_number ? "—"
+        : i.pylon_state
+          ? `<span class="pylon-state">${esc(i.pylon_state.replace(/_/g, " "))}</span>`
+          : `<span class="muted" style="font-size:11px" title="#${esc(String(i.pylon_ticket_number))} is linked but has never been fetched into Pylon QC, so its status is unknown here">not synced</span>`}</td>
+      <td>${i.slack_channel_id
+        ? `<a href="${esc(safeHref(i.slack_channel_url) || `https://slack.com/app_redirect?channel=${encodeURIComponent(i.slack_channel_id)}`)}"
+             target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
+             title="Open the incident's Slack channel — #${esc(i.slack_channel_name || i.slack_channel_id)}"
+             class="slack-chan">#${esc(i.slack_channel_name || i.slack_channel_id)}</a>`
+        : "—"}</td>
+      <td>${i.pending_on ? `<span class="pending-tag" title="${esc(i.pending_on)}">${esc(i.pending_on)}</span>` : "—"}</td>
+      <td><span class="cells">${cells}</span></td>
+      <td><span class="grade ${gradeCls(g)}">${esc(g)}</span></td>
+    </tr>
+    <tr class="inc-detail" data-for="${esc(i.id)}" hidden><td colspan="11">
+      <div class="detail-grid">
+        <div>
+          <h4>Why each check landed there</h4>
+          ${whyRows(i) || `<span class="muted" style="font-size:12px">Not evaluated yet — run QC.</span>`}
+        </div>
+        <div>
+          <h4>AI notes</h4>
+          <div style="font-size:12.5px; white-space:pre-wrap">${esc(i.ai_notes || "No AI notes yet.")}</div>
+          ${i.pending_party ? `<div style="margin-top:8px; font-size:12px" class="muted">Pending party: ${esc(i.pending_party)}</div>` : ""}
+          <div style="margin-top:8px; font-size:11.5px" class="muted">
+            Rules checked: ${esc(QC.fmtTime(i.rules_checked_at))} · AI: ${esc(QC.fmtTime(i.ai_checked_at))}
+          </div>
+        </div>
+      </div>
+    </td></tr>`;
+  }).join("");
+
+  $("rows").querySelectorAll("tr.inc-row").forEach(tr => {
+    const toggle = () => {
+      const d = $("rows").querySelector(`tr.inc-detail[data-for="${CSS.escape(tr.dataset.id)}"]`);
+      if (d) d.hidden = !d.hidden;
+    };
+    tr.addEventListener("click", (ev) => { if (!ev.target.closest("a")) toggle(); });
+    tr.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+    });
+  });
+}
+
+$("chips").addEventListener("click", (ev) => {
+  const chip = ev.target.closest("[data-grade]");
+  if (!chip) return;
+  gradeFilter = chip.dataset.grade === gradeFilter ? "" : chip.dataset.grade;
+  renderChips();
+  renderRows();
+  updateQcBtn();
+});
+
+async function load() {
+  const token = ++loadToken;
+  let d;
+  try {
+    d = await QC.api("/api/rootly/incidents");
+  } catch (e) {
+    if (token !== loadToken) return;
+    $("rows").innerHTML = `<tr><td colspan="11" class="empty">${esc(e.message)}</td></tr>`;
+    return;
+  }
+  if (token !== loadToken) return;
+  incidents = d.incidents || [];
+  checkLabels = d.checks || {};
+  disabledChecks = new Set(d.disabled_checks || []);
+  $("banner").hidden = d.configured;
+  if (!d.configured) {
+    $("banner").innerHTML =
+      `No Rootly API token is configured yet — add one in <a href="/rootly/admin">Rootly Admin</a>, then re-fetch.`;
+  }
+  const run = d.last_run;
+  if (!run) {
+    $("meta-line").textContent = "No Rootly QC run recorded yet.";
+  } else {
+    const when = run.started_at ? new Date(run.started_at).toLocaleString() : "—";
+    // A run mid-flight or cut off must say so — "0 scored" on a running row
+    // reads as a broken scorer.
+    $("meta-line").textContent =
+      run.status === "running"
+        ? `QC run in progress (started ${when}) — ${run.total ?? "?"} incidents in scope`
+        : run.status === "error"
+          ? `Last QC run ${when} did not finish — re-run QC`
+          : `Last QC run ${when} — ${run.scored ?? 0} scored, ${run.skipped ?? 0} unchanged (skipped)`;
+  }
+  renderPills();
+  populatePylonFilter();
+  populateCheckFilter();
+  renderChips();
+  renderRows();
+  updateQcBtn();
+}
+
+// A failed action reports into its own status line — never over the table.
+function note(text, kind) {
+  const el = $("status-line");
+  el.textContent = text;
+  el.className = "status-line " + (kind || "");
+}
+
+async function act(btn, url, label, body) {
+  btn.disabled = true;
+  note(`${label}…`, "");
+  try {
+    const d = await QC.api(url, { method: "POST",
+                                  ...(body ? { body: JSON.stringify(body) } : {}) });
+    note(d.status === "error" ? `${label} finished with errors` : `${label} done`,
+         d.status === "error" ? "err" : "ok");
+    await load();
+  } catch (e) {
+    note(e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("fetch-btn").addEventListener("click", () =>
+  act($("fetch-btn"), "/api/rootly/fetch", "Fetching incidents"));
+$("qc-btn").addEventListener("click", () => {
+  if (filtersActive()) {
+    const ids = visible().map(i => i.id);
+    act($("qc-btn"), "/api/rootly/qc",
+        `Force re-scoring ${ids.length} filtered incidents (fetch first)`,
+        { ids });
+  } else {
+    act($("qc-btn"), "/api/rootly/qc", "Running QC (fetch + rules + AI)");
+  }
+});
+
+QC.ready.then(me => {
+  if (me && me.role !== "member") {
+    $("fetch-btn").hidden = false;
+    $("qc-btn").hidden = false;
+  }
+});
+load();
+</script>
+</body>
+</html>

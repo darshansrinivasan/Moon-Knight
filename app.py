@@ -39,6 +39,8 @@ import share
 import qc_runner
 import resync_overall
 import review
+import rootly
+import rootlyqc
 import scheduler
 import scorer
 import slack
@@ -927,6 +929,202 @@ async def run_open_qc(refresh: bool = True,
            if (s or e or st) else " (all time)"),
     )
     return {"refresh": refresh_res, **result}
+
+
+# ── Rootly QC: the second platform ───────────────────────────────────────────
+
+@app.get("/rootly", response_class=HTMLResponse)
+async def rootly_page(user: dict = Depends(auth.require_user)):
+    return _page("rootly.html")
+
+
+@app.get("/rootly/runs", response_class=HTMLResponse)
+async def rootly_runs_page(user: dict = Depends(auth.require_user)):
+    """The SAME runs page as /runs — run history and the morning pipeline are
+    one system spanning both platforms, so the tab exists in both navs rather
+    than being a second implementation."""
+    return _page("runs.html")
+
+
+@app.get("/rootly/rules", response_class=HTMLResponse)
+async def rootly_rules_page(user: dict = Depends(auth.require_user)):
+    return _page("rootly-rules.html")
+
+
+@app.get("/rootly/admin", response_class=HTMLResponse)
+async def rootly_admin_page(user: dict = Depends(auth.require_user)):
+    """Like /admin: readable by everyone, mutations gated per endpoint."""
+    return _page("rootly-admin.html")
+
+
+@app.get("/api/rootly/incidents")
+async def rootly_incidents(user: dict = Depends(auth.require_user)):
+    def load():
+        rows = rootlyqc.annotate(rootlyqc.open_incidents())
+        return rows, db.latest_qc_run(rootlyqc.RUN_LABEL)
+    rows, last_run = await asyncio.to_thread(load)
+    return {"incidents": rows, "last_run": last_run,
+            "configured": bool(vault.get_credential("rootly_api_token")),
+            "checks": rootlyqc.CHECKS,
+            # The check filter must never offer a rule the admin switched off.
+            "disabled_checks": rootlyqc.rules_config()["disabled_checks"]}
+
+
+@app.post("/api/rootly/fetch")
+async def rootly_fetch(user: dict = Depends(auth.require_operator)):
+    try:
+        with db.advisory_lock("fetch:rootly", user["email"], ttl_seconds=1800):
+            result = await rootlyqc.fetch(user["email"])
+            await asyncio.to_thread(rootlyqc.run_rule_checks)
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except rootly.RootlyNotConfigured as e:
+        raise HTTPException(503, str(e))
+    vault.audit(user["email"], "rootly.fetch",
+                f"found={result['found']} complete={result['complete']}")
+    return result
+
+
+@app.post("/api/rootly/qc")
+async def rootly_qc(payload: dict | None = None, refresh: bool = True,
+                    user: dict = Depends(auth.require_operator)):
+    """Fetch-then-score by default — grading a stale incident snapshot argues
+    with the channel that has already moved on (same reasoning as /api/open/qc).
+
+    A body of {"ids": [...]} scopes the AI spend to those incidents and FORCES
+    fresh scores past the fingerprint gate — a scoped rerun exists to re-judge
+    grades someone doubts, so "skipped, unchanged" would be a non-answer.
+    """
+    ids = None
+    if payload and payload.get("ids"):
+        ids = [str(i) for i in payload["ids"]][:2000]
+    try:
+        with db.advisory_lock("qc:rootly", user["email"], ttl_seconds=3600):
+            fetch_res = await rootlyqc.fetch(user["email"]) if refresh else None
+            result = await rootlyqc.run_qc(user["email"], only_ids=ids,
+                                           force=ids is not None)
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except rootly.RootlyNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except qc_runner.VertexNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, qc_runner.explain_vertex_error(e))
+    vault.audit(user["email"], "rootly.qc",
+                f"open={result.get('open')} scored={result.get('scored')}"
+                f" skipped={result.get('skipped')}")
+    return {"fetch": fetch_res, **result}
+
+
+@app.get("/api/rootly/rules")
+async def rootly_rules_get(user: dict = Depends(auth.require_user)):
+    return {"rules": rootlyqc.rules_config(), "checks": rootlyqc.CHECKS,
+            "defaults": rootlyqc.DEFAULT_RULES}
+
+
+@app.post("/api/rootly/rules")
+async def rootly_rules_set(payload: dict,
+                           user: dict = Depends(auth.require_admin)):
+    doc = {}
+    disabled = payload.get("disabled_checks") or []
+    doc["disabled_checks"] = [k for k in disabled if k in rootlyqc.TOGGLEABLE]
+    doc["excluded_statuses"] = [
+        str(s).strip().lower() for s in (payload.get("excluded_statuses") or [])
+        if str(s).strip()]
+    cadence = {}
+    for bucket in ("sev1", "sev2", "default"):
+        v = (payload.get("cadence_hours") or {}).get(bucket)
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"cadence_hours.{bucket} must be a number")
+        if not 1 <= v <= 720:
+            raise HTTPException(400, f"cadence_hours.{bucket} must be 1–720")
+        cadence[bucket] = v
+    doc["cadence_hours"] = cadence
+    try:
+        stuck = int(payload.get("stuck_hours"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "stuck_hours must be a number")
+    if not 1 <= stuck <= 2160:
+        raise HTTPException(400, "stuck_hours must be 1–2160")
+    doc["stuck_hours"] = stuck
+
+    vault.set_raw_setting("rootly_rules_json", json.dumps(doc), user["email"])
+    vault.audit(user["email"], "rootly.rules",
+                f"disabled={doc['disabled_checks']}"
+                f" excluded={doc['excluded_statuses']}"
+                f" cadence={cadence} stuck={stuck}h")
+    return {"ok": True, "rules": rootlyqc.rules_config()}
+
+
+@app.get("/api/rootly/fields")
+async def rootly_fields(user: dict = Depends(auth.require_admin)):
+    """Rootly's form fields, for the "which field holds the Pylon ticket"
+    picker — detected live so nobody has to guess a slug."""
+    try:
+        fields = await rootly.form_fields()
+    except rootly.RootlyNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Rootly field listing failed: {str(e)[:200]}")
+    return {"fields": fields}
+
+
+@app.get("/api/rootly/admin")
+async def rootly_admin_get(user: dict = Depends(auth.require_user)):
+    return {"pylon_field": vault.get_setting("rootly_pylon_field") or "",
+            "schedule_rootly_qc": vault.get_setting("schedule_rootly_qc"),
+            "token_set": bool(vault.get_credential("rootly_api_token"))}
+
+
+@app.post("/api/rootly/admin")
+async def rootly_admin_set(payload: dict,
+                           user: dict = Depends(auth.require_admin)):
+    values = {}
+    if "pylon_field" in payload:
+        values["rootly_pylon_field"] = str(payload["pylon_field"] or "").strip()
+    if "schedule_rootly_qc" in payload:
+        values["schedule_rootly_qc"] = \
+            "1" if payload["schedule_rootly_qc"] in (True, "1", 1) else "0"
+    if not values:
+        raise HTTPException(400, "Nothing to save")
+    vault.set_raw_settings(values, user["email"])
+    vault.audit(user["email"], "rootly.admin",
+                " ".join(f"{k}={v!r}" for k, v in values.items()))
+    return {"ok": True}
+
+
+@app.get("/api/rootly/export.csv")
+async def rootly_export_csv(user: dict = Depends(auth.require_user)):
+    rows = await asyncio.to_thread(
+        lambda: rootlyqc.annotate(rootlyqc.open_incidents()))
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Incident", "Title", "Status", "Severity", "Started",
+                "Jira", "Pylon ticket", "Pylon ticket status",
+                "Slack channel", "Overall",
+                *[rootlyqc.CHECKS[k] for k in
+                  ("ir1", "ir2", "ir3", "ir4", "ir5", "ir6", "ir7",
+                   "ia1", "ia2", "ia4")],
+                "Pending on", "AI notes", "URL"])
+    for i in rows:
+        w.writerow([i.get("sequential_id"), i.get("title"), i.get("status"),
+                    i.get("severity_name") or i.get("severity"),
+                    i.get("started_at"), i.get("jira_key"),
+                    i.get("pylon_ticket_number"), i.get("pylon_state"),
+                    i.get("slack_channel_url") or i.get("slack_channel_name"),
+                    i.get("overall_result"),
+                    *[i.get(k) for k in ("ir1", "ir2", "ir3", "ir4", "ir5",
+                                         "ir6", "ir7", "ia1", "ia2", "ia4")],
+                    i.get("pending_on"), i.get("ai_notes"), i.get("url")])
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition":
+                 f'attachment; filename="rootly-qc-{stamp}.csv"'})
 
 
 # ── functionality-tagging check ───────────────────────────────────────────────
@@ -2804,6 +3002,9 @@ async def test_credential(key: str, user: dict = Depends(auth.require_admin)):
                 return {"ok": False, "message": "Pylon rejected the token (401)"}
             r.raise_for_status()
             return {"ok": True, "message": "Pylon token works"}
+
+        if key == "rootly_api_token":
+            return await rootly.test_token()
 
         if key == "slack_bot_token":
             info = await slack.test_auth()

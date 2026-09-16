@@ -231,6 +231,7 @@ async def run_pipeline(target: date, triggered_by: str,
     date_str = target.isoformat()
     trigger_date = trigger_date or date_str
     sweep_note = None
+    rootly_note = None
     if notify_slack is None:
         notify_slack = vault.get_setting("slack_enabled") == "1"
 
@@ -319,12 +320,20 @@ async def run_pipeline(target: date, triggered_by: str,
                         sweep_note = await _run_closed_sweep()
                     except Exception:
                         logger.exception("Scheduled closure sweep failed")
+                # Rootly QC: the second platform's morning pass — fetch the
+                # open incidents, run the IR rules, AI-score what changed.
+                if vault.get_setting("schedule_rootly_qc") == "1":
+                    try:
+                        rootly_note = await _run_rootly_qc()
+                    except Exception:
+                        logger.exception("Scheduled Rootly QC failed")
 
             slack_ok = None
             if notify_slack:
                 try:
+                    notes = "\n".join(n for n in (sweep_note, rootly_note) if n) or None
                     await slack.post_day_report(date_str,
-                                                extra_note=sweep_note)
+                                                extra_note=notes)
                     slack_ok = 1
                 except Exception as e:
                     logger.error("Slack post failed for %s: %s", date_str, e)
@@ -380,6 +389,37 @@ async def _run_closed_sweep() -> str | None:
         note += " — no final-state fails"
     if not res["complete"]:
         note += " (Pylon search incomplete — some closures may be missing)"
+    return note
+
+
+async def _run_rootly_qc() -> str | None:
+    """Fetch + QC the Rootly open set; return the morning report's one line.
+
+    Same lock name as the /api/rootly/qc button, so a human clicking at 09:31
+    cannot run concurrently with this."""
+    import rootlyqc
+
+    with db.advisory_lock("qc:rootly", "scheduler",
+                          ttl_seconds=LOCK_TTL_SECONDS):
+        await rootlyqc.fetch("scheduler")
+        res = await rootlyqc.run_qc("scheduler")
+    logger.info("Scheduled Rootly QC: open=%s scored=%s skipped=%s",
+                res.get("open"), res.get("scored"), res.get("skipped"))
+    if not res.get("open"):
+        return None
+
+    def counts():
+        rows = rootlyqc.annotate(rootlyqc.open_incidents())
+        fails = [r for r in rows if r.get("overall_result") == "Fail"]
+        return len(rows), [f"INC-{r.get('sequential_id')}" for r in fails]
+    total, fails = await asyncio.to_thread(counts)
+    note = f"Rootly QC: {total} open incident{'s' if total != 1 else ''} evaluated"
+    if fails:
+        shown = ", ".join(fails[:5])
+        more = f" +{len(fails) - 5} more" if len(fails) > 5 else ""
+        note += f" — {len(fails)} failing: {shown}{more}"
+    else:
+        note += " — none failing"
     return note
 
 

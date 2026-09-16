@@ -1,5 +1,14 @@
 /* Shared app chrome: left nav, session, fetch 401. Pages set body[data-page]. */
 (function () {
+  // Two platforms, one shell. The switcher swaps which page list renders;
+  // /rootly/* paths select the Rootly platform automatically.
+  const ROOTLY_PAGES = [
+    { id: "rootly",       href: "/rootly",       label: "Incidents" },
+    { id: "rootly-runs",  href: "/rootly/runs",  label: "Runs" },
+    { id: "rootly-rules", href: "/rootly/rules", label: "Rules" },
+    { id: "rootly-admin", href: "/rootly/admin", label: "Admin", memberLabel: "Settings" },
+  ];
+
   const PAGES = [
     { id: "dashboard",   href: "/",                   label: "Dashboard" },
     { id: "analytics",   href: "/?view=analytics",    label: "Analytics" },
@@ -60,9 +69,19 @@
     return resp;
   };
 
+  function currentPlatform() {
+    return location.pathname.startsWith("/rootly") ? "rootly" : "pylon";
+  }
+
   function currentPage() {
     const fromBody = document.body.dataset.page;
+    // runs.html is served on both platforms; its hardcoded data-page must not
+    // pin the Rootly copy to the Pylon nav item.
+    if (fromBody === "runs" && currentPlatform() === "rootly") return "rootly-runs";
     if (fromBody) return fromBody;
+    if (location.pathname.startsWith("/rootly/rules")) return "rootly-rules";
+    if (location.pathname.startsWith("/rootly/admin")) return "rootly-admin";
+    if (location.pathname.startsWith("/rootly")) return "rootly";
     if (location.pathname === "/runs") return "runs";
     if (location.pathname === "/rules") return "rules";
     if (location.pathname === "/admin") return "admin";
@@ -77,21 +96,29 @@
     const host = document.getElementById("app-nav");
     if (!host) return;
     const page = currentPage();
+    const platform = currentPlatform();
+    const pages = platform === "rootly" ? ROOTLY_PAGES : PAGES;
     const adminLabel = me && me.role === "member" ? "Settings" : "Admin";
-    const links = PAGES.map(p => {
-      const href = p.id === "admin" ? "/admin" : p.href;
-      const label = p.id === "admin" ? adminLabel : p.label;
+    const links = pages.map(p => {
+      const label = p.memberLabel && me && me.role === "member" ? p.memberLabel : p.label;
       const cls = p.id === page ? "active" : "";
-      return `<a href="${href}" class="${cls}" data-nav="${p.id}">${QC.esc(label)}</a>`;
+      return `<a href="${p.href}" class="${cls}" data-nav="${p.id}">${QC.esc(label)}</a>`;
     }).join("");
 
     const pic = me && me.picture
       ? `<img src="${QC.esc(me.picture)}" alt="">`
       : "";
     const name = me ? (me.name || me.email || "") : "";
+    const brand = platform === "rootly" ? "Rootly <span>QC</span>" : "Pylon <span>QC</span>";
 
     host.innerHTML = `
-      <div class="app-nav-brand">Pylon <span>QC</span></div>
+      <div class="app-nav-brand">${brand}</div>
+      <div class="app-nav-switch" role="tablist" aria-label="Platform">
+        <a href="/" class="${platform === "pylon" ? "on" : ""}"
+           title="Support-ticket QC (Pylon)">Pylon</a>
+        <a href="/rootly" class="${platform === "rootly" ? "on" : ""}"
+           title="Incident QC (Rootly)">Rootly</a>
+      </div>
       <div class="app-nav-links">${links}</div>
       <div class="app-nav-foot">
         <div class="app-nav-user">${pic}<span title="${QC.esc(name)}">${QC.esc(name)}</span></div>

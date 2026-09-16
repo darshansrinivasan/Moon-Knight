@@ -47,6 +47,14 @@ r = client.get("/api/stats")
 check("/api/stats unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/api/closed-sweep")
 check("/api/closed-sweep unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.get("/api/rootly/incidents")
+check("/api/rootly/incidents unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.get("/rootly")
+check("/rootly unauthenticated -> 302 to login",
+      r.status_code == 302 and "/login" in r.headers.get("location", ""))
+r = client.get("/rootly/runs")
+check("/rootly/runs unauthenticated -> 302 to login",
+      r.status_code == 302 and "/login" in r.headers.get("location", ""))
 r = client.get("/")
 check("/ unauthenticated -> 302 to login",
       r.status_code == 302 and "/login" in r.headers.get("location", ""))

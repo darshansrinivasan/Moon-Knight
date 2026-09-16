@@ -396,6 +396,114 @@ check("the callout names the habit and the person",
       and "Ann (2)" in sa_analysis["text"]["text"], True)
 
 print()
+print("=== channel_history self-heals membership on public channels ===")
+# Rootly creates a fresh channel per incident, so the bot is never a member
+# until it joins. The whole IA2-N/A-everywhere failure was this: 592 channels,
+# all not_in_channel. Pin the join-and-retry, and that the join stays behind
+# the deployment guard.
+calls = []
+
+async def fake_get(method, params=None):
+    calls.append((method, dict(params or {})))
+    if method == "conversations.history":
+        if not any(c[0] == "conversations.join" for c in calls):
+            raise RuntimeError("Slack conversations.history failed: not_in_channel")
+        return {"ok": True,
+                "messages": [{"text": "second", "ts": "2"},
+                             {"text": "first", "ts": "1"}]}
+    raise AssertionError(method)
+
+async def fake_join(method, payload):
+    calls.append((method, dict(payload)))
+    return {"ok": True}
+
+real = (slack._api_get, slack._post)
+slack._api_get, slack._post = fake_get, fake_join
+try:
+    msgs = run(slack.channel_history("C0INC", limit=10))
+finally:
+    slack._api_get, slack._post = real
+
+check("join happens exactly once, on the failing channel",
+      [c for c in calls if c[0] == "conversations.join"],
+      [("conversations.join", {"channel": "C0INC"})])
+check("the read is retried after joining and comes back oldest-first",
+      [m["text"] for m in msgs], ["first", "second"])
+
+# A second not_in_channel after a successful join must surface, not loop.
+calls.clear()
+
+async def fake_get_persistent(method, params=None):
+    calls.append((method, dict(params or {})))
+    raise RuntimeError("Slack conversations.history failed: not_in_channel")
+
+slack._api_get, slack._post = fake_get_persistent, fake_join
+try:
+    try:
+        run(slack.channel_history("C0INC", limit=10))
+        outcome = "read"
+    except RuntimeError as e:
+        outcome = str(e)
+finally:
+    slack._api_get, slack._post = real
+check("a join that does not stick raises instead of looping",
+      "not_in_channel" in outcome and outcome != "read", True)
+
+check("conversations.join is a guarded write",
+      "conversations.join" in slack._WRITE_METHODS, True)
+
+# Rate limits: Slack's 429 must be waited out, not treated as failure — a bulk
+# join pass over incident channels trips the per-minute tier and the first
+# Rootly run left 417 of 606 channels unjoined exactly this way.
+class FakeResp:
+    def __init__(self, retry_after=None):
+        self.headers = {} if retry_after is None else {"Retry-After": retry_after}
+
+_sleeps = []
+async def _fake_sleep(s2): _sleeps.append(s2)
+_real_sleep = slack.asyncio.sleep
+slack.asyncio.sleep = _fake_sleep
+try:
+    w = run(slack._ratelimit_pause(FakeResp("7"), 0.0))
+    check("Retry-After is honoured", (_sleeps[-1], w), (7.0, 7.0))
+    run(slack._ratelimit_pause(FakeResp(), 0.0))
+    check("missing header waits the default 30s", _sleeps[-1], 30.0)
+    run(slack._ratelimit_pause(FakeResp("600"), 0.0))
+    check("a huge Retry-After is clamped to 60s", _sleeps[-1], 60.0)
+    try:
+        run(slack._ratelimit_pause(FakeResp("60"), slack.RATELIMIT_MAX_WAIT - 10))
+        outcome = "waited"
+    except RuntimeError as e:
+        outcome = str(e)
+    check("the retry budget is finite", "retry budget" in outcome, True)
+finally:
+    slack.asyncio.sleep = _real_sleep
+
+# On a non-deployment the join is refused and the error says the deployment
+# will handle it — the message rootlyqc puts in the incident's AI note.
+saved = os.environ.pop("RAILWAY_PUBLIC_DOMAIN", None)
+try:
+    vault.set_settings({"allow_local_side_effects": "0"}, "test")
+
+    async def fake_get_miss(method, params=None):
+        raise RuntimeError("Slack conversations.history failed: not_in_channel")
+
+    slack._api_get = fake_get_miss
+    try:
+        try:
+            run(slack.channel_history("C0INC", limit=10))
+            refusal = "read"
+        except RuntimeError as e:
+            refusal = str(e)
+    finally:
+        slack._api_get = real[0]
+    check("local copy reports the miss instead of joining",
+          "auto-join refused" in refusal, True)
+finally:
+    if saved is not None:
+        os.environ["RAILWAY_PUBLIC_DOMAIN"] = saved
+
+print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)

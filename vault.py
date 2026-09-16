@@ -158,6 +158,13 @@ CREDENTIAL_SPECS = [
         "testable": True,
     },
     {
+        "key": "rootly_api_token",
+        "label": "Rootly API token",
+        "help": "Bearer token from Rootly → Settings → API Keys. Used to fetch "
+                "incidents for Rootly QC.",
+        "testable": True,
+    },
+    {
         "key": "slack_bot_token",
         "legacy_env": "SLACK_BOT_TOKEN",
         "label": "Slack bot token",
@@ -257,6 +264,13 @@ SETTING_SPECS = [
     # set before their closure is judged; this is the only trigger that sees
     # them. Findings ride the morning Slack report as one line.
     {"key": "schedule_closed_qc", "default": "1", "bool": True},
+    # Rootly QC: the second platform. One JSON doc for its rule config (same
+    # pattern as qc_rules_json — thresholds, disabled checks, excluded
+    # statuses), one field name for the Pylon-ticket custom field, one
+    # scheduler toggle.
+    {"key": "rootly_rules_json",  "default": ""},
+    {"key": "rootly_pylon_field", "default": ""},
+    {"key": "schedule_rootly_qc", "default": "0", "bool": True},
     {"key": "schedule_time",      "legacy_env": "SCHEDULE_TIME",    "default": "09:30"},
     {"key": "schedule_tz",        "legacy_env": "SCHEDULE_TZ",      "default": "Asia/Kolkata"},
     {"key": "schedule_target",    "legacy_env": "SCHEDULE_TARGET",  "default": "yesterday"},

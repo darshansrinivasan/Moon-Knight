@@ -423,6 +423,56 @@ def init_db():
             assignee_name TEXT NOT NULL,
             PRIMARY KEY (coverage_id, assignee_name)
         );
+
+        -- ── Rootly QC: the second platform ─────────────────────────────
+        -- Incidents are keyed by Rootly's own id and updated in place on each
+        -- fetch — unlike tickets there is no per-day keying: an incident is
+        -- one evolving record, and its QC is a live judgement of "now".
+        CREATE TABLE IF NOT EXISTS incidents (
+            id               TEXT PRIMARY KEY,   -- Rootly UUID
+            sequential_id    INTEGER,
+            title            TEXT,
+            url              TEXT,
+            status           TEXT,
+            kind             TEXT,
+            summary          TEXT,
+            severity         TEXT,               -- slug, e.g. sev1
+            severity_name    TEXT,
+            started_at       TEXT,
+            detected_at      TEXT,
+            mitigated_at     TEXT,
+            resolved_at      TEXT,
+            created_at       TEXT,
+            updated_at       TEXT,
+            slack_channel_id TEXT,
+            jira_key         TEXT,
+            jira_url         TEXT,
+            pylon_ticket_number  INTEGER,        -- resolved link (field or Jira join)
+            pylon_ticket_source  TEXT,           -- 'field' | 'jira' | NULL
+            commander_name   TEXT,
+            raw_json         TEXT,
+            fetched_at       TEXT
+        );
+
+        -- Deterministic IR checks; reasons carry the evidence per check.
+        CREATE TABLE IF NOT EXISTS incident_checks (
+            incident_id TEXT PRIMARY KEY,
+            ir1 TEXT, ir2 TEXT, ir3 TEXT, ir4 TEXT, ir5 TEXT, ir6 TEXT, ir7 TEXT,
+            reasons     TEXT,                    -- JSON {check: why}
+            checked_at  TEXT
+        );
+
+        -- AI IA checks, fingerprint-gated like ai_checks so an unchanged
+        -- incident (same Rootly content + Slack narrative) never re-bills.
+        CREATE TABLE IF NOT EXISTS incident_ai (
+            incident_id    TEXT PRIMARY KEY,
+            ia1 TEXT, ia2 TEXT, ia4 TEXT,        -- ia3 is pending-on, below
+            pending_on     TEXT,                 -- who/what it is blocked on
+            pending_party  TEXT,                 -- us | customer | engineering | none
+            ai_notes       TEXT,
+            fingerprint    TEXT,
+            checked_at     TEXT
+        );
         """)
 
         # Bring an existing volume up to date. "duplicate column name" is the
@@ -801,7 +851,8 @@ def latest_qc_run(date_str: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT id, status, prompt_tokens, output_tokens, cost_usd,"
-            " cached_tokens, thought_tokens, cost_estimated, model_used, finished_at"
+            " cached_tokens, thought_tokens, cost_estimated, model_used,"
+            " started_at, finished_at, total, scored, skipped"
             " FROM qc_runs WHERE date = ? ORDER BY id DESC LIMIT 1",
             (date_str,),
         ).fetchone()
