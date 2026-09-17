@@ -1103,8 +1103,9 @@ async def rootly_export_csv(user: dict = Depends(auth.require_user)):
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Incident", "Title", "Status", "Severity", "Started",
+                "Creator", "Functionality (Rootly)",
                 "Jira", "Pylon ticket", "Pylon ticket status",
-                "Slack channel", "Overall",
+                "Functionality (Pylon)", "Slack channel", "Overall",
                 *[rootlyqc.CHECKS[k] for k in
                   ("ir1", "ir2", "ir3", "ir4", "ir5", "ir6", "ir7",
                    "ia1", "ia2", "ia4")],
@@ -1112,8 +1113,11 @@ async def rootly_export_csv(user: dict = Depends(auth.require_user)):
     for i in rows:
         w.writerow([i.get("sequential_id"), i.get("title"), i.get("status"),
                     i.get("severity_name") or i.get("severity"),
-                    i.get("started_at"), i.get("jira_key"),
+                    i.get("started_at"),
+                    i.get("created_by_name"), i.get("functionality"),
+                    i.get("jira_key"),
                     i.get("pylon_ticket_number"), i.get("pylon_state"),
+                    i.get("pylon_functionality"),
                     i.get("slack_channel_url") or i.get("slack_channel_name"),
                     i.get("overall_result"),
                     *[i.get(k) for k in ("ir1", "ir2", "ir3", "ir4", "ir5",

@@ -181,8 +181,9 @@ async def fetch(triggered_by: str) -> dict:
                          mitigated_at, resolved_at, created_at, updated_at,
                          slack_channel_id, jira_key, jira_url,
                          pylon_ticket_number, pylon_ticket_source,
-                         commander_name, raw_json, fetched_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         commander_name, created_by_name, functionality,
+                         raw_json, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (i["id"], i.get("sequential_id"), i.get("title"),
                       i.get("url"), i.get("status"), i.get("kind"),
                       i.get("summary"), i.get("severity"),
@@ -193,7 +194,8 @@ async def fetch(triggered_by: str) -> dict:
                       i.get("jira_key"), i.get("jira_url"),
                       i.get("pylon_ticket_number"),
                       i.get("pylon_ticket_source"),
-                      i.get("commander_name"), i.get("raw_json"), now))
+                      i.get("commander_name"), i.get("created_by_name"),
+                      i.get("functionality"), i.get("raw_json"), now))
 
     await asyncio.to_thread(upsert, incidents)
 
@@ -242,6 +244,7 @@ def open_incidents() -> list[dict]:
                    -- NULL both when no ticket is linked and when the linked
                    -- ticket was never fetched; the UI separates those two.
                    pt.state AS pylon_state, pt.link AS pylon_link,
+                   pt.custom_fields AS pylon_custom_fields,
                    -- Slack channel identity, mined from the stored payload so
                    -- the row can link straight into the incident's channel.
                    json_extract(i.raw_json, '$.slack_channel_name')
@@ -343,10 +346,18 @@ def evaluate_incident(inc: dict, cfg: dict, now: datetime) -> tuple[dict, dict]:
                       "shared Jira issue names one")
 
     if enabled("ir5", cfg):
+        # Cadence is an expectation on ACTIVE response only. A mitigated or
+        # triaged incident needs no update rhythm — going quiet there is fine;
+        # lingering there too long is IR6's finding, not a comms failure.
+        status = (inc.get("status") or "").lower()
         hours = cfg["cadence_hours"].get(_severity_bucket(inc.get("severity")),
                                          cfg["cadence_hours"]["default"])
         last = _last_activity(inc)
-        if last is None:
+        if status != "started":
+            v["ir5"] = "N/A"
+            why["ir5"] = (f"Cadence applies while actively worked (started) — "
+                          f"'{status or 'unknown'}' needs no update rhythm")
+        elif last is None:
             v["ir5"], why["ir5"] = "N/A", "No activity timestamp available"
         else:
             age = (now - last).total_seconds() / 3600
@@ -678,7 +689,24 @@ def overall(inc: dict, cfg: dict | None = None) -> str | None:
     return "Needs Review" if ai_bad else "Pass"
 
 
+def _pylon_functionality_raw(custom_fields_json) -> str | None:
+    """The linked ticket's functionality VALUE (raw slug). The field slug comes
+    from the Rules mapping, never hardcoded; display goes through
+    funcheck.canon — logic stays on the raw value, per the tags discipline."""
+    import rules as qc_rules
+    slug = qc_rules.field("functionality") or "functionalities"
+    try:
+        cf = json.loads(custom_fields_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    v = cf.get(slug)
+    if isinstance(v, dict):
+        v = v.get("value")
+    return v or None
+
+
 def annotate(rows: list[dict]) -> list[dict]:
+    import funcheck
     cfg = rules_config()
     for inc in rows:
         inc["overall_result"] = overall(inc, cfg)
@@ -686,5 +714,20 @@ def annotate(rows: list[dict]) -> list[dict]:
             inc["reasons"] = json.loads(inc.get("reasons") or "{}")
         except json.JSONDecodeError:
             inc["reasons"] = {}
+        raw = _pylon_functionality_raw(inc.pop("pylon_custom_fields", None))
+        inc["pylon_functionality_raw"] = raw
+        inc["pylon_functionality"] = funcheck.canon("functionality", raw) \
+            if raw else None
+        # Rows fetched before the creator column existed still carry the
+        # payload — read it rather than showing a blank until the next fetch.
+        if not inc.get("created_by_name"):
+            try:
+                user = (json.loads(inc.get("raw_json") or "{}")
+                        .get("user") or {}).get("data") or {}
+                attrs = user.get("attributes") or {}
+                inc["created_by_name"] = (attrs.get("full_name")
+                                          or attrs.get("name"))
+            except (json.JSONDecodeError, AttributeError):
+                pass
         inc.pop("raw_json", None)
     return rows

@@ -74,6 +74,9 @@ _ADDED_COLUMNS = [
     # each clock keeps its own column.
     "ALTER TABLE tickets ADD COLUMN business_hours_first_response_seconds INTEGER",
     "ALTER TABLE tickets ADD COLUMN business_hours_resolution_seconds INTEGER",
+    # Rootly incident creator and its selected functionality names.
+    "ALTER TABLE incidents ADD COLUMN created_by_name TEXT",
+    "ALTER TABLE incidents ADD COLUMN functionality TEXT",
 ]
 
 
@@ -450,6 +453,8 @@ def init_db():
             pylon_ticket_number  INTEGER,        -- resolved link (field or Jira join)
             pylon_ticket_source  TEXT,           -- 'field' | 'jira' | NULL
             commander_name   TEXT,
+            created_by_name  TEXT,
+            functionality    TEXT,               -- Rootly functionality names
             raw_json         TEXT,
             fetched_at       TEXT
         );

@@ -74,6 +74,18 @@
     max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     vertical-align: bottom;
   }
+  .col-hint { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
+  #col-reset {
+    background: none; border: none; color: var(--color-accent); cursor: pointer;
+    font-size: 11px; font-family: inherit; padding: 0; text-decoration: underline dotted;
+  }
+  #head-row th { cursor: grab; user-select: none; }
+  #head-row th.dragging { opacity: .4; }
+  #head-row th.drop-target { border-bottom: 2px solid var(--color-accent); }
+  .trunc {
+    display: inline-block; max-width: 150px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+  }
   .slack-chan {
     display: inline-block; max-width: 150px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
@@ -200,12 +212,13 @@
 
     <div class="chips" id="chips"></div>
 
+    <div class="col-hint">
+      <span class="muted" style="font-size:11px">Drag a column header to rearrange — the order is remembered on this browser.</span>
+      <button id="col-reset" hidden>Reset column order</button>
+    </div>
     <div class="table-wrap"><table>
-      <thead><tr>
-        <th>#</th><th>Title</th><th>Severity</th><th>Status</th>
-        <th>Jira</th><th>Pylon</th><th>Pylon status</th><th>Slack</th><th>Pending on</th><th>Checks</th><th>QC</th>
-      </tr></thead>
-      <tbody id="rows"><tr><td colspan="11" class="empty">Loading…</td></tr></tbody>
+      <thead><tr id="head-row"></tr></thead>
+      <tbody id="rows"><tr><td colspan="14" class="empty">Loading…</td></tr></tbody>
     </table></div>
 
   </div>
@@ -528,52 +541,136 @@ function whyRows(i) {
   }).join("");
 }
 
+// ── the column registry: one renderer per column, order is data ─────────────
+// Reordering is a per-viewer convenience, so it lives in localStorage (wrapped
+// in try/catch — private windows throw). Unknown stored keys drop, new columns
+// append, so a saved order survives this table growing.
+const COLUMNS = {
+  num:        { label: "#", render: i => {
+    const url = safeHref(i.url);
+    return url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">INC-${esc(String(i.sequential_id ?? "—"))}</a>`
+               : `INC-${esc(String(i.sequential_id ?? "—"))}`; } },
+  title:      { label: "Title", render: i => esc(i.title || "(no title)") },
+  severity:   { label: "Severity", render: i =>
+    `<span class="sev ${sevCls(i.severity)}">${esc(i.severity_name || i.severity || "—")}</span>` },
+  status:     { label: "Status", render: i => esc((i.status || "—").replace(/_/g, " ")) },
+  creator:    { label: "Creator", render: i => esc(i.created_by_name || "—") },
+  func:       { label: "Functionality (Rootly)", render: i => i.functionality
+    ? `<span class="trunc" title="${esc(i.functionality)}">${esc(i.functionality)}</span>` : "—" },
+  jira:       { label: "Jira", render: i => {
+    const jira = safeHref(i.jira_url);
+    return jira ? `<a href="${esc(jira)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(i.jira_key)}</a>`
+                : esc(i.jira_key || "—"); } },
+  pylon:      { label: "Pylon", render: i => i.pylon_ticket_number
+    ? (safeHref(i.pylon_link)
+        ? `<a href="${esc(i.pylon_link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
+             title="Open #${esc(String(i.pylon_ticket_number))} in Pylon">#${esc(String(i.pylon_ticket_number))}</a>`
+        : `<span title="Link appears once this ticket is fetched into Pylon QC — a constructed URL could point at a mistyped number">#${esc(String(i.pylon_ticket_number))}</span>`)
+    : "—" },
+  pylonstate: { label: "Pylon status", render: i => !i.pylon_ticket_number ? "—"
+    : i.pylon_state
+      ? `<span class="pylon-state">${esc(i.pylon_state.replace(/_/g, " "))}</span>`
+      : `<span class="muted" style="font-size:11px" title="#${esc(String(i.pylon_ticket_number))} is linked but has never been fetched into Pylon QC, so its status is unknown here">not synced</span>` },
+  pylonfunc:  { label: "Functionality (Pylon)", render: i => i.pylon_functionality
+    ? `<span class="trunc" title="${esc(i.pylon_functionality)}">${esc(i.pylon_functionality)}</span>`
+    : (i.pylon_ticket_number && !i.pylon_state
+        ? `<span class="muted" style="font-size:11px">not synced</span>` : "—") },
+  slack:      { label: "Slack", render: i => i.slack_channel_id
+    ? `<a href="${esc(safeHref(i.slack_channel_url) || `https://slack.com/app_redirect?channel=${encodeURIComponent(i.slack_channel_id)}`)}"
+         target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
+         title="Open the incident's Slack channel — #${esc(i.slack_channel_name || i.slack_channel_id)}"
+         class="slack-chan">#${esc(i.slack_channel_name || i.slack_channel_id)}</a>`
+    : "—" },
+  pending:    { label: "Pending on", render: i => i.pending_on
+    ? `<span class="pending-tag" title="${esc(i.pending_on)}">${esc(i.pending_on)}</span>` : "—" },
+  checks:     { label: "Checks", render: i => {
+    const cells = MATRIX.map(([k]) => {
+      const st = cellState(i[k]);
+      const why = (i.reasons || {})[k] || "";
+      return `<span class="cell ${st}" title="${esc(checkLabels[k] || k)}: ${esc(i[k] ?? "not evaluated")}${why ? " — " + esc(why) : ""}">${GLYPH[st]}</span>`;
+    }).join("");
+    return `<span class="cells">${cells}</span>`; } },
+  qc:         { label: "QC", render: i => {
+    const g = gradeOf(i);
+    return `<span class="grade ${gradeCls(g)}">${esc(g)}</span>`; } },
+};
+const DEFAULT_ORDER = ["num", "title", "severity", "status", "creator", "func",
+                       "jira", "pylon", "pylonstate", "pylonfunc", "slack",
+                       "pending", "checks", "qc"];
+const ORDER_KEY = "rootly-col-order";
+
+function colOrder() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(ORDER_KEY) || "null"); } catch {}
+  if (!Array.isArray(stored)) return [...DEFAULT_ORDER];
+  const known = stored.filter(k => COLUMNS[k]);
+  return [...known, ...DEFAULT_ORDER.filter(k => !known.includes(k))];
+}
+
+function saveColOrder(order) {
+  try {
+    if (order.join() === DEFAULT_ORDER.join()) localStorage.removeItem(ORDER_KEY);
+    else localStorage.setItem(ORDER_KEY, JSON.stringify(order));
+  } catch {}
+}
+
+function renderHead() {
+  const order = colOrder();
+  $("head-row").innerHTML = order.map(k =>
+    `<th draggable="true" data-col="${esc(k)}"
+         title="Drag to move the ${esc(COLUMNS[k].label)} column">${esc(COLUMNS[k].label)}</th>`).join("");
+  $("col-reset").hidden = order.join() === DEFAULT_ORDER.join();
+
+  let dragKey = null;
+  $("head-row").querySelectorAll("th").forEach(th => {
+    th.addEventListener("dragstart", () => {
+      dragKey = th.dataset.col;
+      th.classList.add("dragging");
+    });
+    th.addEventListener("dragend", () => {
+      dragKey = null;
+      $("head-row").querySelectorAll("th").forEach(t =>
+        t.classList.remove("dragging", "drop-target"));
+    });
+    th.addEventListener("dragover", (e) => {
+      if (!dragKey || th.dataset.col === dragKey) return;
+      e.preventDefault();
+      th.classList.add("drop-target");
+    });
+    th.addEventListener("dragleave", () => th.classList.remove("drop-target"));
+    th.addEventListener("drop", (e) => {
+      e.preventDefault();
+      if (!dragKey || th.dataset.col === dragKey) return;
+      const order2 = colOrder().filter(k => k !== dragKey);
+      order2.splice(order2.indexOf(th.dataset.col), 0, dragKey);
+      saveColOrder(order2);
+      renderHead();
+      renderRows();
+    });
+  });
+}
+
+$("col-reset").addEventListener("click", () => {
+  saveColOrder([...DEFAULT_ORDER]);
+  renderHead();
+  renderRows();
+});
+
 function renderRows() {
+  const order = colOrder();
+  const span = order.length;
   const rows = visible();
   if (!rows.length) {
-    $("rows").innerHTML = `<tr><td colspan="11" class="empty">${
+    $("rows").innerHTML = `<tr><td colspan="${span}" class="empty">${
       incidents.length ? "No incidents match these filters."
                        : "No open incidents stored — re-fetch to pull them from Rootly."}</td></tr>`;
     return;
   }
   $("rows").innerHTML = rows.map(i => {
-    const url = safeHref(i.url);
-    const jira = safeHref(i.jira_url);
-    const g = gradeOf(i);
-    const cells = MATRIX.map(([k, short]) => {
-      const st = cellState(i[k]);
-      const why = (i.reasons || {})[k] || "";
-      return `<span class="cell ${st}" title="${esc(checkLabels[k] || k)}: ${esc(i[k] ?? "not evaluated")}${why ? " — " + esc(why) : ""}">${GLYPH[st]}</span>`;
-    }).join("");
     return `<tr class="inc-row" data-id="${esc(i.id)}" tabindex="0">
-      <td>${url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">INC-${esc(String(i.sequential_id ?? "—"))}</a>`
-                : `INC-${esc(String(i.sequential_id ?? "—"))}`}</td>
-      <td>${esc(i.title || "(no title)")}</td>
-      <td><span class="sev ${sevCls(i.severity)}">${esc(i.severity_name || i.severity || "—")}</span></td>
-      <td>${esc((i.status || "—").replace(/_/g, " "))}</td>
-      <td>${jira ? `<a href="${esc(jira)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(i.jira_key)}</a>`
-                 : esc(i.jira_key || "—")}</td>
-      <td>${i.pylon_ticket_number
-        ? (safeHref(i.pylon_link)
-            ? `<a href="${esc(i.pylon_link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
-                 title="Open #${esc(String(i.pylon_ticket_number))} in Pylon">#${esc(String(i.pylon_ticket_number))}</a>`
-            : `<span title="Link appears once this ticket is fetched into Pylon QC — a constructed URL could point at a mistyped number">#${esc(String(i.pylon_ticket_number))}</span>`)
-        : "—"}</td>
-      <td>${!i.pylon_ticket_number ? "—"
-        : i.pylon_state
-          ? `<span class="pylon-state">${esc(i.pylon_state.replace(/_/g, " "))}</span>`
-          : `<span class="muted" style="font-size:11px" title="#${esc(String(i.pylon_ticket_number))} is linked but has never been fetched into Pylon QC, so its status is unknown here">not synced</span>`}</td>
-      <td>${i.slack_channel_id
-        ? `<a href="${esc(safeHref(i.slack_channel_url) || `https://slack.com/app_redirect?channel=${encodeURIComponent(i.slack_channel_id)}`)}"
-             target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
-             title="Open the incident's Slack channel — #${esc(i.slack_channel_name || i.slack_channel_id)}"
-             class="slack-chan">#${esc(i.slack_channel_name || i.slack_channel_id)}</a>`
-        : "—"}</td>
-      <td>${i.pending_on ? `<span class="pending-tag" title="${esc(i.pending_on)}">${esc(i.pending_on)}</span>` : "—"}</td>
-      <td><span class="cells">${cells}</span></td>
-      <td><span class="grade ${gradeCls(g)}">${esc(g)}</span></td>
+      ${order.map(k => `<td>${COLUMNS[k].render(i)}</td>`).join("")}
     </tr>
-    <tr class="inc-detail" data-for="${esc(i.id)}" hidden><td colspan="11">
+    <tr class="inc-detail" data-for="${esc(i.id)}" hidden><td colspan="${span}">
       <div class="detail-grid">
         <div>
           <h4>Why each check landed there</h4>
@@ -619,7 +716,7 @@ async function load() {
     d = await QC.api("/api/rootly/incidents");
   } catch (e) {
     if (token !== loadToken) return;
-    $("rows").innerHTML = `<tr><td colspan="11" class="empty">${esc(e.message)}</td></tr>`;
+    $("rows").innerHTML = `<tr><td colspan="14" class="empty">${esc(e.message)}</td></tr>`;
     return;
   }
   if (token !== loadToken) return;
@@ -695,6 +792,7 @@ QC.ready.then(me => {
     $("qc-btn").hidden = false;
   }
 });
+renderHead();
 load();
 </script>
 </body>

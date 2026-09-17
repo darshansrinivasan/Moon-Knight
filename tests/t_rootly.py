@@ -49,6 +49,22 @@ check("flat severity flattens", flat["severity"], "sev2")
 check("missing severity is None", rootly._normalize(
     {"id": "i3", "attributes": {}})["severity"], None)
 
+# Creator and functionalities: the creator rides embedded in attributes; the
+# functionality NAMES come only from the page's `included` block via the
+# relationship ids — an id with no included entry must drop, not surface raw.
+rich = rootly._normalize(
+    {"id": "i4",
+     "attributes": {"user": {"data": {"id": "9", "attributes":
+                    {"full_name": "Mayuri Prakash"}}}},
+     "relationships": {"functionalities": {"data":
+                       [{"id": "f1"}, {"id": "f-unknown"}]}}},
+    {"f1": "Contract Creation : Stamp paper"})
+check("creator name flattens", rich["created_by_name"], "Mayuri Prakash")
+check("functionality resolves via included, unknown ids drop",
+      rich["functionality"], "Contract Creation : Stamp paper")
+check("no relationships at all is None, not an empty string",
+      rootly._normalize({"id": "i5", "attributes": {}})["functionality"], None)
+
 print()
 print("=== rules config: defaults, merge, junk tolerance ===")
 vault.set_raw_setting("rootly_rules_json", "", "t")
@@ -68,7 +84,7 @@ vault.set_raw_setting("rootly_rules_json", "", "t")
 
 print()
 print("=== IR checks: the verdicts that were designed, not implied ===")
-base = {"id": "x", "severity": "sev1", "severity_name": "SEV1",
+base = {"id": "x", "status": "started", "severity": "sev1", "severity_name": "SEV1",
         "jira_key": "SPD-1", "pylon_ticket_number": 76001,
         "pylon_ticket_source": "jira", "summary": "Real summary",
         "started_at": hours_ago(10), "created_at": hours_ago(10),
@@ -106,6 +122,16 @@ v, _ = rootlyqc.evaluate_incident(stale, cfg, NOW)
 check("5h idle fails sev1 cadence", v["ir5"], "Fail")
 v, _ = rootlyqc.evaluate_incident({**stale, "severity": "sev3"}, cfg, NOW)
 check("same idle passes the default bucket", v["ir5"], "Pass")
+
+# Cadence is an active-response expectation: any status but "started" reads
+# N/A — a mitigated incident going quiet is fine (its lingering is IR6's
+# finding), and 141 real mitigated incidents were double-punished before this.
+v, _ = rootlyqc.evaluate_incident({**stale, "status": "mitigated"}, cfg, NOW)
+check("mitigated incidents are exempt from cadence", v["ir5"], "N/A")
+v, _ = rootlyqc.evaluate_incident({**stale, "status": "in_triage"}, cfg, NOW)
+check("in_triage is exempt too", v["ir5"], "N/A")
+v, _ = rootlyqc.evaluate_incident({**stale, "status": None}, cfg, NOW)
+check("unknown status is exempt, not guessed at", v["ir5"], "N/A")
 
 # slack_last_message_ts is fresher activity than updated_at and wins.
 fresh_slack = {**stale, "raw_json": json.dumps(
@@ -188,6 +214,18 @@ check("linked + synced carries the ticket's state and link",
 check("linked but never-fetched reads NULL, not an invented state",
       by_id["inc2"]["pylon_state"], None)
 check("unlinked reads NULL too", by_id["inc5"]["pylon_state"], None)
+
+print()
+print("=== the linked ticket's functionality: raw slug in, label out ===")
+# Tags discipline: the stored VALUE is the slug; only display translates.
+check("raw slug extracted from custom_fields",
+      rootlyqc._pylon_functionality_raw(
+          json.dumps({"functionalities": {"value": "user_authentication_saml"}})),
+      "user_authentication_saml")
+check("junk custom_fields reads None",
+      rootlyqc._pylon_functionality_raw("{not json"), None)
+check("missing field reads None",
+      rootlyqc._pylon_functionality_raw("{}"), None)
 
 print()
 print("=== overall grade: rules fail, AI flags, pending stays pending ===")

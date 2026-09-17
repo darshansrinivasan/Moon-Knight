@@ -82,14 +82,21 @@ def _rel_attrs(value) -> dict:
     return attrs if isinstance(attrs, dict) else data
 
 
-def _normalize(item: dict) -> dict:
+def _normalize(item: dict, func_index: dict | None = None) -> dict:
     """One incident as a flat dict of exactly what Rootly QC stores.
 
     raw_json keeps the full attributes payload: the custom-field reader and
-    any future check can mine it without another fetch.
+    any future check can mine it without another fetch. `func_index` maps
+    functionality id → name from the page's JSON:API `included` block — the
+    incident itself only carries relationship ids.
     """
     a = item.get("attributes") or {}
     sev = _rel_attrs(a.get("severity"))
+    creator = _rel_attrs(a.get("user"))
+    func_ids = [d.get("id") for d in
+                (((item.get("relationships") or {}).get("functionalities")
+                  or {}).get("data") or []) if d.get("id")]
+    func_names = [n for n in ((func_index or {}).get(i) for i in func_ids) if n]
     return {
         "id": item.get("id"),
         "sequential_id": a.get("sequential_id"),
@@ -107,10 +114,19 @@ def _normalize(item: dict) -> dict:
         "created_at": a.get("created_at"),
         "updated_at": a.get("updated_at"),
         "slack_channel_id": a.get("slack_channel_id"),
+        "created_by_name": creator.get("full_name") or creator.get("name"),
+        "functionality": ", ".join(func_names) or None,
         "jira_key": a.get("jira_issue_key"),
         "jira_url": a.get("jira_issue_url"),
         "raw_json": json.dumps(a),
     }
+
+
+def _functionality_index(doc: dict) -> dict:
+    """id → name for the functionalities a page's `included` block carries."""
+    return {i["id"]: (i.get("attributes") or {}).get("name")
+            for i in (doc.get("included") or [])
+            if i.get("type") == "functionalities" and i.get("id")}
 
 
 async def list_open_incidents(exclude_statuses: list[str] | None = None) -> tuple:
@@ -130,9 +146,11 @@ async def list_open_incidents(exclude_statuses: list[str] | None = None) -> tupl
             "page[size]": str(PAGE_SIZE),
             "page[number]": str(page),
             "sort": "-created_at",
+            "include": "functionalities",
         })
         data = doc.get("data") or []
-        out.extend(_normalize(i) for i in data)
+        fidx = _functionality_index(doc)
+        out.extend(_normalize(i, fidx) for i in data)
         meta = doc.get("meta") or {}
         if not data or not meta.get("next_page"):
             break
@@ -146,13 +164,14 @@ async def list_open_incidents(exclude_statuses: list[str] | None = None) -> tupl
 async def get_incident(incident_id: str) -> dict | None:
     """One incident by id, normalized; None on 404 (deleted at source)."""
     try:
-        doc = await _get(f"/v1/incidents/{incident_id}")
+        doc = await _get(f"/v1/incidents/{incident_id}",
+                         {"include": "functionalities"})
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
             return None
         raise
     data = doc.get("data")
-    return _normalize(data) if data else None
+    return _normalize(data, _functionality_index(doc)) if data else None
 
 
 async def form_fields() -> list[dict]:
