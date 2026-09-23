@@ -65,6 +65,7 @@
   }
 
   .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .assignee-ms { position: relative; display: inline-block; }
   .assignee-ms[hidden] { display: none; }  /* display rule above would beat the hidden attribute */
   .assignee-ms-btn {
@@ -93,6 +94,8 @@
   }
   .assignee-ms-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
   .assignee-ms-item input { accent-color: var(--accent); cursor: pointer; }
+  .assignee-ms-item.is-zero { opacity: .45; }
+  .assignee-ms-count { margin-left: auto; font-variant-numeric: tabular-nums; }
   .assignee-ms-clear {
     display: block; width: 100%; text-align: left; padding: 6px 12px;
     background: none; border: none; color: var(--accent2); cursor: pointer;
@@ -188,12 +191,23 @@
         <span class="pill-label">Status</span>
       </div>
 
-      <div class="assignee-ms" id="group-ms" style="margin-bottom:12px" hidden>
-        <button class="assignee-ms-btn" id="group-ms-btn"
-                title="Filter by review-coverage group (APAC, EMEA, …) — matches each ticket's assignee against the Admin rosters">All groups</button>
-        <div class="assignee-ms-dropdown" id="group-ms-dropdown">
-          <button class="assignee-ms-clear" id="group-ms-clear">All groups</button>
-          <div id="group-ms-list"></div>
+      <div class="filter-row">
+        <div class="assignee-ms" id="group-ms" hidden>
+          <button class="assignee-ms-btn" id="group-ms-btn"
+                  title="Filter by review-coverage group (APAC, EMEA, …) — matches each ticket's assignee against the Admin rosters">All groups</button>
+          <div class="assignee-ms-dropdown" id="group-ms-dropdown">
+            <button class="assignee-ms-clear" id="group-ms-clear">All groups</button>
+            <div id="group-ms-list"></div>
+          </div>
+        </div>
+
+        <div class="assignee-ms" id="assignee-ms" hidden>
+          <button class="assignee-ms-btn" id="assignee-ms-btn"
+                  title="Filter by assignee — the count is how many of the currently shown tickets are theirs">All assignees</button>
+          <div class="assignee-ms-dropdown" id="assignee-ms-dropdown">
+            <button class="assignee-ms-clear" id="assignee-ms-clear">All assignees</button>
+            <div id="assignee-ms-list"></div>
+          </div>
         </div>
       </div>
 
@@ -223,6 +237,7 @@ let selStates = new Set();   // lowercase status values; empty = all open
 let gradeFilter = "";        // "" = all; "Pass" / "Fail" / "Needs Review" / "pending"
 let coverages = [];          // review-coverage groups (APAC, EMEA, …) from Admin
 const selectedGroups = new Set();   // coverage ids as strings, plus "ungrouped"
+const selectedAssignees = new Set(); // assignee names; "Unassigned" for the blanks
 let lastTickets = [];        // the fetched list; the grade filter subsets it client-side
 let lastSummary = { total: 0, pass: 0, fail: 0, review: 0, pending: 0 };
 let loadToken = 0;
@@ -286,15 +301,30 @@ function groupScoped() {
                              : lastTickets;
 }
 
+function assigneeOf(t) { return t.assignee_name || "Unassigned"; }
+
+// Intersection, not union: picking a group and then someone outside it shows
+// nothing rather than silently widening the group you chose.
+function assigneeScoped() {
+  const rows = groupScoped();
+  return selectedAssignees.size
+    ? rows.filter(t => selectedAssignees.has(assigneeOf(t)))
+    : rows;
+}
+
+function anyFilter() {
+  return selectedGroups.size > 0 || selectedAssignees.size > 0 || gradeFilter !== "";
+}
+
 function visibleTickets() {
-  const scoped = groupScoped();
+  const scoped = assigneeScoped();
   return gradeFilter ? scoped.filter(t => gradeOf(t) === gradeFilter) : scoped;
 }
 
 function renderChips() {
   let s = lastSummary;
-  if (selectedGroups.size) {
-    const rows = groupScoped();
+  if (selectedGroups.size || selectedAssignees.size) {
+    const rows = assigneeScoped();
     s = { total: rows.length,
           pass: rows.filter(t => gradeOf(t) === "Pass").length,
           fail: rows.filter(t => gradeOf(t) === "Fail").length,
@@ -317,7 +347,26 @@ function renderChips() {
 
 function renderRows(tickets) {
   if (!tickets.length) {
-    $("rows").innerHTML = `<tr><td colspan="7" class="empty">No open tickets match.</td></tr>`;
+    // Filters persist while you work, so an empty table has to say which of
+    // them emptied it rather than reading as "no open tickets".
+    const filtered = anyFilter() && lastTickets.length;
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">${
+      filtered
+        ? `${lastTickets.length} open ticket${lastTickets.length === 1 ? "" : "s"} loaded, `
+          + `all hidden by your filters. <button class="assignee-ms-clear" `
+          + `id="clear-filters" style="display:inline;width:auto;padding:0 4px">`
+          + `Clear filters</button>`
+        : "No open tickets match."}</td></tr>`;
+    const cf = document.getElementById("clear-filters");
+    if (cf) cf.addEventListener("click", () => {
+      selectedGroups.clear();
+      selectedAssignees.clear();
+      gradeFilter = "";
+      renderGroupFilter();
+      renderAssigneeFilter();
+      renderChips();
+      renderRows(visibleTickets());
+    });
     return;
   }
   $("rows").innerHTML = tickets.map(t => {
@@ -354,6 +403,7 @@ async function load() {
     lastTickets = list.tickets;
     lastSummary = list.summary;
     renderPills(list.state_counts);
+    renderAssigneeFilter();
     renderChips();
     renderRows(visibleTickets());
     const spent = prev.spend && prev.spend.runs
@@ -508,11 +558,74 @@ function renderGroupFilter() {
       if (cb.checked) selectedGroups.add(cb.value);
       else selectedGroups.delete(cb.value);
       updateGroupBtn();
+      renderAssigneeFilter();
       renderChips();
       renderRows(visibleTickets());
     }));
   updateGroupBtn();
 }
+
+function updateAssigneeBtn() {
+  const btn = $("assignee-ms-btn");
+  if (selectedAssignees.size === 0) btn.textContent = "All assignees";
+  else if (selectedAssignees.size === 1) btn.textContent = [...selectedAssignees][0];
+  else btn.textContent = `${selectedAssignees.size} assignees`;
+}
+
+// Options come from every loaded ticket so a name never disappears mid-edit;
+// the count beside it is within the CURRENT group scope, so you can see who is
+// actually available to narrow to.
+function renderAssigneeFilter() {
+  const ms = $("assignee-ms");
+  if (!lastTickets.length) { ms.hidden = true; return; }
+  ms.hidden = false;
+  const inScope = new Map();
+  groupScoped().forEach(t => {
+    const n = assigneeOf(t);
+    inScope.set(n, (inScope.get(n) || 0) + 1);
+  });
+  const names = [...new Set(lastTickets.map(assigneeOf))]
+    .sort((a, b) => (inScope.get(b) || 0) - (inScope.get(a) || 0)
+                    || a.localeCompare(b));
+  $("assignee-ms-list").innerHTML = names.map(n => {
+    const c = inScope.get(n) || 0;
+    return `<label class="assignee-ms-item${c ? "" : " is-zero"}">
+      <input type="checkbox" value="${esc(n)}"
+             ${selectedAssignees.has(n) ? "checked" : ""}>
+      ${esc(n)}<span class="assignee-ms-count muted">${c}</span>
+    </label>`;
+  }).join("");
+  $("assignee-ms-list").querySelectorAll("input").forEach(cb =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) selectedAssignees.add(cb.value);
+      else selectedAssignees.delete(cb.value);
+      updateAssigneeBtn();
+      renderChips();
+      renderRows(visibleTickets());
+    }));
+  updateAssigneeBtn();
+}
+
+(function wireAssigneeFilter() {
+  const btn = $("assignee-ms-btn"), drop = $("assignee-ms-dropdown");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = drop.classList.toggle("open");
+    btn.classList.toggle("open", open);
+  });
+  $("assignee-ms-clear").addEventListener("click", () => {
+    selectedAssignees.clear();
+    renderAssigneeFilter();
+    renderChips();
+    renderRows(visibleTickets());
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("assignee-ms").contains(e.target)) {
+      drop.classList.remove("open");
+      btn.classList.remove("open");
+    }
+  });
+})();
 
 (function wireGroupFilter() {
   const btn = $("group-ms-btn"), drop = $("group-ms-dropdown");
@@ -524,6 +637,7 @@ function renderGroupFilter() {
   $("group-ms-clear").addEventListener("click", () => {
     selectedGroups.clear();
     renderGroupFilter();
+    renderAssigneeFilter();
     renderChips();
     renderRows(visibleTickets());
   });
