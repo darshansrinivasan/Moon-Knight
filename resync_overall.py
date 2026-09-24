@@ -176,8 +176,29 @@ def run(date_str: str | None = None) -> dict:
             ", ".join(f"{k} ×{v}" for k, v in sorted(overall_changes.items())) or "-",
         )
 
+    for new_overall, tid in overall_updates:
+        try:
+            db.record_grade_event(tid, db.effective_grade(tid), "machine",
+                                  f"resync recomputed {new_overall}")
+        except Exception:
+            logger.exception("Could not log grade change for %s", tid)
+
+    # The verdicts this pass just rewrote are exactly what human sign-offs were
+    # attested against, so re-check them here: a Pass signed off yesterday must
+    # not keep overriding an r11 that has since aged into Fail.
+    # Every ticket this pass looked at, not just the ones whose OVERALL moved:
+    # r4 can go Pass→Fail on a ticket that was already failing, which changes
+    # nothing about the grade but everything about what the reviewer attested.
+    try:
+        import review
+        suspended = review.refresh_stale([r["ticket_id"] for r in rows])["marked"]
+    except Exception:
+        logger.exception("Could not refresh sign-off staleness")
+        suspended = 0
+
     return {
         "examined": len(rows),
+        "reviews_suspended": suspended,
         "overall_updated": len(overall_updates),
         "notes_updated": len(notes_updates),
         "r10_updated": len(r10_updates),

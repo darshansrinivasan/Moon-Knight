@@ -115,10 +115,20 @@ def list_open(start: str | None = None, end: str | None = None,
                    COALESCE(NULLIF(TRIM(rev.reviewer_name), ''),
                             rev.reviewer_email) AS signed_off_by,
                    rev.note AS review_note,
+                   lapsed.stale_reason AS review_lapsed,
                    ac.checked_at
             FROM tickets t
             LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
             LEFT JOIN ({LATEST_REVIEW_SQL}) rev ON rev.ticket_id = t.id
+            -- A sign-off suspended by a later check change: the grade below is
+            -- the machine's again, and this is why the ticket is back.
+            LEFT JOIN (
+                SELECT r.ticket_id, r.stale_reason
+                FROM ticket_reviews r
+                JOIN (SELECT ticket_id, MAX(id) AS max_id
+                      FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
+                WHERE r.stale_at IS NOT NULL
+            ) lapsed ON lapsed.ticket_id = t.id
             WHERE {where}
             ORDER BY t.fetch_date DESC, t.number DESC
         """, params).fetchall()
@@ -156,6 +166,7 @@ def list_open(start: str | None = None, end: str | None = None,
             # review of Pass/Fail always is, per EFFECTIVE_GRADE_SQL.
             "signed_off_by": r["signed_off_by"],
             "review_note": r["review_note"] or None,
+            "review_lapsed": r["review_lapsed"],
             "checked_at": r["checked_at"],
         })
 

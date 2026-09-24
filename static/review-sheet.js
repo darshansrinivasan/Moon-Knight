@@ -140,6 +140,30 @@
   .rvs-btn.pass { border-color: color-mix(in srgb, var(--pass) 50%, transparent); color: var(--pass); }
   .rvs-btn.fail { border-color: color-mix(in srgb, var(--fail) 50%, transparent); color: var(--fail); }
   .rvs-note-cell { color: var(--muted); font-size: 12px; }
+  .rvs-hist { display: flex; flex-direction: column; gap: 0; margin-top: 4px; }
+  .rvs-hist-row {
+    display: grid; grid-template-columns: 124px 1fr; gap: 10px;
+    padding: 8px 0; font-size: 12.5px;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-text) 6%, transparent);
+  }
+  .rvs-hist-row:last-child { border-bottom: 0; }
+  /* The stamp wraps rather than running under the grade beside it — four
+     events in the same minute used to collide into unreadable overlap. */
+  .rvs-hist-when { color: var(--muted); font-size: 11px; line-height: 1.3;
+                   overflow-wrap: anywhere; }
+  .rvs-hist-move { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+  .rvs-hist-detail { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+  .rvs-hist-src {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+    padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+    color: var(--muted); white-space: nowrap;
+  }
+  .rvs-tally { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+  .rvs-tally .t {
+    font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .rvs-tally .t b { color: var(--text); }
   .rvs-empty { color: var(--muted); padding: 20px 0; font-size: 12.5px; }
   .rvs-modal-scrim { position: fixed; inset: 0; z-index: 60;
     background: rgba(0,0,0,.45);
@@ -400,7 +424,73 @@
              title="No frozen record for ${esc(state.date)} yet — the Report Card has nothing to show until the day's snapshot exists">Open in Report Card</button>`}
       ${pylonLink || state.pylonLink
         ? `<a class="rvs-btn" href="${esc(pylonLink || state.pylonLink)}" target="_blank"
-             rel="noopener noreferrer">Open in Pylon</a>` : ""}`;
+             rel="noopener noreferrer">Open in Pylon</a>` : ""}
+      <button class="rvs-btn" id="rvs-hist-btn" title="Every time this ticket's grade moved">History</button>`;
+    wireHistory(state.ticketId || (t && t.ticket_id));
+  }
+
+  // ── grade history ─────────────────────────────────────────────────────────
+  // The stored grade is only the latest one: ai_checks is overwritten on every
+  // re-score, so "has this ticket flip-flopped?" is unanswerable without the
+  // append-only log this reads.
+  const HIST_SRC = { machine: "QC run", review: "sign-off", lapsed: "expired" };
+
+  function wireHistory(ticketId) {
+    const btn = $("rvs-hist-btn");
+    if (!btn || !ticketId) return;
+    btn.addEventListener("click", async () => {
+      const body = $("rvs-body");
+      let host = document.getElementById("rvs-hist-section");
+      if (host) {                       // second click closes it again
+        host.remove();
+        return;
+      }
+      host = document.createElement("section");
+      host.className = "rvs-section";
+      host.id = "rvs-hist-section";
+      host.innerHTML = `<div class="rvs-section-title">Grade history</div>
+        <div class="rvs-note-cell">Loading…</div>`;
+      body.prepend(host);
+      host.scrollIntoView({ block: "nearest" });
+      try {
+        const d = await QC.api(`/api/ticket/${encodeURIComponent(ticketId)}/history`);
+        host.innerHTML = renderHistory(d);
+      } catch (e) {
+        host.innerHTML = `<div class="rvs-section-title">Grade history</div>
+          <div class="rvs-empty">${esc(e.message)}</div>`;
+      }
+    });
+  }
+
+  function renderHistory(d) {
+    const ev = d.events || [];
+    if (!ev.length) {
+      return `<div class="rvs-section-title">Grade history</div>
+        <div class="rvs-note-cell">No grade change recorded yet. The log starts
+        the first time this ticket is scored or signed off after the history
+        feature shipped.</div>`;
+    }
+    const counts = d.counts || {};
+    const tally = Object.keys(counts).sort().map(k =>
+      `<span class="t">${esc(k)} <b>×${counts[k]}</b></span>`).join("");
+    const rows = ev.slice().reverse().map(e => `
+      <div class="rvs-hist-row">
+        <div class="rvs-hist-when">${esc(QC.fmtTime ? QC.fmtTime(e.at) : (e.at || "").slice(0, 16))}</div>
+        <div>
+          <div class="rvs-hist-move">
+            ${e.prev_grade ? `<span class="${GRADE_CLS[e.prev_grade] || "g-none"}">${esc(e.prev_grade)}</span>
+                              <span class="arrow" style="color:var(--muted)">→</span>` : ""}
+            <span class="${GRADE_CLS[e.grade] || "g-none"}">${esc(e.grade || "—")}</span>
+            <span class="rvs-hist-src">${esc(HIST_SRC[e.source] || e.source || "")}</span>
+          </div>
+          ${e.detail ? `<div class="rvs-hist-detail">${esc(e.detail)}${
+            e.actor ? ` · ${esc(e.actor)}` : ""}</div>` : ""}
+        </div>
+      </div>`).join("");
+    return `<div class="rvs-section-title">Grade history — ${ev.length} entr${
+      ev.length === 1 ? "y" : "ies"}, ${d.changes} change${d.changes === 1 ? "" : "s"}</div>
+      <div class="rvs-tally">${tally}</div>
+      <div class="rvs-hist">${rows}</div>`;
   }
 
   function dashLink(d) {
@@ -540,8 +630,10 @@
       : "No sign-off yet. Your verdict overrides the frozen grade everywhere.";
     $("rvs-foot").innerHTML = `
       <span class="rvs-who">${esc(who)}</span>
+      <button class="rvs-btn" id="rvs-hist-btn" title="Every time this ticket's grade moved">History</button>
       <button class="rvs-btn" id="rvs-review-btn">${t.review_decision ? "Change verdict" : "Review"}</button>`;
     $("rvs-review-btn").addEventListener("click", () => openModal(t));
+    wireHistory(t.ticket_id);
 
     loadConversation(t.ticket_id);
   }

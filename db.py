@@ -63,6 +63,12 @@ _ADDED_COLUMNS = [
     "ALTER TABLE csat_events ADD COLUMN account_id TEXT",
     "ALTER TABLE day_snapshots ADD COLUMN created_by TEXT",
     "ALTER TABLE ticket_reviews ADD COLUMN check_overrides TEXT",
+    # A sign-off is an attestation about the evidence the reviewer saw, not a
+    # permanent verdict: these record WHAT was true at sign-off, and when a
+    # graded check later flips, the review stops overriding the machine.
+    "ALTER TABLE ticket_reviews ADD COLUMN checks_at_review TEXT",
+    "ALTER TABLE ticket_reviews ADD COLUMN stale_at TEXT",
+    "ALTER TABLE ticket_reviews ADD COLUMN stale_reason TEXT",
     # Pylon's own first-response / resolution clocks. Reconstructing them
     # from created_at → first support message made Slack/chat tickets look
     # like a 1-minute FRT while the issue page showed hours.
@@ -413,6 +419,23 @@ def init_db():
 
         -- Region / group coverage: one reviewer owns a named set of assignees.
         -- App admins bypass this and can review every ticket.
+        -- Every change to a ticket's grade, append-only. ai_checks keeps one
+        -- row per ticket and is overwritten on each re-score, so without this
+        -- a ticket that passed on Monday, failed on Wednesday and passed again
+        -- on Friday looks exactly like one that never moved.
+        CREATE TABLE IF NOT EXISTS ticket_grade_history (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id  TEXT NOT NULL,
+            at         TEXT NOT NULL,
+            grade      TEXT,              -- the EFFECTIVE grade after this event
+            prev_grade TEXT,
+            source     TEXT,              -- machine | review | lapsed
+            detail     TEXT,
+            actor      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_grade_hist_ticket
+            ON ticket_grade_history(ticket_id, id);
+
         CREATE TABLE IF NOT EXISTS review_coverages (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             name            TEXT NOT NULL,
@@ -694,6 +717,72 @@ def get_day_tickets(date_str: str):
             ORDER BY t.number
         """, (date_str, *extra)).fetchall()
         return [dict(r) for r in rows]
+
+
+def effective_grade(ticket_id: str, conn=None) -> str | None:
+    """What this ticket currently reads as, through the ONE shared precedence
+    rule — a live sign-off wins, else the machine verdict. Deferred import:
+    leaderboard imports this module."""
+    from leaderboard import EFFECTIVE_GRADE_SQL, LATEST_REVIEW_SQL
+    sql = f"""
+        SELECT {EFFECTIVE_GRADE_SQL} AS g
+        FROM tickets t
+        LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
+        LEFT JOIN ({LATEST_REVIEW_SQL}) rev ON rev.ticket_id = t.id
+        WHERE t.id = ?"""
+    if conn is not None:
+        row = conn.execute(sql, (ticket_id,)).fetchone()
+    else:
+        with get_conn() as c:
+            row = c.execute(sql, (ticket_id,)).fetchone()
+    return row["g"] if row else None
+
+
+def record_grade_event(ticket_id: str, grade: str | None, source: str,
+                       detail: str = "", actor: str = "", conn=None) -> bool:
+    """Append a grade change, but only when the grade actually moved.
+
+    Called from every path that can change what a ticket reads as — scoring, a
+    resync, a sign-off, a sign-off lapsing. Silent no-op when the grade is
+    unchanged, so a nightly re-run over a quiet backlog writes nothing and the
+    history stays a list of real events rather than a heartbeat.
+
+    Takes an optional open connection: the scorer already holds the day's write
+    transaction, and opening a second one here would deadlock against it.
+    """
+    def _write(c):
+        prev = c.execute(
+            "SELECT grade FROM ticket_grade_history WHERE ticket_id = ?"
+            " ORDER BY id DESC LIMIT 1", (ticket_id,)).fetchone()
+        prev_grade = prev["grade"] if prev else None
+        if prev is not None and prev_grade == grade:
+            return False
+        c.execute(
+            "INSERT INTO ticket_grade_history"
+            " (ticket_id, at, grade, prev_grade, source, detail, actor)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ticket_id, datetime.now(timezone.utc).isoformat(), grade,
+             prev_grade, source, detail[:300], actor[:120]))
+        return True
+
+    if conn is not None:
+        return _write(conn)
+    with get_conn() as c:
+        return _write(c)
+
+
+def grade_history(ticket_id: str) -> dict:
+    """The ticket's grade timeline, plus how often it landed on each verdict."""
+    with get_conn() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT at, grade, prev_grade, source, detail, actor"
+            " FROM ticket_grade_history WHERE ticket_id = ? ORDER BY id",
+            (ticket_id,))]
+    counts: dict = {}
+    for r in rows:
+        if r["grade"]:
+            counts[r["grade"]] = counts.get(r["grade"], 0) + 1
+    return {"events": rows, "counts": counts, "changes": max(len(rows) - 1, 0)}
 
 
 def get_tickets_by_ids(ids: list[str]) -> list[dict]:

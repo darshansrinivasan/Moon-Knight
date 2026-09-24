@@ -10,9 +10,12 @@ admins (super-admins) can review every ticket regardless of coverage.
 """
 
 import json
+import logging
 from datetime import datetime, timezone
 
 import db
+
+logger = logging.getLogger(__name__)
 
 DECISIONS = {"Pass", "Fail"}
 
@@ -192,9 +195,17 @@ def apply_effective_grades(tickets: list[dict]) -> list[dict]:
     reviews = latest_reviews([t["id"] for t in tickets])
     for t in tickets:
         ai = t.get("overall_result")
-        rev = _active_review(reviews.get(t["id"]))
+        raw_rev = reviews.get(t["id"])
+        rev = _active_review(raw_rev)
         t["ai_result"] = ai
         t["overall_result"] = rev["decision"] if rev else ai
+        stale = raw_rev if (raw_rev and raw_rev.get("stale_at")) else None
+        t["review_stale"] = {
+            "decision": stale["decision"],
+            "reviewer_name": stale.get("reviewer_name") or stale.get("reviewer_email"),
+            "reviewed_at": stale.get("reviewed_at"),
+            "reason": stale.get("stale_reason") or "a check changed since sign-off",
+        } if stale else None
         t["review"] = {
             "decision": rev["decision"],
             "kept_ai": bool(rev["kept_ai"]),
@@ -217,11 +228,133 @@ def annotate_tickets(tickets: list[dict], user: dict) -> list[dict]:
     return tickets
 
 
+# The checks a sign-off is an attestation ABOUT. Advisory r10 is excluded on
+# purpose (it never moves a grade) and so is a2, which is a sentiment reading
+# rather than a verdict.
+GRADED_CHECK_KEYS = ("r1", "r2", "r3", "r4", "r5", "r7", "r8", "r9", "r11",
+                     "a1", "a3", "a4", "a5")
+
+
+def snapshot_checks(ticket_id: str) -> dict:
+    """The graded verdicts as they stand right now, for pinning to a sign-off."""
+    with db.get_conn() as conn:
+        row = conn.execute("""
+            SELECT rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9, rc.r11,
+                   ac.a1, ac.a3, ac.a4, ac.a5
+            FROM tickets t
+            LEFT JOIN rule_checks rc ON rc.ticket_id = t.id
+            LEFT JOIN ai_checks   ac ON ac.ticket_id = t.id
+            WHERE t.id = ?""", (ticket_id,)).fetchone()
+    if not row:
+        return {}
+    return {k: row[k] for k in GRADED_CHECK_KEYS}
+
+
+def stale_against(snapshot: dict, current: dict, overrides: dict | None) -> str:
+    """Why a sign-off no longer holds, or "" if it still does.
+
+    A reviewer who adjudicated a check has RULED on it — a later machine change
+    there is not new information, it is the thing they overruled. Checks they
+    did not touch are the ones that can go stale: a response-time or
+    follow-through breach that happened after sign-off is a new finding, not a
+    reversal of their judgement.
+    """
+    if not snapshot:
+        return ""
+    ruled = set(overrides or {})
+    for key in GRADED_CHECK_KEYS:
+        if key in ruled:
+            continue
+        was, now = snapshot.get(key), current.get(key)
+        if was == now:
+            continue
+        # A check that was never evaluated and still is not tells us nothing.
+        if was in (None, "") and now in (None, ""):
+            continue
+        return f"{key.upper()} {was or '—'} → {now or '—'} since sign-off"
+    return ""
+
+
 def _active_review(rev: dict | None) -> dict | None:
-    """Latest row wins, but Revert clears the human grade back to AI."""
+    """Latest row wins; Revert clears it, and staleness suspends it.
+
+    A stale review keeps its row — who signed off, when, and why is history
+    worth keeping — but stops deciding the grade, so the machine verdict shows
+    again and the ticket returns to the review queue.
+    """
     if not rev or rev.get("decision") not in DECISIONS:
         return None
+    if rev.get("stale_at"):
+        return None
     return rev
+
+
+def refresh_stale(ticket_ids: list[str] | None = None) -> dict:
+    """Mark sign-offs whose covered checks have since moved.
+
+    Called after any recompute of the stored verdicts (see resync_overall), so
+    the board never shows a Pass that the machine has already retracted.
+
+    Staleness is ONE-WAY on purpose. A check that fails and then recovers has
+    still changed the ticket underneath the reviewer, and silently restoring
+    their old verdict would resurrect a judgement about evidence that no longer
+    exists — and would flap the grade every time a check oscillates. Signing
+    off again is how it clears, which is also what puts a fresh note and a
+    fresh timestamp on the record.
+    """
+    where, params = "", ()
+    if ticket_ids is not None:
+        if not ticket_ids:
+            return {"checked": 0, "marked": 0}
+        where = f"AND r.ticket_id IN ({','.join('?' * len(ticket_ids))})"
+        params = tuple(ticket_ids)
+    with db.get_conn() as conn:
+        rows = conn.execute(f"""
+            SELECT r.id, r.ticket_id, r.checks_at_review, r.check_overrides,
+                   rc.r1, rc.r2, rc.r3, rc.r4, rc.r5, rc.r7, rc.r8, rc.r9, rc.r11,
+                   ac.a1, ac.a3, ac.a4, ac.a5
+            FROM ticket_reviews r
+            JOIN (SELECT ticket_id, MAX(id) AS max_id
+                  FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
+            JOIN tickets t         ON t.id = r.ticket_id AND t.deleted_at IS NULL
+            LEFT JOIN rule_checks rc ON rc.ticket_id = r.ticket_id
+            LEFT JOIN ai_checks   ac ON ac.ticket_id = r.ticket_id
+            WHERE r.decision IN ('Pass','Fail') AND r.stale_at IS NULL {where}
+        """, params).fetchall()
+
+        marked = []
+        for row in rows:
+            t = dict(row)
+            try:
+                snap = json.loads(t.get("checks_at_review") or "null")
+            except json.JSONDecodeError:
+                snap = None
+            # Sign-offs recorded before this existed have nothing to compare
+            # against; leave them authoritative rather than invalidating work
+            # retroactively on a guess.
+            if not isinstance(snap, dict) or not snap:
+                continue
+            current = {k: t.get(k) for k in GRADED_CHECK_KEYS}
+            reason = stale_against(snap, current,
+                                   parse_check_overrides(t.get("check_overrides")))
+            if reason:
+                marked.append((datetime.now(timezone.utc).isoformat(), reason, t["id"]))
+        if marked:
+            conn.executemany(
+                "UPDATE ticket_reviews SET stale_at = ?, stale_reason = ?"
+                " WHERE id = ?", marked)
+            # The sign-off stopped deciding, so the ticket now reads as the
+            # machine's verdict again — that is a grade change worth logging.
+            by_row = {t["id"]: t["ticket_id"] for t in (dict(r) for r in rows)}
+            for _, reason, row_id in marked:
+                tid = by_row.get(row_id)
+                if tid:
+                    db.record_grade_event(
+                        tid, db.effective_grade(tid, conn), "lapsed",
+                        reason, conn=conn)
+    if marked:
+        logger.info("Sign-offs suspended by a later check change: %d", len(marked))
+    return {"checked": len(rows), "marked": len(marked)}
 
 
 def _ticket_row(ticket_id: str) -> dict | None:
@@ -337,15 +470,24 @@ def accept_ticket(ticket_id: str, user: dict, decision: str, note: str = "",
         "reviewed_at": _now(),
         "check_overrides": overrides,
     }
+    # Pin the evidence this sign-off is about. A Revert asserts nothing, so it
+    # carries no snapshot and can never go stale.
+    snapshot = snapshot_checks(ticket_id) if record["decision"] != "Revert" else None
     with db.get_conn() as conn:
         conn.execute(
             "INSERT INTO ticket_reviews"
             " (ticket_id, decision, kept_ai, reviewer_email, reviewer_name,"
-            "  note, reviewed_at, check_overrides)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "  note, reviewed_at, check_overrides, checks_at_review)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (record["ticket_id"], record["decision"], record["kept_ai"],
              record["reviewer_email"], record["reviewer_name"],
              record["note"], record["reviewed_at"],
-             json.dumps(overrides) if overrides else None),
+             json.dumps(overrides) if overrides else None,
+             json.dumps(snapshot) if snapshot else None),
         )
+        db.record_grade_event(
+            ticket_id, db.effective_grade(ticket_id, conn), "review",
+            (f"{record['decision']} — {record['note']}" if record["note"]
+             else record["decision"]),
+            record["reviewer_name"] or record["reviewer_email"], conn=conn)
     return record

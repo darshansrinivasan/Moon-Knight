@@ -32,12 +32,17 @@ UNTEAMED = "No team"
 # no caller input is interpolated. Public because every surface that reports a
 # grade must use these — reading ai_checks directly is what previously made two
 # pages disagree. The underscored aliases below are kept for existing callers.
+# A STALE review is excluded here rather than anywhere else: a sign-off covers
+# the check verdicts the reviewer saw, so once one of those flips the machine
+# grade takes over again and the ticket returns to the queue. The row survives
+# as history — only its authority lapses.
 LATEST_REVIEW_SQL = """
     SELECT r.ticket_id, r.decision, r.reviewer_name, r.reviewer_email, r.note,
            r.check_overrides
     FROM ticket_reviews r
     JOIN (SELECT ticket_id, MAX(id) AS max_id
           FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
+    WHERE r.stale_at IS NULL
 """
 EFFECTIVE_GRADE_SQL = (
     "COALESCE(CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,"

@@ -997,6 +997,11 @@ def _write_results(batch: list[dict], results: list[dict], now: str) -> tuple[in
                 r.get("a1"), r.get("a2"), r.get("a3"), r.get("a4"), r.get("a5"),
                 full_note, overall, now, fingerprint,
             ))
+            # The grade of record moved (or did not) — log it on the same
+            # connection, which already holds this run's write transaction.
+            db.record_grade_event(
+                t["id"], db.effective_grade(t["id"], conn), "machine",
+                f"QC run scored {overall}", conn=conn)
             scored += 1
     return scored, skipped
 

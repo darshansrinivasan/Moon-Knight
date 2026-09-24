@@ -8,6 +8,15 @@ import vault
 db.init_db()
 NOW = "2026-08-26T10:00:00+00:00"
 
+
+def _rows_for(ticket_id):
+    """One ticket in the shape the dashboard hands to apply_effective_grades."""
+    with db.get_conn() as c:
+        return c.execute("""
+            SELECT t.id, t.number, ac.overall_result
+            FROM tickets t LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
+            WHERE t.id = ?""", (ticket_id,)).fetchall()
+
 # 63 tickets: 23 archived (excluded), 40 scored — exactly production's shape.
 with db.get_conn() as c:
     for i in range(63):
@@ -170,6 +179,117 @@ assert rec["note"] == "premature closure"
 rec = review.accept_ticket("t30", _admin, "revert", "")
 assert rec["decision"] == "Revert"
 print("PASS: noted sign-off recorded; bare revert still allowed")
+
+print()
+print("=== a sign-off expires when a check it did not rule on changes ===")
+# The failure this pins: a ticket signed off Pass on Monday keeps reading Pass
+# on every surface while r11 ages into Fail on Wednesday, because the review
+# overrode the machine unconditionally.
+import json as _json
+import resync_overall
+
+with db.get_conn() as c:
+    c.execute("INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,state,"
+              "assignee_name) VALUES ('sx',9001,'2026-08-26','Stale case',"
+              "'waiting_on_customer','Alice')")
+    c.execute("INSERT OR REPLACE INTO rule_checks (ticket_id,fetch_date,r1,r4,r11,"
+              "checked_at) VALUES ('sx','2026-08-26','Pass','Pass','Pass',?)", (NOW,))
+    c.execute("INSERT OR REPLACE INTO ai_checks (ticket_id,fetch_date,a1,a3,a4,a5,"
+              "overall_result,checked_at) VALUES ('sx','2026-08-26','Pass','Good',"
+              "'Pass','Pass','Pass',?)", (NOW,))
+
+review.accept_ticket("sx", _admin, "Pass", "looks handled")
+snap = None
+with db.get_conn() as c:
+    snap = _json.loads(c.execute("SELECT checks_at_review FROM ticket_reviews"
+                                 " WHERE ticket_id='sx'").fetchone()[0])
+assert snap.get("r11") == "Pass", snap
+print("PASS: the sign-off pinned the verdicts it was made against")
+
+t = review.apply_effective_grades(
+    [dict(r) for r in _rows_for("sx")])[0]
+assert t["overall_result"] == "Pass" and t["review"], t
+print("PASS: while nothing has changed, the sign-off still decides the grade")
+
+# r11 ages into Fail — a check the reviewer never ruled on
+with db.get_conn() as c:
+    c.execute("UPDATE rule_checks SET r11='Fail' WHERE ticket_id='sx'")
+    c.execute("UPDATE ai_checks SET overall_result='Fail' WHERE ticket_id='sx'")
+marked = review.refresh_stale(["sx"])
+assert marked["marked"] == 1, marked
+
+t = review.apply_effective_grades([dict(r) for r in _rows_for("sx")])[0]
+assert t["overall_result"] == "Fail", t["overall_result"]
+assert t["review"] is None, "a stale sign-off must stop deciding the grade"
+assert t["review_stale"] and "R11" in t["review_stale"]["reason"], t["review_stale"]
+print("PASS: machine grade returns, and the lapsed sign-off is still visible")
+print(f"      reason surfaced: {t['review_stale']['reason']}")
+
+# a check the reviewer DID adjudicate stays ruled on
+with db.get_conn() as c:
+    c.execute("DELETE FROM ticket_reviews WHERE ticket_id='sx'")
+    c.execute("UPDATE rule_checks SET r4='Pass', r11='Pass' WHERE ticket_id='sx'")
+review.accept_ticket("sx", _admin, "Pass", "r4 breach was our fault, not theirs",
+                     check_overrides={"r4": "Pass"})
+with db.get_conn() as c:
+    c.execute("UPDATE rule_checks SET r4='Fail' WHERE ticket_id='sx'")
+assert review.refresh_stale(["sx"])["marked"] == 0, \
+    "a check the reviewer explicitly ruled on must not expire their sign-off"
+print("PASS: adjudicated checks stay pinned; only unruled checks expire it")
+
+# staleness does not undo itself when the check recovers
+with db.get_conn() as c:
+    c.execute("DELETE FROM ticket_reviews WHERE ticket_id='sx'")
+    c.execute("UPDATE rule_checks SET r4='Pass', r11='Pass' WHERE ticket_id='sx'")
+review.accept_ticket("sx", _admin, "Pass", "fresh look")
+with db.get_conn() as c:
+    c.execute("UPDATE rule_checks SET r11='Fail' WHERE ticket_id='sx'")
+assert review.refresh_stale(["sx"])["marked"] == 1
+with db.get_conn() as c:                      # the agent replies; r11 recovers
+    c.execute("UPDATE rule_checks SET r11='Pass' WHERE ticket_id='sx'")
+review.refresh_stale(["sx"])
+t = review.apply_effective_grades([dict(r) for r in _rows_for("sx")])[0]
+assert t["review"] is None and t["review_stale"], \
+    "a recovered check must not silently resurrect the old sign-off"
+print("PASS: staleness is one-way — re-signing is what clears it")
+
+# sign-offs predating the snapshot column are left authoritative
+with db.get_conn() as c:
+    c.execute("UPDATE ticket_reviews SET checks_at_review=NULL WHERE ticket_id='sx'")
+    c.execute("UPDATE rule_checks SET r11='Fail' WHERE ticket_id='sx'")
+assert review.refresh_stale(["sx"])["marked"] == 0, \
+    "a review with nothing pinned must not be invalidated on a guess"
+print("PASS: legacy sign-offs with no snapshot are left alone")
+
+print()
+print("=== grade history: only real moves, counted per verdict ===")
+with db.get_conn() as c:
+    c.execute("DELETE FROM ticket_reviews WHERE ticket_id='sx'")
+    c.execute("DELETE FROM ticket_grade_history WHERE ticket_id='sx'")
+    c.execute("UPDATE rule_checks SET r4='Pass', r11='Pass' WHERE ticket_id='sx'")
+    c.execute("UPDATE ai_checks SET overall_result='Fail' WHERE ticket_id='sx'")
+
+db.record_grade_event("sx", db.effective_grade("sx"), "machine", "QC run scored Fail")
+db.record_grade_event("sx", db.effective_grade("sx"), "machine", "QC run scored Fail")
+h = db.grade_history("sx")
+assert len(h["events"]) == 1, f"an unchanged re-run must not log: {h['events']}"
+print("PASS: a re-run that changes nothing writes no history")
+
+review.accept_ticket("sx", _admin, "Pass", "overriding the fail")
+h = db.grade_history("sx")
+assert [e["grade"] for e in h["events"]] == ["Fail", "Pass"], h["events"]
+assert h["events"][-1]["source"] == "review", h["events"][-1]
+print("PASS: a sign-off is logged as a move to the effective grade")
+
+with db.get_conn() as c:                      # a check the reviewer never ruled on flips
+    c.execute("UPDATE rule_checks SET r11='Fail' WHERE ticket_id='sx'")
+review.refresh_stale(["sx"])
+h = db.grade_history("sx")
+assert [e["grade"] for e in h["events"]] == ["Fail", "Pass", "Fail"], h["events"]
+assert h["events"][-1]["source"] == "lapsed", h["events"][-1]
+assert h["counts"] == {"Fail": 2, "Pass": 1}, h["counts"]
+print(f"PASS: lapse logged; tally {h['counts']} over {h['changes']} changes")
+print("      " + " → ".join(f"{e['grade']}[{e['source']}]" for e in h["events"]))
 
 print()
 print("ALL GRADE ASSERTIONS PASSED")

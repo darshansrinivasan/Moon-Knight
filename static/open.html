@@ -147,6 +147,12 @@
   tbody tr[data-id]:hover { background: var(--surface2); }
   .grade { font-weight: 600; }
   .signed-by { font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
+  .re-review {
+    display: inline-block; font-size: 10px; font-weight: 700; margin-top: 3px;
+    padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+    color: var(--review); border: 1px solid var(--review);
+    background: color-mix(in srgb, var(--review) 14%, transparent);
+  }
   .grade.Pass { color: var(--pass); }
   .grade.Fail { color: var(--fail); }
   .grade.NR   { color: var(--review); }
@@ -382,7 +388,9 @@ function renderRows(tickets) {
       <td>${esc(t.assignee_name)}</td>
       <td class="muted">${esc(t.fetch_date || "—")}</td>
       <td>${gradeCell(t.overall_result)}${t.signed_off_by
-        ? `<div class="signed-by" title="Signed off by ${esc(t.signed_off_by)}${t.review_note ? ` — “${esc(t.review_note)}”` : ""}">✓ signed off · ${esc(t.signed_off_by)}${t.review_note ? " 💬" : ""}</div>` : ""}</td>
+        ? `<div class="signed-by" title="Signed off by ${esc(t.signed_off_by)}${t.review_note ? ` — “${esc(t.review_note)}”` : ""}">✓ signed off · ${esc(t.signed_off_by)}${t.review_note ? " 💬" : ""}</div>` : ""}${
+        t.review_lapsed
+        ? `<div class="re-review" title="A sign-off was recorded, then ${esc(t.review_lapsed)}. The grade shown is the machine's again — re-review this ticket.">re-review</div>` : ""}</td>
       <td class="muted">${t.checked_at ? esc(QC.fmtTime(t.checked_at)) : "—"}</td>
     </tr>`;
   }).join("");

@@ -52,20 +52,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 DATE_HINT = "Use YYYY-MM-DD"
 
-# The latest human sign-off per ticket, and the grade that actually applies:
-# a review decision when there is one, else the AI verdict. Every surface that
-# reports a grade must use these, or the same ticket reads Pass in one place and
-# Fail in another. Constant SQL — no caller input is interpolated.
-_LATEST_REVIEW = """
-    SELECT r.ticket_id, r.decision
-    FROM ticket_reviews r
-    JOIN (SELECT ticket_id, MAX(id) AS max_id
-          FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
-"""
-_EFFECTIVE_GRADE = (
-    "COALESCE(CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,"
-    " ac.overall_result)"
-)
+# The latest human sign-off per ticket, and the grade that actually applies.
+# Imported, never re-declared: this module kept a private copy that silently
+# drifted from leaderboard's the moment staleness was added there, which is the
+# exact "same ticket reads Pass here and Fail there" failure the rule exists to
+# prevent.
+_LATEST_REVIEW = leaderboard.LATEST_REVIEW_SQL
+_EFFECTIVE_GRADE = leaderboard.EFFECTIVE_GRADE_SQL
 
 
 def _require_date(value: str) -> date:
@@ -1814,6 +1807,29 @@ async def get_day(date_str: str, user: dict = Depends(auth.require_user)):
         # figure rather than appearing to reset it.
         "spend": spend,
     }
+
+
+@app.get("/api/ticket/{ticket_id}/history")
+async def ticket_grade_history(ticket_id: str,
+                               user: dict = Depends(auth.require_user)):
+    """Every time this ticket's grade moved, and how often it landed on each.
+
+    Append-only, so it answers "has this one flip-flopped?" — which the stored
+    grade alone cannot, ai_checks being overwritten on every re-score.
+    """
+    def load():
+        with db.get_conn() as conn:
+            t = conn.execute(
+                "SELECT id, number, title FROM tickets"
+                " WHERE id = ? AND deleted_at IS NULL", (ticket_id,)).fetchone()
+        if not t:
+            return None
+        return {"ticket": dict(t), **db.grade_history(ticket_id)}
+
+    out = await asyncio.to_thread(load)
+    if out is None:
+        raise HTTPException(404, "Ticket not found")
+    return out
 
 
 @app.get("/api/closed-sweep")
