@@ -960,6 +960,7 @@ def _write_results(batch: list[dict], results: list[dict], now: str) -> tuple[in
     the grade away from the day every other query files the ticket under.
     """
     scored = skipped = 0
+    rescored_ids: list[str] = []
     with db.get_conn() as conn:
         for i, (t, r) in enumerate(zip(batch, results)):
             if r is None:
@@ -1002,7 +1003,19 @@ def _write_results(batch: list[dict], results: list[dict], now: str) -> tuple[in
             db.record_grade_event(
                 t["id"], db.effective_grade(t["id"], conn), "machine",
                 f"QC run scored {overall}", conn=conn)
+            rescored_ids.append(t["id"])
             scored += 1
+
+    # A re-score is the other way a graded verdict moves, so sign-offs have to
+    # be re-checked here too — resync_overall covers the fetch path, but a QC
+    # run that regrades an A-check reaches none of it, and a stale Pass would
+    # have gone on overriding the new Fail.
+    if rescored_ids:
+        try:
+            import review
+            review.refresh_stale(rescored_ids)
+        except Exception:
+            logger.exception("Could not refresh sign-off staleness after scoring")
     return scored, skipped
 
 

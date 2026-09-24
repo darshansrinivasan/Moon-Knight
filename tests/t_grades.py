@@ -292,4 +292,49 @@ print(f"PASS: lapse logged; tally {h['counts']} over {h['changes']} changes")
 print("      " + " → ".join(f"{e['grade']}[{e['source']}]" for e in h["events"]))
 
 print()
+print("=== a QC re-score expires a sign-off, not just a fetch/resync ===")
+# The bug this pins: refresh_stale was hooked into resync_overall only, which
+# runs on the FETCH path. Running QC for a day re-scored the ticket, wrote new
+# A-check verdicts, and left the stale Pass overriding the new Fail.
+import qc_runner
+
+with db.get_conn() as c:
+    c.execute("DELETE FROM ticket_reviews WHERE ticket_id='sx'")
+    c.execute("DELETE FROM ticket_grade_history WHERE ticket_id='sx'")
+    c.execute("UPDATE rule_checks SET r1='Pass',r4='Pass',r11='Pass'"
+              " WHERE ticket_id='sx'")
+    c.execute("UPDATE ai_checks SET a1='Pass',a3='Good',a4='Pass',a5='Pass',"
+              "overall_result='Pass' WHERE ticket_id='sx'")
+
+review.accept_ticket("sx", _admin, "Pass", "signed off before the re-score")
+assert review.apply_effective_grades(
+    [dict(r) for r in _rows_for("sx")])[0]["review"], "sign-off should be live"
+
+# The model now grades A5 (closure) as Fail. A5 is chosen deliberately: a1 and
+# a4 do not feed _compute_overall, so flipping those expires the sign-off
+# without moving the grade — true, but it would not prove the grade follows.
+with db.get_conn() as c:
+    t = dict(c.execute("SELECT * FROM tickets WHERE id='sx'").fetchone())
+    rc = dict(c.execute("SELECT * FROM rule_checks WHERE ticket_id='sx'").fetchone())
+t.update({k: rc.get(k) for k in qc_runner.R_CHECK_KEYS})
+t["messages"] = []
+qc_runner._write_results(
+    [t],
+    [{"idx": 0, "a1": "Pass", "a2": "Neutral", "a3": "Good", "a4": "Pass",
+      "a5": "Fail", "ai_notes": "closure regressed"}],
+    "2026-08-27T10:00:00+00:00")
+
+t2 = review.apply_effective_grades([dict(r) for r in _rows_for("sx")])[0]
+assert t2["review"] is None, "a re-score that flips a check must expire the sign-off"
+assert t2["review_stale"] and "A5" in t2["review_stale"]["reason"], t2["review_stale"]
+assert t2["overall_result"] == "Fail", \
+    f"the machine grade must show through once the sign-off lapses: {t2}"
+print(f"PASS: scoring path expires it too — {t2['review_stale']['reason']}")
+
+h = db.grade_history("sx")
+assert [e["source"] for e in h["events"]][-1] == "lapsed", h["events"]
+assert [e["grade"] for e in h["events"]] == ["Pass", "Fail"], h["events"]
+print("      history: " + " → ".join(f"{e['grade']}[{e['source']}]" for e in h["events"]))
+
+print()
 print("ALL GRADE ASSERTIONS PASSED")
