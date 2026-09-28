@@ -79,9 +79,14 @@
     background: none; border: none; color: var(--color-accent); cursor: pointer;
     font-size: 11px; font-family: inherit; padding: 0; text-decoration: underline dotted;
   }
-  #head-row th { cursor: grab; user-select: none; }
+  #head-row th { cursor: pointer; user-select: none; }
+  #head-row th.nosort { cursor: grab; }
+  #head-row th.sorted { color: var(--color-accent); }
+  .sort-arrow { font-size: 9px; }
+  .nowrap { white-space: nowrap; }
   #head-row th.dragging { opacity: .4; }
   #head-row th.drop-target { border-bottom: 2px solid var(--color-accent); }
+  .title-cell { display: inline-block; min-width: 230px; }
   .trunc {
     display: inline-block; max-width: 150px; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
@@ -100,6 +105,22 @@
   .sev.s1 { color: var(--fail); }
   .sev.s2 { color: var(--review); }
   .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+  .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+  .date-filter { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .date-filter select, .date-filter input {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    border-radius: var(--radius); padding: 4px 8px; font-size: 12px;
+    font-family: inherit; color-scheme: dark;
+  }
+  .date-filter input[type="number"] { width: 68px; }
+  .date-filter span { font-size: 12px; color: var(--muted); }
+  /* The shared .assignee-ms-clear is display:block, which both beats the
+     hidden attribute and forces its own line — neither is wanted inline. */
+  .date-clear { display: inline-block; width: auto; padding: 4px 8px; }
+  .date-clear[hidden] { display: none; }
+  /* With 15 columns the title otherwise collapses into a ribbon of one-word
+     lines; it is the column people actually read. */
+  #rows td:nth-child(1), #head-row th:nth-child(1) { white-space: nowrap; }
   .pills .pill-label {
     font-size: 11px; font-weight: 600; color: var(--muted);
     text-transform: uppercase; letter-spacing: .5px; margin-right: 4px;
@@ -210,6 +231,41 @@
       <span class="pill-label">Status</span>
     </div>
 
+    <div class="filter-row" id="filter-row">
+      <div class="date-filter">
+        <select id="date-mode" title="Filter by when the incident was created">
+          <option value="">Any time</option>
+          <option value="days">Last N days</option>
+          <option value="since">Since</option>
+          <option value="between">Between</option>
+        </select>
+        <input type="number" id="date-days" min="1" max="3650" value="30"
+               title="How many days back from today" hidden>
+        <input type="date" id="date-from" hidden>
+        <span id="date-and" hidden>and</span>
+        <input type="date" id="date-to" hidden>
+        <button class="assignee-ms-clear date-clear" id="date-clear" hidden>Clear</button>
+      </div>
+
+      <div class="assignee-ms" id="group-ms" hidden>
+        <button class="assignee-ms-btn" id="group-ms-btn"
+                title="Filter by review-coverage group (APAC, NAM, …) — matches the incident's creator against the Admin rosters">All groups</button>
+        <div class="assignee-ms-dropdown" id="group-ms-dropdown">
+          <button class="assignee-ms-clear" id="group-ms-clear">All groups</button>
+          <div id="group-ms-list"></div>
+        </div>
+      </div>
+
+      <div class="assignee-ms" id="creator-ms" hidden>
+        <button class="assignee-ms-btn" id="creator-ms-btn"
+                title="Filter by who raised the incident. Rootly exposes no assignee on an incident — commander is empty on every one — so this is the creator.">All creators</button>
+        <div class="assignee-ms-dropdown" id="creator-ms-dropdown">
+          <button class="assignee-ms-clear" id="creator-ms-clear">All creators</button>
+          <div id="creator-ms-list"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="chips" id="chips"></div>
 
     <div class="col-hint">
@@ -235,6 +291,10 @@ let checkLabels = {};
 let gradeFilter = "";
 const selStatuses = new Set();   // lowercase incident statuses; empty = all
 const selPylon = new Set();      // pylon_state values, plus "not_synced" / "no_ticket"
+const selGroups = new Set();     // coverage ids as strings, plus "ungrouped"
+const selCreators = new Set();   // creator names
+let coverages = [];              // review-coverage rosters from Admin
+let dateFilter = { mode: "", days: 30, from: "", to: "" };
 let checkFilter = { key: "", value: "" };
 let disabledChecks = new Set();
 let loadToken = 0;
@@ -243,6 +303,12 @@ const MATRIX = [["ir1","Sv"],["ir2","Cm"],["ir3","Ji"],["ir4","Py"],
                 ["ir5","Up"],["ir6","St"],["ir7","Sm"],
                 ["ia1","SQ"],["ia2","CQ"],["ia4","SC"]];
 const GLYPH = { pass: "✓", fail: "✕", warn: "!", na: "–", none: "" };
+
+// Severity sorts by actual seriousness, not alphabetically — "Critical, High,
+// Medium, Low" is the only order anyone means when they click that header.
+// Covers the sevN naming too, in case this Rootly instance ever switches.
+const SEV_RANK = { critical: 0, sev1: 0, high: 1, sev2: 1,
+                   medium: 2, sev3: 2, low: 3, sev4: 3 };
 
 function cellState(v) {
   if (v === null || v === undefined || v === "") return "none";
@@ -286,8 +352,45 @@ function pylonBucket(i) {
   return i.pylon_state ? i.pylon_state.toLowerCase() : "not_synced";
 }
 
+function createdOf(i) { return String(i.created_at || "").slice(0, 10); }
+
+// All three read the incident's CREATOR: Rootly carries no assignee on an
+// incident, and commander_name comes back empty on every one, so the creator
+// is the only person the record actually names.
+function inDateRange(i) {
+  const d = createdOf(i);
+  if (!d) return dateFilter.mode === "";
+  if (dateFilter.mode === "days") {
+    const n = Number(dateFilter.days) || 0;
+    if (n <= 0) return true;
+    const cut = new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+    return d >= cut;
+  }
+  if (dateFilter.mode === "since") return !dateFilter.from || d >= dateFilter.from;
+  if (dateFilter.mode === "between") {
+    if (dateFilter.from && d < dateFilter.from) return false;
+    if (dateFilter.to && d > dateFilter.to) return false;
+    return true;
+  }
+  return true;
+}
+
+function creatorOf(i) { return i.created_by_name || "Unknown"; }
+
+function inSelectedGroups(i) {
+  if (selGroups.size === 0) return true;
+  const name = creatorOf(i);
+  const inAny = coverages.some(c => (c.assignees || []).includes(name));
+  if (selGroups.has("ungrouped") && !inAny) return true;
+  return coverages.some(c =>
+    selGroups.has(String(c.id)) && (c.assignees || []).includes(name));
+}
+
 function statusScoped() {
   let rows = incidents;
+  if (dateFilter.mode) rows = rows.filter(inDateRange);
+  if (selGroups.size > 0) rows = rows.filter(inSelectedGroups);
+  if (selCreators.size > 0) rows = rows.filter(i => selCreators.has(creatorOf(i)));
   if (selStatuses.size > 0) {
     rows = rows.filter(i => selStatuses.has((i.status || "").toLowerCase()));
   }
@@ -308,6 +411,7 @@ function visible() {
 
 function filtersActive() {
   return gradeFilter !== "" || selStatuses.size > 0 || selPylon.size > 0
+         || selGroups.size > 0 || selCreators.size > 0 || dateFilter.mode !== ""
          || (checkFilter.key !== "" && checkFilter.value !== "");
 }
 
@@ -485,6 +589,148 @@ function populateCheckFilter() {
   });
 })();
 
+// ── created-date filter ────────────────────────────────────────────────────
+function syncDateInputs() {
+  const m = dateFilter.mode;
+  $("date-days").hidden  = m !== "days";
+  $("date-from").hidden  = !(m === "since" || m === "between");
+  $("date-and").hidden   = m !== "between";
+  $("date-to").hidden    = m !== "between";
+  $("date-clear").hidden = m === "";
+}
+
+function applyDate() {
+  dateFilter.mode = $("date-mode").value;
+  dateFilter.days = $("date-days").value;
+  dateFilter.from = $("date-from").value;
+  dateFilter.to   = $("date-to").value;
+  syncDateInputs();
+  afterFilterChange();
+}
+
+(function wireDateFilter() {
+  ["date-mode", "date-days", "date-from", "date-to"].forEach(id =>
+    $(id).addEventListener("change", applyDate));
+  // typing in the number box should filter as you go, not only on blur
+  $("date-days").addEventListener("input", applyDate);
+  $("date-clear").addEventListener("click", () => {
+    dateFilter = { mode: "", days: 30, from: "", to: "" };
+    $("date-mode").value = "";
+    syncDateInputs();
+    afterFilterChange();
+  });
+})();
+
+// ── group (review-coverage roster) ─────────────────────────────────────────
+function updateGroupBtn() {
+  const btn = $("group-ms-btn");
+  if (selGroups.size === 0) btn.textContent = "All groups";
+  else if (selGroups.size === 1) {
+    const id = [...selGroups][0];
+    const c = coverages.find(x => String(x.id) === id);
+    btn.textContent = id === "ungrouped" ? "Ungrouped" : (c ? c.name : id);
+  } else btn.textContent = `${selGroups.size} groups`;
+}
+
+function renderGroupFilter() {
+  const ms = $("group-ms");
+  if (!coverages.length || !incidents.length) { ms.hidden = true; return; }
+  ms.hidden = false;
+  const scoped = incidents.filter(i => !dateFilter.mode || inDateRange(i));
+  const count = (pred) => scoped.filter(pred).length;
+  const rows = [...coverages.map(c => ({
+                  id: String(c.id), name: c.name,
+                  n: count(i => (c.assignees || []).includes(creatorOf(i))) })),
+                { id: "ungrouped", name: "Ungrouped",
+                  n: count(i => !coverages.some(c => (c.assignees || []).includes(creatorOf(i)))) }];
+  $("group-ms-list").innerHTML = rows.map(g => `
+    <label class="assignee-ms-item${g.n ? "" : " is-zero"}">
+      <input type="checkbox" value="${esc(g.id)}" ${selGroups.has(g.id) ? "checked" : ""}>
+      ${esc(g.name)}<span class="assignee-ms-count muted">${g.n}</span>
+    </label>`).join("");
+  $("group-ms-list").querySelectorAll("input").forEach(cb =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) selGroups.add(cb.value); else selGroups.delete(cb.value);
+      updateGroupBtn();
+      afterFilterChange();
+    }));
+  updateGroupBtn();
+}
+
+// ── creator ────────────────────────────────────────────────────────────────
+function updateCreatorBtn() {
+  const btn = $("creator-ms-btn");
+  if (selCreators.size === 0) btn.textContent = "All creators";
+  else if (selCreators.size === 1) btn.textContent = [...selCreators][0];
+  else btn.textContent = `${selCreators.size} creators`;
+}
+
+function renderCreatorFilter() {
+  const ms = $("creator-ms");
+  if (!incidents.length) { ms.hidden = true; return; }
+  ms.hidden = false;
+  // Counts follow the date and group scope, so the list shows who is actually
+  // available to narrow to rather than a static roster.
+  const scoped = incidents.filter(i =>
+    (!dateFilter.mode || inDateRange(i)) && inSelectedGroups(i));
+  const n = new Map();
+  scoped.forEach(i => n.set(creatorOf(i), (n.get(creatorOf(i)) || 0) + 1));
+  const names = [...new Set(incidents.map(creatorOf))]
+    .sort((a, b) => (n.get(b) || 0) - (n.get(a) || 0) || a.localeCompare(b));
+  $("creator-ms-list").innerHTML = names.map(name => {
+    const c = n.get(name) || 0;
+    return `<label class="assignee-ms-item${c ? "" : " is-zero"}">
+      <input type="checkbox" value="${esc(name)}" ${selCreators.has(name) ? "checked" : ""}>
+      ${esc(name)}<span class="assignee-ms-count muted">${c}</span>
+    </label>`;
+  }).join("");
+  $("creator-ms-list").querySelectorAll("input").forEach(cb =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) selCreators.add(cb.value); else selCreators.delete(cb.value);
+      updateCreatorBtn();
+      afterFilterChange();
+    }));
+  updateCreatorBtn();
+}
+
+// One place that repaints everything a filter change can affect, so the
+// dropdown counts, the chips and the table can never disagree.
+function afterFilterChange() {
+  renderGroupFilter();
+  renderCreatorFilter();
+  renderChips();
+  renderRows();
+  updateQcBtn();
+}
+
+(function wireGroupAndCreator() {
+  [["group-ms", "group-ms-btn", "group-ms-dropdown", "group-ms-clear",
+    () => { selGroups.clear(); }],
+   ["creator-ms", "creator-ms-btn", "creator-ms-dropdown", "creator-ms-clear",
+    () => { selCreators.clear(); }]].forEach(([wrap, btnId, dropId, clearId, clear]) => {
+    const btn = $(btnId), drop = $(dropId);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = drop.classList.toggle("open");
+      btn.classList.toggle("open", open);
+    });
+    $(clearId).addEventListener("click", () => { clear(); afterFilterChange(); });
+    document.addEventListener("click", (e) => {
+      if (!$(wrap).contains(e.target)) {
+        drop.classList.remove("open");
+        btn.classList.remove("open");
+      }
+    });
+  });
+  QC.ready.then(async () => {
+    try {
+      const d = await QC.api("/api/review/coverages");
+      coverages = d.coverages || [];
+      renderGroupFilter();
+    } catch { /* no rosters configured: the group picker stays hidden */ }
+  });
+})();
+
 function renderPills() {
   const pills = $("pills");
   const counts = {};
@@ -546,65 +792,124 @@ function whyRows(i) {
 // in try/catch — private windows throw). Unknown stored keys drop, new columns
 // append, so a saved order survives this table growing.
 const COLUMNS = {
-  num:        { label: "#", render: i => {
+  created:    { label: "Created", sort: i => i.created_at || "",
+                render: i => i.created_at
+    ? `<span class="nowrap" title="${esc(i.created_at)}">${esc(String(i.created_at).slice(0, 10))}</span>`
+    : "—" },
+  num:        { label: "#", sort: i => i.sequential_id ?? -1, render: i => {
     const url = safeHref(i.url);
     return url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">INC-${esc(String(i.sequential_id ?? "—"))}</a>`
                : `INC-${esc(String(i.sequential_id ?? "—"))}`; } },
-  title:      { label: "Title", render: i => esc(i.title || "(no title)") },
-  severity:   { label: "Severity", render: i =>
+  title:      { sort: i => i.title || "", label: "Title",
+                render: i => `<span class="title-cell">${esc(i.title || "(no title)")}</span>` },
+  severity:   { sort: i => SEV_RANK[String(i.severity || "").toLowerCase()] ?? 99, label: "Severity", render: i =>
     `<span class="sev ${sevCls(i.severity)}">${esc(i.severity_name || i.severity || "—")}</span>` },
-  status:     { label: "Status", render: i => esc((i.status || "—").replace(/_/g, " ")) },
-  creator:    { label: "Creator", render: i => esc(i.created_by_name || "—") },
-  func:       { label: "Functionality (Rootly)", render: i => i.functionality
+  status:     { sort: i => (i.status || ""), label: "Status", render: i => esc((i.status || "—").replace(/_/g, " ")) },
+  creator:    { sort: i => (i.created_by_name || ""), label: "Creator", render: i => esc(i.created_by_name || "—") },
+  func:       { sort: i => (i.functionality || ""), label: "Functionality (Rootly)", render: i => i.functionality
     ? `<span class="trunc" title="${esc(i.functionality)}">${esc(i.functionality)}</span>` : "—" },
-  jira:       { label: "Jira", render: i => {
+  jira:       { sort: i => (i.jira_key || ""), label: "Jira", render: i => {
     const jira = safeHref(i.jira_url);
     return jira ? `<a href="${esc(jira)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(i.jira_key)}</a>`
                 : esc(i.jira_key || "—"); } },
-  pylon:      { label: "Pylon", render: i => i.pylon_ticket_number
+  pylon:      { sort: i => (i.pylon_ticket_number ?? -1), label: "Pylon", render: i => i.pylon_ticket_number
     ? (safeHref(i.pylon_link)
         ? `<a href="${esc(i.pylon_link)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
              title="Open #${esc(String(i.pylon_ticket_number))} in Pylon">#${esc(String(i.pylon_ticket_number))}</a>`
         : `<span title="Link appears once this ticket is fetched into Pylon QC — a constructed URL could point at a mistyped number">#${esc(String(i.pylon_ticket_number))}</span>`)
     : "—" },
-  pylonstate: { label: "Pylon status", render: i => !i.pylon_ticket_number ? "—"
+  pylonstate: { sort: i => (i.pylon_state || ""), label: "Pylon status", render: i => !i.pylon_ticket_number ? "—"
     : i.pylon_state
       ? `<span class="pylon-state">${esc(i.pylon_state.replace(/_/g, " "))}</span>`
       : `<span class="muted" style="font-size:11px" title="#${esc(String(i.pylon_ticket_number))} is linked but has never been fetched into Pylon QC, so its status is unknown here">not synced</span>` },
-  pylonfunc:  { label: "Functionality (Pylon)", render: i => i.pylon_functionality
+  pylonfunc:  { sort: i => (i.pylon_functionality || ""), label: "Functionality (Pylon)", render: i => i.pylon_functionality
     ? `<span class="trunc" title="${esc(i.pylon_functionality)}">${esc(i.pylon_functionality)}</span>`
     : (i.pylon_ticket_number && !i.pylon_state
         ? `<span class="muted" style="font-size:11px">not synced</span>` : "—") },
-  slack:      { label: "Slack", render: i => i.slack_channel_id
+  slack:      { sort: i => (i.slack_channel_name || ""), label: "Slack", render: i => i.slack_channel_id
     ? `<a href="${esc(safeHref(i.slack_channel_url) || `https://slack.com/app_redirect?channel=${encodeURIComponent(i.slack_channel_id)}`)}"
          target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
          title="Open the incident's Slack channel — #${esc(i.slack_channel_name || i.slack_channel_id)}"
          class="slack-chan">#${esc(i.slack_channel_name || i.slack_channel_id)}</a>`
     : "—" },
-  pending:    { label: "Pending on", render: i => i.pending_on
+  pending:    { sort: i => (i.pending_on || ""), label: "Pending on", render: i => i.pending_on
     ? `<span class="pending-tag" title="${esc(i.pending_on)}">${esc(i.pending_on)}</span>` : "—" },
-  checks:     { label: "Checks", render: i => {
+  checks:     { sort: i => MATRIX.filter(([k]) => cellState(i[k]) === "fail").length, label: "Checks", render: i => {
     const cells = MATRIX.map(([k]) => {
       const st = cellState(i[k]);
       const why = (i.reasons || {})[k] || "";
       return `<span class="cell ${st}" title="${esc(checkLabels[k] || k)}: ${esc(i[k] ?? "not evaluated")}${why ? " — " + esc(why) : ""}">${GLYPH[st]}</span>`;
     }).join("");
     return `<span class="cells">${cells}</span>`; } },
-  qc:         { label: "QC", render: i => {
+  qc:         { sort: i => ({Fail:0,"Needs Review":1,Pass:2}[gradeOf(i)] ?? 3), label: "QC", render: i => {
     const g = gradeOf(i);
     return `<span class="grade ${gradeCls(g)}">${esc(g)}</span>`; } },
 };
-const DEFAULT_ORDER = ["num", "title", "severity", "status", "creator", "func",
+const DEFAULT_ORDER = ["created", "num", "title", "severity", "status", "creator", "func",
                        "jira", "pylon", "pylonstate", "pylonfunc", "slack",
                        "pending", "checks", "qc"];
 const ORDER_KEY = "rootly-col-order";
+const SORT_KEY  = "rootly-col-sort";
+
+// Click sorts, drag reorders — the same header does both, so a click that
+// followed a drag must not also sort. `dragged` is set on dragstart and read
+// (then cleared) by the click handler.
+let sortBy = null, sortDir = 1, draggedRecently = false;
+
+function loadSort() {
+  try {
+    const v = JSON.parse(localStorage.getItem(SORT_KEY) || "null");
+    if (v && COLUMNS[v.key]) { sortBy = v.key; sortDir = v.dir === -1 ? -1 : 1; }
+  } catch {}
+}
+
+function saveSort() {
+  try {
+    if (sortBy) localStorage.setItem(SORT_KEY, JSON.stringify({ key: sortBy, dir: sortDir }));
+    else localStorage.removeItem(SORT_KEY);
+  } catch {}
+}
+
+// Third click clears back to the natural order rather than trapping the reader
+// in one of two sorts forever.
+function cycleSort(key) {
+  if (sortBy !== key) { sortBy = key; sortDir = 1; }
+  else if (sortDir === 1) { sortDir = -1; }
+  else { sortBy = null; sortDir = 1; }
+  saveSort();
+}
+
+function sortRows(rows) {
+  if (!sortBy || !COLUMNS[sortBy] || !COLUMNS[sortBy].sort) return rows;
+  const key = COLUMNS[sortBy].sort;
+  return rows.slice().sort((a, b) => {
+    const x = key(a), y = key(b);
+    if (x === y) return 0;
+    // Blanks sort last in both directions: an empty cell is missing data, not
+    // a small value, and letting it lead a descending sort buries the rows
+    // someone actually clicked the header to see.
+    const xb = x === "" || x === null || x === undefined;
+    const yb = y === "" || y === null || y === undefined;
+    if (xb !== yb) return xb ? 1 : -1;
+    const cmp = (typeof x === "number" && typeof y === "number")
+      ? x - y : String(x).localeCompare(String(y));
+    return cmp * sortDir;
+  });
+}
 
 function colOrder() {
   let stored = null;
   try { stored = JSON.parse(localStorage.getItem(ORDER_KEY) || "null"); } catch {}
   if (!Array.isArray(stored)) return [...DEFAULT_ORDER];
   const known = stored.filter(k => COLUMNS[k]);
-  return [...known, ...DEFAULT_ORDER.filter(k => !known.includes(k))];
+  // A column added after someone saved an order lands where it was DESIGNED to
+  // sit, not dumped on the end — "Created" is meant to be first, and appending
+  // it would hide the change from everyone who had ever dragged a header.
+  const out = [...known];
+  DEFAULT_ORDER.forEach((k, idx) => {
+    if (!out.includes(k)) out.splice(Math.min(idx, out.length), 0, k);
+  });
+  return out;
 }
 
 function saveColOrder(order) {
@@ -616,16 +921,29 @@ function saveColOrder(order) {
 
 function renderHead() {
   const order = colOrder();
-  $("head-row").innerHTML = order.map(k =>
-    `<th draggable="true" data-col="${esc(k)}"
-         title="Drag to move the ${esc(COLUMNS[k].label)} column">${esc(COLUMNS[k].label)}</th>`).join("");
+  $("head-row").innerHTML = order.map(k => {
+    const on = sortBy === k;
+    const arrow = on ? (sortDir === 1 ? " ▲" : " ▼") : "";
+    const can = !!COLUMNS[k].sort;
+    return `<th draggable="true" data-col="${esc(k)}" class="${on ? "sorted" : ""}${can ? "" : " nosort"}"
+         title="${can ? "Click to sort by " + esc(COLUMNS[k].label) + " · d" : "D"}rag to move this column">${
+      esc(COLUMNS[k].label)}<span class="sort-arrow">${arrow}</span></th>`;
+  }).join("");
   $("col-reset").hidden = order.join() === DEFAULT_ORDER.join();
 
   let dragKey = null;
   $("head-row").querySelectorAll("th").forEach(th => {
     th.addEventListener("dragstart", () => {
       dragKey = th.dataset.col;
+      draggedRecently = true;
       th.classList.add("dragging");
+    });
+    th.addEventListener("click", () => {
+      if (draggedRecently) { draggedRecently = false; return; }
+      if (!COLUMNS[th.dataset.col] || !COLUMNS[th.dataset.col].sort) return;
+      cycleSort(th.dataset.col);
+      renderHead();
+      renderRows();
     });
     th.addEventListener("dragend", () => {
       dragKey = null;
@@ -659,7 +977,7 @@ $("col-reset").addEventListener("click", () => {
 function renderRows() {
   const order = colOrder();
   const span = order.length;
-  const rows = visible();
+  const rows = sortRows(visible());
   if (!rows.length) {
     $("rows").innerHTML = `<tr><td colspan="${span}" class="empty">${
       incidents.length ? "No incidents match these filters."
@@ -743,6 +1061,8 @@ async function load() {
           : `Last QC run ${when} — ${run.scored ?? 0} scored, ${run.skipped ?? 0} unchanged (skipped)`;
   }
   renderPills();
+  renderGroupFilter();
+  renderCreatorFilter();
   populatePylonFilter();
   populateCheckFilter();
   renderChips();
@@ -792,6 +1112,7 @@ QC.ready.then(me => {
     $("qc-btn").hidden = false;
   }
 });
+loadSort();
 renderHead();
 load();
 </script>

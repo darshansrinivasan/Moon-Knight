@@ -156,6 +156,24 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: -0.01em;
 }
 .app-nav-brand span { color: var(--color-accent); }
+/* What the tool has cost, under the brand. Quiet by default — it is reference,
+   not a call to action — and carries its own breakdown in the tooltip. */
+.app-nav-spend {
+  display: flex; align-items: baseline; gap: 6px;
+  margin: -6px 0 14px; padding: 5px 9px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface2); cursor: default;
+}
+.app-nav-spend[hidden] { display: none; }
+.app-nav-spend .k {
+  font-size: 10px; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+}
+.app-nav-spend .v {
+  font-size: 13px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums; margin-left: auto;
+}
+
 .app-nav-links { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 /* Platform switcher: Pylon (tickets) vs Rootly (incidents). */
 .app-nav-switch {

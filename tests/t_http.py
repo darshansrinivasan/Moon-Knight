@@ -47,6 +47,10 @@ r = client.get("/api/stats")
 check("/api/stats unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/api/closed-sweep")
 check("/api/closed-sweep unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+# Cost is an operations figure: the endpoint behind the sidebar total must not
+# answer an unauthenticated caller, and is operator-gated for signed-in members.
+r = client.get("/api/spend/total")
+check("/api/spend/total unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/api/rootly/incidents")
 check("/api/rootly/incidents unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/rootly")

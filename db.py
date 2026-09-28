@@ -953,6 +953,61 @@ def latest_qc_run(date_str: str) -> dict | None:
     return dict(row) if row else None
 
 
+# qc_runs files every Vertex-billed job under `date`: a real date for a day's
+# ticket scoring, or a label for everything else. This turns that column into
+# the handful of buckets a human thinks in.
+_RUN_KINDS = (
+    ("open",    "Open backlog"),
+    ("closed",  "Closure sweep"),
+    ("rootly",  "Rootly incidents"),
+    ("func:",   "Functionality check"),
+    ("report:", "Product report"),
+    ("chat:",   "Ask QC"),
+    ("1on1:",   "1:1 briefs"),
+)
+
+
+def run_kind(label: str) -> str:
+    """Which bucket a qc_runs row belongs to, for the spend breakdown."""
+    lab = (label or "").strip()
+    for prefix, name in _RUN_KINDS:
+        if lab == prefix or lab.startswith(prefix):
+            return name
+    return "Ticket QC (by day)"
+
+
+def total_spend() -> dict:
+    """Every Vertex-billed run this install has ever made, split by kind.
+
+    The headline is what the tool has cost in total; the split is what makes it
+    actionable, since one run type routinely dominates the bill.
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT date AS label, COUNT(*) AS runs,
+                   COALESCE(SUM(cost_usd), 0) AS usd,
+                   MAX(COALESCE(cost_estimated, 0)) AS estimated
+            FROM qc_runs GROUP BY date
+        """).fetchall()
+    buckets: dict = {}
+    total = 0.0
+    runs = 0
+    estimated = False
+    for r in rows:
+        kind = run_kind(r["label"])
+        b = buckets.setdefault(kind, {"kind": kind, "runs": 0, "usd": 0.0})
+        b["runs"] += r["runs"]
+        b["usd"] += r["usd"] or 0
+        total += r["usd"] or 0
+        runs += r["runs"]
+        estimated = estimated or bool(r["estimated"])
+    by_kind = sorted(buckets.values(), key=lambda b: -b["usd"])
+    for b in by_kind:
+        b["usd"] = round(b["usd"], 4)
+    return {"total_usd": round(total, 4), "runs": runs,
+            "estimated": estimated, "by_kind": by_kind}
+
+
 def qc_spend_for_date(date_str: str) -> dict:
     """Cumulative scoring spend for a date, across every run.
 

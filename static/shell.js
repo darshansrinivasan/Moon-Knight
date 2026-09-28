@@ -113,6 +113,7 @@
 
     host.innerHTML = `
       <div class="app-nav-brand">${brand}</div>
+      <div class="app-nav-spend" id="app-nav-spend" hidden></div>
       <div class="app-nav-switch" role="tablist" aria-label="Platform">
         <a href="/" class="${platform === "pylon" ? "on" : ""}"
            title="Support-ticket QC (Pylon)">Pylon</a>
@@ -124,6 +125,31 @@
         <div class="app-nav-user">${pic}<span title="${QC.esc(name)}">${QC.esc(name)}</span></div>
         <a class="app-nav-signout" href="/auth/logout">Sign out</a>
       </div>`;
+  }
+
+  // What the tool has cost, on every page. Operator-gated because cost is an
+  // operations figure; a member reviewing tickets has no use for it and no say
+  // in it. One fetch per page load — qc_runs is small and the figure is
+  // cumulative, so it never needs polling.
+  async function renderSpend(me) {
+    const host = document.getElementById("app-nav-spend");
+    if (!host || !me || me.role === "member") return;
+    try {
+      const d = await QC.api("/api/spend/total");
+      const usd = Number(d.total_usd || 0);
+      const split = (d.by_kind || [])
+        .map(b => `${b.kind}: $${Number(b.usd).toFixed(2)} (${b.runs} run${b.runs === 1 ? "" : "s"})`)
+        .join("\n");
+      host.hidden = false;
+      host.innerHTML =
+        `<span class="k">AI spend</span>` +
+        `<span class="v">${d.estimated ? "~" : ""}$${usd.toFixed(2)}</span>`;
+      host.title =
+        `${d.runs} run${d.runs === 1 ? "" : "s"} since this install began\n\n${split}` +
+        `\n\nEstimated from a local price table, not a billed amount.`;
+    } catch {
+      /* a spend figure is never worth breaking the nav over */
+    }
   }
 
   // Placeholder markup for a period swap. Pages swap this in at the start of
@@ -180,6 +206,7 @@
     try { me = await QC.api("/api/me"); } catch (e) {}
     QC.me = me;
     renderNav(me);
+    renderSpend(me);          // fire-and-forget: the nav must not wait on it
     return me;
   })();
 })();

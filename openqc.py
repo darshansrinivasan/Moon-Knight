@@ -176,6 +176,9 @@ def list_open(start: str | None = None, end: str | None = None,
         "state_counts": [dict(r) for r in state_rows],
         "summary": summary,
         "tickets": tickets,
+        # When this tab's own backlog run last happened. Filed under RUN_LABEL,
+        # never a date, so it cannot be confused with a day's ticket scoring.
+        "last_run": db.latest_qc_run(RUN_LABEL),
     }
 
 

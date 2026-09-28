@@ -3,6 +3,7 @@
 Each case here corresponds to a way the old estimate was wrong. The numbers in
 the first case are the real ones production recorded for 2026-08-26.
 """
+import db
 import qc_runner as q
 
 fails = []
@@ -113,4 +114,35 @@ print()
 if fails:
     print(f"FAILURES ({len(fails)}): {fails}")
     raise SystemExit(1)
+
+print()
+print("=== total spend: every run kind, split for the sidebar figure ===")
+db.init_db()
+# The sidebar shows ONE number covering every Vertex-billed job, so a new run
+# label must land in a named bucket rather than silently vanishing from it.
+for label, want in [("2026-08-26", "Ticket QC (by day)"),
+                    ("open", "Open backlog"),
+                    ("closed", "Closure sweep"),
+                    ("rootly", "Rootly incidents"),
+                    ("func:2026-08", "Functionality check"),
+                    ("report:2026-08", "Product report"),
+                    ("chat:2026-09", "Ask QC"),
+                    ("1on1:2026-08-03", "1:1 briefs")]:
+    got = db.run_kind(label)
+    check(f"{label} -> {want}", got, want)
+
+with db.get_conn() as c:
+    c.execute("DELETE FROM qc_runs")
+    for lab, cost in [("2026-08-26", 0.5), ("rootly", 2.0), ("rootly", 1.0),
+                      ("chat:2026-09", 0.25)]:
+        c.execute("INSERT INTO qc_runs (date, triggered_by, started_at, status,"
+                  " total, cost_usd) VALUES (?,'t','x','success',1,?)", (lab, cost))
+t = db.total_spend()
+check("headline sums every run", t["total_usd"], 3.75)
+check("run count is every row", t["runs"], 4)
+check("kinds are merged and ranked by spend",
+      [(b["kind"], b["usd"], b["runs"]) for b in t["by_kind"]],
+      [("Rootly incidents", 3.0, 2), ("Ticket QC (by day)", 0.5, 1),
+       ("Ask QC", 0.25, 1)])
+
 print("ALL COST ASSERTIONS PASSED")

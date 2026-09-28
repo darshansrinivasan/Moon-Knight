@@ -1809,6 +1809,16 @@ async def get_day(date_str: str, user: dict = Depends(auth.require_user)):
     }
 
 
+@app.get("/api/spend/total")
+async def spend_total(user: dict = Depends(auth.require_operator)):
+    """Everything this install has ever spent on Vertex, split by run kind.
+
+    Operator-gated: cost is an operations figure, and the people reviewing
+    tickets are not the people who answer for the bill.
+    """
+    return await asyncio.to_thread(db.total_spend)
+
+
 @app.get("/api/ticket/{ticket_id}/history")
 async def ticket_grade_history(ticket_id: str,
                                user: dict = Depends(auth.require_user)):

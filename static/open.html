@@ -65,6 +65,8 @@
   }
 
   .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .last-run { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .last-run b { color: var(--text); font-weight: 600; }
   .filter-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .assignee-ms { position: relative; display: inline-block; }
   .assignee-ms[hidden] { display: none; }  /* display rule above would beat the hidden attribute */
@@ -217,6 +219,8 @@
         </div>
       </div>
 
+      <div class="last-run" id="last-run"></div>
+
       <div class="result-line" id="result-line"></div>
 
       <div class="chips" id="chips"></div>
@@ -327,6 +331,27 @@ function visibleTickets() {
   return gradeFilter ? scoped.filter(t => gradeOf(t) === gradeFilter) : scoped;
 }
 
+// When this tab's own backlog QC last ran. Filed under the 'open' label, so it
+// is never confused with a day's ticket scoring — and a run that failed says so
+// rather than reading as a successful one.
+function renderLastRun(run) {
+  const host = $("last-run");
+  if (!run || !run.started_at) {
+    host.textContent = "No open-backlog QC run recorded yet.";
+    return;
+  }
+  const when = QC.fmtTime(run.started_at);
+  if (run.status === "running") {
+    host.textContent = `QC running now — started ${when}`;
+  } else if (run.status === "error") {
+    host.innerHTML = `Last QC run <b>${esc(when)}</b> — did not finish; re-run to bring the backlog up to date.`;
+  } else {
+    const scored = run.scored ?? 0, skipped = run.skipped ?? 0;
+    host.innerHTML = `Last QC run <b>${esc(when)}</b> — ${scored} scored, `
+      + `${skipped} unchanged (skipped)`;
+  }
+}
+
 function renderChips() {
   let s = lastSummary;
   if (selectedGroups.size || selectedAssignees.size) {
@@ -410,6 +435,7 @@ async function load() {
     if (token !== loadToken) return;   // a newer filter already landed
     lastTickets = list.tickets;
     lastSummary = list.summary;
+    renderLastRun(list.last_run);
     renderPills(list.state_counts);
     renderAssigneeFilter();
     renderChips();
