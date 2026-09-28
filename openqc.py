@@ -116,6 +116,9 @@ def list_open(start: str | None = None, end: str | None = None,
                             rev.reviewer_email) AS signed_off_by,
                    rev.note AS review_note,
                    lapsed.stale_reason AS review_lapsed,
+                   lapsed.decision      AS lapsed_decision,
+                   lapsed.who           AS lapsed_by,
+                   lapsed.reviewed_at   AS lapsed_at,
                    ac.checked_at
             FROM tickets t
             LEFT JOIN ai_checks ac ON ac.ticket_id = t.id
@@ -123,7 +126,9 @@ def list_open(start: str | None = None, end: str | None = None,
             -- A sign-off suspended by a later check change: the grade below is
             -- the machine's again, and this is why the ticket is back.
             LEFT JOIN (
-                SELECT r.ticket_id, r.stale_reason
+                SELECT r.ticket_id, r.stale_reason, r.decision, r.reviewed_at,
+                       COALESCE(NULLIF(TRIM(r.reviewer_name), ''),
+                                r.reviewer_email) AS who
                 FROM ticket_reviews r
                 JOIN (SELECT ticket_id, MAX(id) AS max_id
                       FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
@@ -167,6 +172,12 @@ def list_open(start: str | None = None, end: str | None = None,
             "signed_off_by": r["signed_off_by"],
             "review_note": r["review_note"] or None,
             "review_lapsed": r["review_lapsed"],
+            # Who signed it off before it lapsed — the row no longer credits
+            # them as a live reviewer, but the tooltip should still say whose
+            # judgement the AI overtook.
+            "lapsed_decision": r["lapsed_decision"],
+            "lapsed_by": r["lapsed_by"],
+            "lapsed_at": r["lapsed_at"],
             "checked_at": r["checked_at"],
         })
 

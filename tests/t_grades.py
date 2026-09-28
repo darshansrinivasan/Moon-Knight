@@ -337,4 +337,41 @@ assert [e["grade"] for e in h["events"]] == ["Pass", "Fail"], h["events"]
 print("      history: " + " → ".join(f"{e['grade']}[{e['source']}]" for e in h["events"]))
 
 print()
+print("=== a reverted ticket is unreviewed again, on every surface ===")
+# The bug: a Revert leaves a row behind, and the shared rule surfaced its
+# decision verbatim. Every consumer then read "Revert" as a live sign-off — the
+# sheet offered "Change verdict" instead of "Review", and the Open tab went on
+# crediting a reviewer for a ticket nobody had signed.
+with db.get_conn() as c:
+    c.execute("DELETE FROM ticket_reviews WHERE ticket_id='sx'")
+    c.execute("DELETE FROM ticket_grade_history WHERE ticket_id='sx'")
+    c.execute("UPDATE ai_checks SET overall_result='Fail' WHERE ticket_id='sx'")
+
+review.accept_ticket("sx", _admin, "Pass", "signed off")
+t = review.apply_effective_grades([dict(r) for r in _rows_for("sx")])[0]
+assert t["overall_result"] == "Pass", t["overall_result"]
+
+review.accept_ticket("sx", _admin, "revert", "")
+t = review.apply_effective_grades([dict(r) for r in _rows_for("sx")])[0]
+assert t["overall_result"] == "Fail", t["overall_result"]
+assert t["review"] is None, "a reverted ticket must report no sign-off"
+print("PASS: after revert the machine grade returns and no sign-off is reported")
+
+with db.get_conn() as c:
+    row = c.execute(f"""
+        SELECT rev.decision, rev.reviewer_name
+        FROM tickets t LEFT JOIN ({leaderboard.LATEST_REVIEW_SQL}) rev
+          ON rev.ticket_id = t.id
+        WHERE t.id = 'sx'""").fetchone()
+assert row["decision"] is None, f"shared rule still surfaces {row['decision']!r}"
+assert row["reviewer_name"] is None, "a reverted ticket must credit no reviewer"
+print("PASS: the shared rule surfaces no decision and credits no reviewer")
+
+# the Pass underneath must not resurface when the Revert is filtered out
+with db.get_conn() as c:
+    n = c.execute("SELECT COUNT(*) n FROM ticket_reviews WHERE ticket_id='sx'").fetchone()["n"]
+assert n == 2, f"both rows must be kept as history, found {n}"
+print("PASS: sign-off and revert both survive as history")
+
+print()
 print("ALL GRADE ASSERTIONS PASSED")

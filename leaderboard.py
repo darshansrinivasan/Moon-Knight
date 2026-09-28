@@ -32,17 +32,23 @@ UNTEAMED = "No team"
 # no caller input is interpolated. Public because every surface that reports a
 # grade must use these — reading ai_checks directly is what previously made two
 # pages disagree. The underscored aliases below are kept for existing callers.
-# A STALE review is excluded here rather than anywhere else: a sign-off covers
-# the check verdicts the reviewer saw, so once one of those flips the machine
-# grade takes over again and the ticket returns to the queue. The row survives
-# as history — only its authority lapses.
+# Only a row that actually DECIDES is surfaced here, so no caller has to
+# re-derive what counts as a live sign-off:
+#   * a Revert is a row, not a verdict — after one the ticket is unreviewed
+#     again, and surfacing "Revert" made every consumer read it as a sign-off
+#     (the sheet offered "Change verdict", the Open tab still credited a
+#     reviewer);
+#   * a STALE row has lapsed because a check it covered moved, so the machine
+#     grade takes over and the ticket returns to the queue.
+# Both keep their rows as history; only their authority is withheld. The latest
+# row is the only candidate, so a Revert does not resurrect the Pass beneath it.
 LATEST_REVIEW_SQL = """
     SELECT r.ticket_id, r.decision, r.reviewer_name, r.reviewer_email, r.note,
            r.check_overrides
     FROM ticket_reviews r
     JOIN (SELECT ticket_id, MAX(id) AS max_id
           FROM ticket_reviews GROUP BY ticket_id) x ON x.max_id = r.id
-    WHERE r.stale_at IS NULL
+    WHERE r.stale_at IS NULL AND r.decision IN ('Pass', 'Fail')
 """
 EFFECTIVE_GRADE_SQL = (
     "COALESCE(CASE WHEN rev.decision IN ('Pass','Fail') THEN rev.decision END,"

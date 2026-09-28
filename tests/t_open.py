@@ -361,6 +361,27 @@ check("the LATEST review's note and reviewer are the ones shown",
       ("R2", "customer was misread", "Fail"))
 
 print()
+print("=== a lapsed sign-off names the verdict the AI reverted TO ===")
+# The pill on the Open tab reads "Reverted to <grade> by AI", and its tooltip
+# names who signed off and what they said. All four inputs come from this row:
+# without them the page could only print a generic "re-review" chip, which read
+# as a system hiccup rather than "your Pass no longer holds".
+ticket("o12", "new", grade="Fail")
+with db.get_conn() as c:
+    c.execute("INSERT INTO ticket_reviews (ticket_id,decision,kept_ai,"
+              "reviewer_email,reviewer_name,note,reviewed_at,stale_at,"
+              "stale_reason) VALUES ('o12','Pass',0,'r@x.com','R','',?,?,"
+              "'R11 Pass \u2192 Fail since sign-off')", (T0, T0))
+row = {t["ticket_id"]: t for t in openqc.list_open()["tickets"]}["o12"]
+check("the machine grade decides again", row["overall_result"], "Fail")
+check("nobody is credited with signing it off", row["signed_off_by"], None)
+check("the reason is surfaced", row["review_lapsed"],
+      "R11 Pass \u2192 Fail since sign-off")
+check("the lapsed verdict and reviewer are named",
+      (row["lapsed_decision"], row["lapsed_by"]), ("Pass", "R"))
+check("and when it lapsed", row["lapsed_at"], T0)
+
+print()
 print("=== backfill refreshes a date range, closed tickets included ===")
 # The open sweeps stop at the non-terminal set, so a ticket that closed after
 # its one day-fetch kept a frozen state and NULL Pylon clocks forever. The

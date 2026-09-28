@@ -295,6 +295,23 @@ function renderPills(counts) {
 
 function gradeOf(t) { return t.overall_result || "pending"; }
 
+// A sign-off that lapsed was not just flagged — the AI verdict took the ticket
+// back. Say which verdict, so the row reads as an event rather than a warning
+// badge: "Reverted to Fail by AI" beside a Fail cell tells the whole story.
+function revertedLabel(t) {
+  const g = t.overall_result;
+  return g ? `Reverted to ${g} by AI` : "Sign-off reverted by AI";
+}
+
+function lapsedWhy(t) {
+  const who = t.lapsed_by
+    ? `Signed off ${t.lapsed_decision || ""} by ${t.lapsed_by}`
+      + (t.lapsed_at ? ` on ${String(t.lapsed_at).slice(0, 10)}` : "")
+    : "A sign-off was recorded";
+  return `${who}, then ${t.review_lapsed}. The AI verdict decides again `
+       + `until someone signs off afresh.`;
+}
+
 // The same group semantics as the dashboard: a ticket belongs to a group when
 // its assignee is on that coverage roster; "ungrouped" catches everyone else.
 function inSelectedGroups(t) {
@@ -415,7 +432,7 @@ function renderRows(tickets) {
       <td>${gradeCell(t.overall_result)}${t.signed_off_by
         ? `<div class="signed-by" title="Signed off by ${esc(t.signed_off_by)}${t.review_note ? ` — “${esc(t.review_note)}”` : ""}">✓ signed off · ${esc(t.signed_off_by)}${t.review_note ? " 💬" : ""}</div>` : ""}${
         t.review_lapsed
-        ? `<div class="re-review" title="A sign-off was recorded, then ${esc(t.review_lapsed)}. The grade shown is the machine's again — re-review this ticket.">re-review</div>` : ""}</td>
+        ? `<div class="re-review" title="${esc(lapsedWhy(t))}">${esc(revertedLabel(t))}</div>` : ""}</td>
       <td class="muted">${t.checked_at ? esc(QC.fmtTime(t.checked_at)) : "—"}</td>
     </tr>`;
   }).join("");
