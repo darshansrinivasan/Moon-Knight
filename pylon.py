@@ -221,6 +221,91 @@ async def fetch_account(
 
 # ── refresh specific tickets by id ──────────────────────────────────────────
 
+async def search_accounts(search_filter: dict) -> list[dict]:
+    """Every account matching a filter, with its custom fields.
+
+    Filtered, never a full sweep: Pylon auto-creates an account per email
+    domain, so "all accounts" is a five-figure list of mostly one-contact
+    shells. The CSM roster is a few hundred rows out of that, and asking for
+    it by filter is the difference between 6 pages and 200.
+
+    A torn page raises rather than returning a short list: callers upsert what
+    comes back, and a half-read sweep reported as a whole one is how "this CSM
+    has 6 accounts" quietly becomes wrong.
+    """
+    out: list[dict] = []
+    async with httpx.AsyncClient(timeout=60) as client:
+
+        async def one_page(cursor: str | None) -> dict:
+            body: dict = {"filter": search_filter, "limit": 100}
+            if cursor:
+                body["cursor"] = cursor
+            r = await client.post(f"{BASE_URL}/accounts/search",
+                                  headers=_headers(), json=body)
+            r.raise_for_status()
+            payload = r.json()
+            if "data" not in payload:
+                # A zero-match search answers 200 with only a request_id, the
+                # same shape /issues/search uses. That is a real empty result
+                # on the first page — and nothing but an error mid-pagination.
+                if "errors" not in payload and cursor is None:
+                    return {"data": [], "pagination": {}}
+                raise RuntimeError(
+                    f"Pylon returned no account page: {str(payload)[:200]}")
+            return payload
+
+        body = await _with_retry(lambda: one_page(None))
+        out.extend(body["data"])
+        pag = body.get("pagination") or {}
+        # Bounded: an unbounded while-loop on a cursor the server keeps handing
+        # back is an outage that looks like a hang. 100 pages is ~10k accounts,
+        # far past any owned roster.
+        for _ in range(100):
+            if not (pag.get("has_next_page") and pag.get("cursor")):
+                break
+            body = await _with_retry(lambda c=pag.get("cursor"): one_page(c))
+            out.extend(body["data"])
+            pag = body.get("pagination") or {}
+        else:
+            raise RuntimeError("Pylon account sweep did not terminate")
+    return out
+
+
+async def fetch_users() -> list[dict]:
+    """Every Pylon team member. Resolves the owner UUID on an account.
+
+    `account.hubspot.hubspot_owner_id` stores a Pylon user id and nothing else;
+    without this list a CSM page can only show people as UUIDs.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+
+        async def one_page(cursor: str | None) -> dict:
+            params: dict = {"limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            r = await client.get(f"{BASE_URL}/users",
+                                 headers=_headers(), params=params)
+            r.raise_for_status()
+            body = r.json()
+            if "data" not in body:
+                raise RuntimeError(
+                    f"Pylon returned no user page: {str(body)[:200]}")
+            return body
+
+        body = await _with_retry(lambda: one_page(None))
+        out = list(body["data"])
+        pag = body.get("pagination") or {}
+        for _ in range(50):
+            if not pag.get("has_next_page"):
+                break
+            body = await _with_retry(lambda c=pag.get("cursor"): one_page(c))
+            out.extend(body["data"])
+            pag = body.get("pagination") or {}
+        else:
+            raise RuntimeError("Pylon user sweep did not terminate")
+    return out
+
+
 @dataclass
 class FetchedTickets:
     """A refresh of named tickets, plus what could not be refreshed.
@@ -560,8 +645,8 @@ async def fetch_open_issues(exclude_states: tuple) -> FetchedTickets:
 
 # ── fetch everything for one day ────────────────────────────────────────────
 
-async def fetch_custom_fields() -> list[dict]:
-    """Every custom field Pylon currently defines on issues.
+async def fetch_custom_fields(object_type: str = "issue") -> list[dict]:
+    """Every custom field Pylon currently defines on `object_type`.
 
     Used to populate the field-mapping pickers and, more usefully, to notice
     when a field a check reads has stopped existing. A check whose field is
@@ -578,7 +663,7 @@ async def fetch_custom_fields() -> list[dict]:
     async with httpx.AsyncClient(timeout=30) as client:
 
         async def one_page(cursor: str | None) -> dict:
-            params: dict = {"object_type": "issue", "limit": 100}
+            params: dict = {"object_type": object_type, "limit": 100}
             if cursor:
                 params["cursor"] = cursor
             r = await client.get(f"{BASE_URL}/custom-fields",

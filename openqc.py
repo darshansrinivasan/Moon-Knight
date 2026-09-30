@@ -31,6 +31,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+import channels
 import db
 import qc_runner
 import resync_overall
@@ -336,8 +337,8 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                      customer_portal_visible, fetched_at, csat_responses,
                      first_response_seconds, resolution_seconds,
                      business_hours_first_response_seconds,
-                     business_hours_resolution_seconds)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     business_hours_resolution_seconds, slack_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 issue["id"], issue.get("number"), fetch_date,
                 issue.get("title"), issue.get("link"),
@@ -356,6 +357,7 @@ def _store_refreshed(fetched, date_by_id: dict[str, str]) -> dict:
                     issue, "business_hours_first_response_seconds"),
                 weekly.pylon_duration_seconds(
                     issue, "business_hours_resolution_seconds"),
+                channels.slack_permalink(issue),
             ))
             stored += 1
 

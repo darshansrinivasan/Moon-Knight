@@ -101,6 +101,22 @@ for name, cl, denied in (("admin", ADMIN, False),
     check(f"{name} invites people", r.status_code == 403, denied)
 
 print()
+print("=== the CSM page: every role reads it, and refreshes it ===")
+# Deliberately open to members end to end: a CSM checking what is open on their
+# own accounts is reading, not administering.
+for name, cl in (("admin", ADMIN), ("operator", OPERATOR), ("member", MEMBER)):
+    r = cl.get("/api/csm/owners")
+    check(f"{name} reads the CSM picker", r.status_code == 403, False)
+    r = cl.get("/api/csm/analytics?owner=nobody")
+    check(f"{name} reads CSM analytics", r.status_code == 403, False)
+    # Refresh is open to members on purpose, unlike /api/open/refetch which
+    # does the same Pylon fetch behind an operator gate: a CSM about to join a
+    # customer call needs current data, has no operator to ask, and this path
+    # spends no money. Asserted so the exception stays a decision, not a drift.
+    r = cl.post("/api/csm/refresh")
+    check(f"{name} refreshes from Pylon", r.status_code == 403, False)
+
+print()
 print("=== the rubric: admins and operators edit, members read ===")
 # The admin row is asserted rather than assumed: it was briefly operator-only,
 # which locked administrators out of a page they are supposed to own.

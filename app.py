@@ -23,6 +23,7 @@ load_dotenv()
 
 import auth
 import channels
+import csm
 import db
 import drilldown
 import dryrun
@@ -459,8 +460,8 @@ async def fetch_and_store(target: date) -> FetchResult:
                          customer_portal_visible, fetched_at, csat_responses,
                          first_response_seconds, resolution_seconds,
                          business_hours_first_response_seconds,
-                         business_hours_resolution_seconds)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         business_hours_resolution_seconds, slack_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     issue["id"], issue.get("number"), date_str,
                     issue.get("title"), issue.get("link"),
@@ -481,6 +482,7 @@ async def fetch_and_store(target: date) -> FetchResult:
                         issue, "business_hours_first_response_seconds"),
                     weekly.pylon_duration_seconds(
                         issue, "business_hours_resolution_seconds"),
+                    channels.slack_permalink(issue),
                 ))
 
                 # Origin channel, when the payload names it (most internal-
@@ -779,6 +781,82 @@ async def open_preview(start: str | None = None, end: str | None = None,
                        user: dict = Depends(auth.require_user)):
     s, e, st = _open_args(start, end, states)
     return await asyncio.to_thread(openqc.preview, s, e, st)
+
+
+# ── CSM page ─────────────────────────────────────────────────────────────────
+#
+# No grade on any of these. The page shows a customer-facing owner what is open
+# on their accounts; QC verdicts are an internal judgement about the support
+# team and are deliberately not part of this surface.
+
+@app.get("/csm", response_class=HTMLResponse)
+async def csm_page(user: dict = Depends(auth.require_user)):
+    return _page("csm.html")
+
+
+@app.get("/api/csm/owners")
+async def csm_owners(user: dict = Depends(auth.require_user)):
+    return await asyncio.to_thread(lambda: {
+        "owners": csm.owners(),
+        "bucket_label": csm.bucket_label(),
+        "synced_at": csm.synced_at(),
+    })
+
+
+@app.get("/api/csm/tickets")
+async def csm_tickets(owner: str, user: dict = Depends(auth.require_user)):
+    owner = (owner or "").strip()
+    if not owner:
+        raise HTTPException(400, "Pick a CSM first.")
+    return await asyncio.to_thread(csm.tickets_for, owner)
+
+
+@app.get("/api/csm/ticket/{ticket_id}/conversation")
+async def csm_conversation(ticket_id: str,
+                           user: dict = Depends(auth.require_user)):
+    data = await asyncio.to_thread(csm.conversation, ticket_id)
+    if not data["ticket"]:
+        raise HTTPException(404, "No such ticket.")
+    return data
+
+
+@app.get("/api/csm/analytics")
+async def csm_analytics(owner: str, user: dict = Depends(auth.require_user)):
+    owner = (owner or "").strip()
+    if not owner:
+        raise HTTPException(400, "Pick a CSM first.")
+    return await asyncio.to_thread(csm.analytics, owner)
+
+
+@app.post("/api/csm/refresh")
+async def csm_refresh(user: dict = Depends(auth.require_user)):
+    """Pull fresh accounts AND fresh open tickets from Pylon, on demand.
+
+    Open to every signed-in role, unlike /api/open/refetch which does the same
+    ticket fetch behind an operator gate. The difference is deliberate: a CSM
+    about to join a customer call needs current data and has no operator to
+    ask, and this path spends no money — `_store_refreshed` re-runs the R-check
+    scorer, which is deterministic Python, and never reaches Vertex.
+
+    It holds `fetch:open` — the SAME name the Open Tickets tab and the
+    scheduler take — so a CSM pressing Refresh cannot run a second backlog
+    fetch alongside one already in flight. A busy lock is a 409, not a queue.
+    """
+    try:
+        with db.advisory_lock("accounts:sync", user["email"], ttl_seconds=900), \
+             db.advisory_lock("fetch:open", user["email"], ttl_seconds=1800):
+            accounts = await csm.sync_accounts()
+            tickets = await openqc.refetch_open()
+    except db.LockBusy as e:
+        raise HTTPException(409, str(e))
+    except pylon.PylonNotConfigured as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        logger.exception("CSM refresh failed")
+        raise HTTPException(500, str(e)[:300])
+    res = {"accounts": accounts, "tickets": tickets}
+    vault.audit(user["email"], "csm.refresh", json.dumps(res)[:800])
+    return res
 
 
 @app.post("/api/open/refetch")

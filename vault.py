@@ -276,6 +276,18 @@ SETTING_SPECS = [
     {"key": "schedule_target",    "legacy_env": "SCHEDULE_TARGET",  "default": "yesterday"},
     # Display-only: which Google account was connected for Cloud access.
     {"key": "google_cloud_account", "default": ""},
+    # CSM page: which account fields name the owning CSM and the lifecycle
+    # bucket. Slugs, not labels — a Pylon admin renaming "Current Customer"
+    # must not empty the page. Settings rather than constants because these
+    # are HubSpot-synced fields that a CRM change can repoint.
+    {"key": "csm_owner_field",  "default": "account.hubspot.hubspot_owner_id"},
+    {"key": "csm_bucket_field", "default": "account.hubspot.tam_bucket"},
+    # The one bucket the page covers. Pylon's stored value for the bucket
+    # LABELLED "Current Customer" is this string — a separate 'Churned
+    # Customer' value sits one careless match away, so it is pinned exactly.
+    {"key": "csm_bucket_value", "default": "Customer/ Churned Customer"},
+    # Stamped by the account sweep so the page can say how fresh its roster is.
+    {"key": "accounts_synced_at", "default": ""},
     # Pylon survey used by the Weekly Dashboard CSAT pull.
     # GET /surveys lists them; GET /surveys/{id}/responses is the data.
     {"key": "csat_survey_id", "default": ""},

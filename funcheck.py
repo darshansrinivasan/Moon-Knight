@@ -88,6 +88,13 @@ CATALOG_SETTINGS = {"functionality": "funcheck_functionalities_json",
 # words they chose in the dropdown, never the machine name behind it.
 LABELS_SETTING = "pylon_option_labels_json"
 
+# The same bridge for fields defined on ACCOUNTS, in its own setting rather
+# than a third key inside the map above: the two are synced by different jobs,
+# and set_raw_setting replaces a setting whole — sharing one key means whichever
+# sync ran last silently drops the other's labels. Merged on read, so there is
+# still exactly one translator (`canon`) for the whole app.
+ACCOUNT_LABELS_SETTING = "pylon_account_option_labels_json"
+
 
 def _json_setting(key: str, what: str):
     """A JSON vault setting, or None when absent or unparseable (logged).
@@ -121,14 +128,17 @@ def invalidate_labels() -> None:
 
 
 def option_labels() -> dict:
-    """{'functionality': {value: label}, 'category': {...}} — cached."""
+    """{'functionality': {value: label}, 'category': {...}, 'tam_bucket': {...}}
+    — cached."""
     global _labels_cache
     with _labels_lock:
         if _labels_cache is not None:
             return _labels_cache
-    out = {"functionality": {}, "category": {}}
-    data = _json_setting(LABELS_SETTING, "Pylon label map")
-    if isinstance(data, dict):
+    out = {"functionality": {}, "category": {}, "tam_bucket": {}}
+    for setting in (LABELS_SETTING, ACCOUNT_LABELS_SETTING):
+        data = _json_setting(setting, "Pylon label map")
+        if not isinstance(data, dict):
+            continue
         for key in out:
             m = data.get(key)
             if isinstance(m, dict):
@@ -139,11 +149,16 @@ def option_labels() -> dict:
 
 
 def canon(kind: str, value: str | None) -> str:
-    """A tag as its Pylon LABEL when the map knows it, verbatim otherwise."""
+    """A tag as its Pylon LABEL when the map knows it, verbatim otherwise.
+
+    `kind` an unknown map translates to nothing rather than raising: a caller
+    asking for a field whose labels have not synced yet should show the raw
+    value, not 500.
+    """
     value = (value or "").strip()
     if not value:
         return value
-    return option_labels()[kind].get(value, value)
+    return option_labels().get(kind, {}).get(value, value)
 
 
 def clean_entries(entries: list) -> list:

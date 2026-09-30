@@ -51,6 +51,21 @@ check("/api/closed-sweep unauthenticated -> 401", r.status_code == 401, str(r.st
 # answer an unauthenticated caller, and is operator-gated for signed-in members.
 r = client.get("/api/spend/total")
 check("/api/spend/total unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+# The CSM page is a READ surface every signed-in role may open — a CSM looking
+# up their own book is not an operator action. The sync behind it writes the
+# store every CSM reads, so that one is gated (asserted in t_roles).
+r = client.get("/csm")
+check("/csm unauthenticated -> 302 to login",
+      r.status_code in (302, 307) and "/login" in r.headers.get("location", ""),
+      f"{r.status_code} {r.headers.get('location', '')}")
+r = client.get("/api/csm/owners")
+check("/api/csm/owners unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.get("/api/csm/tickets?owner=x")
+check("/api/csm/tickets unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.get("/api/csm/analytics?owner=x")
+check("/api/csm/analytics unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.post("/api/csm/refresh")
+check("/api/csm/refresh unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/api/rootly/incidents")
 check("/api/rootly/incidents unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/rootly")

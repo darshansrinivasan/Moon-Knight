@@ -93,6 +93,23 @@ def internal_ticket_ids() -> set:
             ids).fetchall()}
 
 
+def slack_permalink(issue: dict) -> str | None:
+    """Deep link to the Slack thread an issue came from, or None.
+
+    One function owns the URL shape because it is assembled from three
+    separate payload fields and a dot that has to be removed — a second
+    hand-rolled copy is how half the links end up pointing at the channel
+    instead of the message.
+    """
+    sl = issue.get("slack") or {}
+    ws, chan, ts = (sl.get("workspace_id"), sl.get("channel_id"),
+                    sl.get("message_ts"))
+    if not (ws and chan and ts):
+        return None
+    return (f"https://{ws}.slack.com/archives/{chan}"
+            f"/p{str(ts).replace('.', '')}")
+
+
 def note_payload_channel(issue: dict, conn) -> None:
     """Fast-path writer: an issue payload that DOES carry its channel.
 

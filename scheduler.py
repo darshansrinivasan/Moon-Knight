@@ -300,6 +300,15 @@ async def run_pipeline(target: date, triggered_by: str,
                     app._CLOSED_COUNTS.clear()
                 except Exception:
                     logger.exception("Channel tagging failed")
+                # The CSM roster: which accounts exist, who owns them, and
+                # what the lifecycle options are called. Three Pylon listings,
+                # no Vertex, so it sits here with the other index refreshes
+                # rather than waiting for an operator to remember it.
+                try:
+                    import csm
+                    await csm.sync_accounts()
+                except Exception:
+                    logger.exception("Account sync failed")
                 # Open-backlog QC: a ticket created last week and still open
                 # keeps evolving after its birthday grade — re-examine the
                 # whole open set every morning. Fingerprints make unchanged

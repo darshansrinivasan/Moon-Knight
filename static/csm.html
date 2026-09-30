@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CSM Page · Pylon QC</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/shell.css">
+<style>
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin-bottom: 14px;
+  }
+  .controls label { font-size: 12px; color: var(--muted); }
+  #csm-pick {
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 6px 10px;
+    font-size: 12.5px; font-family: inherit; min-width: 240px;
+  }
+  .view-toggle { display: flex; gap: 0; }
+  .view-toggle button {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    font-size: 12px; font-weight: 600; padding: 6px 14px; cursor: pointer;
+    font-family: inherit;
+  }
+  .view-toggle button:first-child { border-radius: 8px 0 0 8px; }
+  .view-toggle button:last-child  { border-radius: 0 8px 8px 0; border-left: none; }
+  .view-toggle button.on {
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+    border-color: var(--color-accent); color: var(--color-accent);
+  }
+  .right-side { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .right-side .stamp { font-size: 11.5px; color: var(--muted); }
+  #sync-btn, #col-reset {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    border-radius: 8px; padding: 6px 14px; font-size: 12.5px;
+    font-weight: 600; cursor: pointer; font-family: inherit;
+  }
+  #sync-btn:hover, #col-reset:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  #sync-btn:disabled { opacity: .5; cursor: default; }
+  /* `hidden` on a button a class gave a display value to does nothing — stated
+     explicitly so Reset columns stays invisible until an order is saved. */
+  #col-reset[hidden] { display: none; }
+
+  .summary { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  .summary b { color: var(--text); }
+
+  .tbl-wrap { overflow-x: auto; }
+  th { white-space: nowrap; cursor: pointer; user-select: none; }
+  th.nosort { cursor: grab; }
+  th.sorted { color: var(--color-accent); }
+  th.dragging { opacity: .4; }
+  th.drop-target { box-shadow: inset 2px 0 0 var(--color-accent); }
+  .sort-arrow { font-size: 9px; }
+  td { vertical-align: top; }
+  td.stamp { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  td.stamp .hm { color: var(--muted); }
+  /* Status wraps rather than forcing its own column width — "waiting on
+     customer" on one line cost 146px of a 1276px pane. */
+  .state-tag { white-space: normal; }
+  td.status-cell { max-width: 104px; }
+  .title-cell { min-width: 180px; }
+  .acct-cell { min-width: 150px; font-weight: 600; }
+  .tno { color: var(--accent2); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .state-tag {
+    display: inline-block; font-size: 11px; padding: 2px 9px; border-radius: 11px;
+    background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+  }
+  .ext { color: var(--accent2); text-decoration: none; white-space: nowrap; }
+  .ext:hover { text-decoration: underline; }
+
+  tr.trow { cursor: pointer; }
+  tr.trow:hover > td { background: var(--surface); }
+  .caret { display: inline-block; width: 12px; color: var(--muted); font-size: 10px; }
+  tr.trow.open .caret { transform: rotate(90deg); }
+
+  .convo-cell { padding: 0; background: var(--surface2); }
+  .convo { padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .bubble {
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px 11px;
+    background: var(--surface); max-width: 760px; font-size: 12.5px;
+    line-height: 1.55;
+  }
+  /* pre-wrap belongs to the message body alone. On `.bubble` it also honoured
+     the newlines and indentation of the template that builds the bubble, so
+     every message carried three blank lines it never contained. */
+  .bubble .body { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble.customer { align-self: flex-end; background: var(--surface2); }
+  .bubble.private  { border-style: dashed; }
+  .bubble .who { font-size: 11px; font-weight: 700; margin-bottom: 3px; color: var(--accent2); }
+  .bubble.customer .who { color: var(--review); }
+  .bubble .when { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  /* A reply arrives with its full email signature — address block, phone,
+     disclaimer — so one message could run past the fold and a thread of
+     thirteen could not be skimmed at all. Long bodies clamp, with the fade
+     saying there is more and the button saying how to get it. */
+  .bubble .body.clamp {
+    max-height: 13em; overflow: hidden;
+    -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent);
+    mask-image: linear-gradient(180deg, #000 78%, transparent);
+  }
+  .bubble .more {
+    background: none; border: none; padding: 2px 0 0; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 600;
+    color: var(--accent2);
+  }
+  .bubble .more:hover { text-decoration: underline; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 1100px) { .charts { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px;
+  }
+  .chart-card h2 {
+    font-size: 12.5px; font-weight: 700; margin: 0 0 2px; color: var(--text);
+  }
+  .chart-card .what { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+  /* Small multiples, not six coloured lines in one frame. This design system
+     has exactly four categorical hues that separate (accent, pass, review,
+     fail); its remaining slots are TINTS of the accent, so a five-account
+     legend painted Veho, NPR and Sublime the same purple. Panels carry identity
+     in the heading instead, share one y-scale so the heights compare, and every
+     line is drawn in the one accent hue. */
+  .smalls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  @media (max-width: 760px) { .smalls { grid-template-columns: repeat(2, 1fr); } }
+  .small {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px 8px 4px;
+  }
+  .small .nm {
+    font-size: 12px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .small .tot { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .small canvas { max-height: 56px; }
+
+  .cwrap { position: relative; width: 100%; min-height: 200px; }
+  .cwrap canvas { max-height: 240px; }
+  .cwrap .chart-empty {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center;
+  }
+  .stand-wrap table { max-width: 520px; }
+  .stand-wrap th:first-child, .stand-wrap td:first-child { width: 60%; }
+  .stand-wrap h2 { font-size: 12.5px; font-weight: 700; margin: 0 0 2px; }
+  .stand-wrap .what { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+  tr.me > td { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+
+  .empty { text-align: center; color: var(--muted); padding: 26px 10px; font-size: 12.5px; }
+  .sk-row td { padding: 10px; }
+</style>
+</head>
+<body class="shell" data-page="csm">
+<nav class="app-nav" id="app-nav"></nav>
+<div class="app-main">
+  <header class="app-header">
+    <h1>CSM Page</h1>
+    <span class="muted" id="scope-note">Open tickets on the accounts you own.</span>
+    <div class="spacer"></div>
+  </header>
+  <div class="app-body">
+    <div class="content-pane">
+
+      <div class="controls">
+        <label for="csm-pick">CSM</label>
+        <select id="csm-pick"><option value="">Loading…</option></select>
+        <div class="view-toggle">
+          <button id="view-tickets" class="on">Open tickets</button>
+          <button id="view-company">By company</button>
+          <button id="view-analytics">Analytics</button>
+        </div>
+        <div class="right-side">
+          <span class="stamp" id="sync-stamp"></span>
+          <button id="col-reset" hidden title="Put the columns back in their original order">Reset columns</button>
+          <button id="sync-btn"
+                  title="Pull the latest accounts and open tickets from Pylon. Costs nothing — no AI runs.">Refresh from Pylon</button>
+        </div>
+      </div>
+
+      <div class="msg" id="sync-msg"></div>
+      <div class="summary" id="summary"></div>
+
+      <div class="tbl-wrap" id="table-view">
+        <table>
+          <thead><tr id="head-row"></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <div id="analytics-view" hidden>
+        <div class="charts">
+          <div class="chart-card">
+            <h2>Ticket volume — this CSM</h2>
+            <div class="what">Tickets raised each month across their accounts,
+              and how many of those are still open today.</div>
+            <div class="cwrap"><canvas id="cVolume"></canvas></div>
+          </div>
+          <div class="chart-card">
+            <h2>Ticket volume by account</h2>
+            <div class="what">The same six months, one panel per account on a
+              shared scale. Everything past the top five is folded into the
+              last panel.</div>
+            <div class="smalls" id="account-charts"></div>
+          </div>
+        </div>
+        <div class="stand-wrap">
+          <h2>Every CSM</h2>
+          <div class="what" id="stand-what">Accounts owned and tickets open right now.</div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th class="nosort">CSM</th><th class="nosort">Accounts</th>
+                <th class="nosort">Open tickets</th></tr></thead>
+              <tbody id="stand-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="/static/shell.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = QC.esc;
+
+// A stored link is data from Pylon, not a constant. Anything but http(s) is
+// dropped rather than rendered — an href is the one interpolation escaping
+// alone does not make safe.
+const safeHref = u => (u && /^https?:\/\//i.test(u)) ? u : null;
+
+// ISO-ish and 24-hour, matching the date format the rest of the app prints.
+// Not a locale long form: two timestamp columns in that style cost 130px of a
+// 1276px pane, which pushed the Pylon link — the reason someone opens a row —
+// off the right edge.
+const pad = n => String(n).padStart(2, "0");
+const parts = iso => {
+  const d = new Date(iso);
+  if (!iso || isNaN(d)) return null;
+  return [`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+          `${pad(d.getHours())}:${pad(d.getMinutes())}`];
+};
+const fmt = iso => { const p = parts(iso); return p ? p.join(" ") : (iso || "—"); };
+// Stacked in the table: twelve columns do not fit a laptop pane on one line,
+// and the year is the first thing a one-line format gives up — which is the
+// one piece a six-month-old ticket needs. Two lines keeps both.
+const fmtCell = iso => {
+  const p = parts(iso);
+  return p ? `${esc(p[0])}<div class="hm">${esc(p[1])}</div>`
+           : `<span class="muted">—</span>`;
+};
+
+const link = (url, text, title) => {
+  const u = safeHref(url);
+  return u ? `<a class="ext" href="${esc(u)}" target="_blank" rel="noopener"
+                 title="${esc(title || "")}">${esc(text)}</a>`
+           : `<span class="muted">—</span>`;
+};
+
+const stateLabel = s => String(s || "").replace(/_/g, " ");
+
+// Pylon's stored HTML is rendered as TEXT: parsed into a detached node for its
+// words, then escaped back in — the same rule the review sheet follows, and the
+// only safe way to show markup a customer wrote.
+//
+// The blank-line squeeze is not cosmetic. Email replies arrive with signature
+// blocks padded by empty paragraphs, and `white-space: pre-wrap` honoured every
+// one of them: a single message filled the viewport, so a thread of thirteen
+// was unreadable. Runs of blank lines collapse to one; the signature stays.
+function plainText(html) {
+  const div = document.createElement("div");
+  // Block boundaries become newlines BEFORE the text is taken: textContent
+  // concatenates adjacent paragraphs, which ran a greeting into the sentence
+  // after it ("Hi Jennifer,Thank you for reaching out").
+  div.innerHTML = String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)\s*>/gi, "\n");
+  return (div.textContent || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// ── columns ─────────────────────────────────────────────────────────────────
+//
+// `sort` returns the value the header sorts on; `render` returns the cell. Both
+// keyed off the same registry so a reordered column carries its sort with it.
+const COLUMNS = {
+  created:   { label: "Created", sort: t => t.created_at || "", cls: "stamp",
+               render: t => fmtCell(t.created_at) },
+  account:   { label: "Account", sort: t => (t.account_name || "").toLowerCase(),
+               cls: "acct-cell",
+               render: t => esc(t.account_name || "—") },
+  num:       { label: "#", sort: t => t.number ?? 0,
+               render: t => `<span class="tno">#${esc(t.number ?? "")}</span>` },
+  title:     { label: "Title", sort: t => (t.title || "").toLowerCase(),
+               cls: "title-cell", render: t => esc(t.title || "—") },
+  creator:   { label: "Created by", sort: t => (t.created_by || "").toLowerCase(),
+               render: t => esc(t.created_by || "—") },
+  assignee:  { label: "Assignee", sort: t => (t.assignee_name || "").toLowerCase(),
+               render: t => esc(t.assignee_name || "Unassigned") },
+  // Coverage group follows the assignee, per Admin → Review Coverage. Someone
+  // on two rosters shows both rather than the first one found — a reviewer who
+  // covers EMEA and NAM really does cover both.
+  group:     { label: "Group", sort: t => (t.groups || []).join(", ").toLowerCase(),
+               render: t => (t.groups || []).length
+                 ? (t.groups || []).map(g =>
+                     `<span class="state-tag">${esc(g)}</span>`).join(" ")
+                 : `<span class="muted" title="${
+                      esc(t.assignee_name || "Unassigned")
+                    } is not on any coverage roster">—</span>` },
+  status:    { label: "Status", sort: t => (t.state || "").toLowerCase(),
+               cls: "status-cell",
+               render: t => `<span class="state-tag">${esc(stateLabel(t.state))}</span>` },
+  lastreply: { label: "Last reply", sort: t => t.last_reply_at || "", cls: "stamp",
+               render: t => fmtCell(t.last_reply_at) },
+  // No customer/support colouring here. Pylon marks the REQUESTER side
+  // is_customer=1, and on a ticket a CSM raised in an internal channel that
+  // side is a SpotDraft colleague — so the colour claimed "customer" about our
+  // own people. Whose turn it is already has an honest home: the Status column.
+  lastby:    { label: "Last replied by", sort: t => (t.last_reply_by || "").toLowerCase(),
+               render: t => t.last_reply_by
+                 ? esc(t.last_reply_by) : `<span class="muted">—</span>` },
+  slack:     { label: "Slack", sort: t => t.slack_url ? 0 : 1,
+               render: t => link(t.slack_url, "Thread",
+                                 "Open the Slack thread this ticket came from") },
+  pylon:     { label: "Pylon", sort: t => t.link ? 0 : 1,
+               render: t => link(t.link, "Open", "Open this ticket in Pylon") },
+};
+const DEFAULT_ORDER = ["created", "account", "num", "title", "creator", "assignee",
+                       "group", "status", "lastreply", "lastby", "slack", "pylon"];
+
+// Column order and sort belong to the PERSON, not the page: two CSMs sharing a
+// laptop must not inherit each other's layout, so the key carries the signed-in
+// email. localStorage keeps it off the server and out of everyone else's view.
+let who = "anon";
+const orderKey = () => `csm-col-order:${who}`;
+const sortKey  = () => `csm-col-sort:${who}`;
+
+let sortBy = null, sortDir = 1, draggedRecently = false;
+
+function loadSort() {
+  try {
+    const v = JSON.parse(localStorage.getItem(sortKey()) || "null");
+    if (v && COLUMNS[v.key]) { sortBy = v.key; sortDir = v.dir === -1 ? -1 : 1; }
+  } catch {}
+}
+function saveSort() {
+  try {
+    if (sortBy) localStorage.setItem(sortKey(), JSON.stringify({ key: sortBy, dir: sortDir }));
+    else localStorage.removeItem(sortKey());
+  } catch {}
+}
+// Third click clears back to the natural order rather than trapping the reader
+// in one of two sorts forever.
+function cycleSort(key) {
+  if (sortBy !== key) { sortBy = key; sortDir = 1; }
+  else if (sortDir === 1) { sortDir = -1; }
+  else { sortBy = null; sortDir = 1; }
+  saveSort();
+}
+function sortRows(rows) {
+  if (!sortBy || !COLUMNS[sortBy]) return rows;
+  const key = COLUMNS[sortBy].sort;
+  return rows.slice().sort((a, b) => {
+    const x = key(a), y = key(b);
+    if (x === y) return 0;
+    // Blanks sort last in both directions: an empty cell is missing data, not
+    // a small value, and letting it lead a descending sort buries the rows
+    // someone clicked the header to see.
+    const xb = x === "" || x === null || x === undefined;
+    const yb = y === "" || y === null || y === undefined;
+    if (xb !== yb) return xb ? 1 : -1;
+    const cmp = (typeof x === "number" && typeof y === "number")
+      ? x - y : String(x).localeCompare(String(y));
+    return cmp * sortDir;
+  });
+}
+function colOrder() {
+  let stored = null;
+  try { stored = JSON.parse(localStorage.getItem(orderKey()) || "null"); } catch {}
+  if (!Array.isArray(stored)) return [...DEFAULT_ORDER];
+  const out = stored.filter(k => COLUMNS[k]);
+  // A column added after someone saved an order lands where it was DESIGNED to
+  // sit rather than being dumped on the end, where nobody who had ever dragged
+  // a header would see it.
+  DEFAULT_ORDER.forEach((k, idx) => {
+    if (!out.includes(k)) out.splice(Math.min(idx, out.length), 0, k);
+  });
+  return out;
+}
+function saveColOrder(order) {
+  try {
+    if (order.join() === DEFAULT_ORDER.join()) localStorage.removeItem(orderKey());
+    else localStorage.setItem(orderKey(), JSON.stringify(order));
+  } catch {}
+}
+
+// ── state ───────────────────────────────────────────────────────────────────
+
+let data = { tickets: [], accounts: [] };
+let view = "tickets";
+let seq = 0;                 // races: a slow CSM's rows must not land last
+const expanded = new Map();  // ticket_id → conversation payload (null = loading)
+
+// ── head ────────────────────────────────────────────────────────────────────
+
+function renderHead() {
+  if (view === "company") {
+    $("head-row").innerHTML =
+      `<th class="nosort">Account</th><th class="nosort">Domain</th>` +
+      `<th class="nosort">Open tickets</th>`;
+    $("col-reset").hidden = true;
+    return;
+  }
+  const order = colOrder();
+  $("head-row").innerHTML = order.map(k => {
+    const on = sortBy === k;
+    const arrow = on ? (sortDir === 1 ? " ▲" : " ▼") : "";
+    return `<th draggable="true" data-col="${esc(k)}" class="${on ? "sorted" : ""}"
+       title="Click to sort by ${esc(COLUMNS[k].label)} · drag to move this column"
+      >${esc(COLUMNS[k].label)}<span class="sort-arrow">${arrow}</span></th>`;
+  }).join("");
+  $("col-reset").hidden = order.join() === DEFAULT_ORDER.join();
+
+  let dragKey = null;
+  $("head-row").querySelectorAll("th").forEach(th => {
+    // Click sorts, drag reorders — the same header does both, so a click that
+    // followed a drag must not also sort.
+    th.addEventListener("dragstart", () => {
+      dragKey = th.dataset.col;
+      draggedRecently = true;
+      th.classList.add("dragging");
+    });
+    th.addEventListener("click", () => {
+      if (draggedRecently) { draggedRecently = false; return; }
+      cycleSort(th.dataset.col);
+      renderHead(); renderRows();
+    });
+    th.addEventListener("dragend", () => {
+      dragKey = null;
+      $("head-row").querySelectorAll("th").forEach(t =>
+        t.classList.remove("dragging", "drop-target"));
+    });
+    th.addEventListener("dragover", e => {
+      if (!dragKey || th.dataset.col === dragKey) return;
+      e.preventDefault();
+      th.classList.add("drop-target");
+    });
+    th.addEventListener("dragleave", () => th.classList.remove("drop-target"));
+    th.addEventListener("drop", e => {
+      e.preventDefault();
+      if (!dragKey || th.dataset.col === dragKey) return;
+      const next = colOrder().filter(k => k !== dragKey);
+      next.splice(next.indexOf(th.dataset.col), 0, dragKey);
+      saveColOrder(next);
+      renderHead(); renderRows();
+    });
+  });
+}
+
+// ── rows ────────────────────────────────────────────────────────────────────
+
+function renderSummary() {
+  if (!$("csm-pick").value) { $("summary").textContent = ""; return; }
+  const open = data.tickets.length;
+  const withOpen = data.accounts.filter(a => a.open_tickets > 0).length;
+  $("summary").innerHTML =
+    `<b>${open}</b> open ticket${open === 1 ? "" : "s"} across ` +
+    `<b>${withOpen}</b> of <b>${data.accounts.length}</b> account` +
+    `${data.accounts.length === 1 ? "" : "s"}.`;
+}
+
+function renderCompany() {
+  const rows = data.accounts;
+  if (!rows.length) {
+    $("rows").innerHTML = `<tr><td colspan="3" class="empty">
+      This CSM owns no ${esc(data.bucket_label || "Current Customer")} accounts.
+      Sync accounts if that looks wrong.</td></tr>`;
+    return;
+  }
+  $("rows").innerHTML = rows.map(a => `<tr>
+      <td class="acct-cell">${esc(a.name)}</td>
+      <td class="muted">${esc(a.domain || "—")}</td>
+      <td class="num">${a.open_tickets}</td>
+    </tr>`).join("");
+}
+
+function renderRows() {
+  if (view === "company") return renderCompany();
+  const order = colOrder();
+  const rows = sortRows(data.tickets);
+  if (!rows.length) {
+    $("rows").innerHTML = `<tr><td colspan="${order.length}" class="empty">${
+      $("csm-pick").value
+        ? "Nothing open on this CSM's accounts."
+        : "Pick a CSM to see what is open on their accounts."}</td></tr>`;
+    return;
+  }
+  $("rows").innerHTML = rows.map(t => {
+    // The expand caret rides the leading cell, whichever column that now is —
+    // baked into one column's renderer it wandered into the middle of the row
+    // the first time someone dragged a header.
+    const cells = order.map((k, i) => {
+      const c = COLUMNS[k];
+      const caret = i === 0 ? `<span class="caret">▶</span> ` : "";
+      return `<td class="${c.cls || ""}">${caret}${c.render(t)}</td>`;
+    }).join("");
+    const isOpen = expanded.has(t.id);
+    const convo = isOpen
+      ? `<tr class="convo-row" data-for="${esc(t.id)}">
+           <td class="convo-cell" colspan="${order.length}">${
+             renderConvo(expanded.get(t.id))}</td></tr>`
+      : "";
+    return `<tr class="trow${isOpen ? " open" : ""}" data-id="${esc(t.id)}">${cells}</tr>${convo}`;
+  }).join("");
+
+  // Only bodies that actually overflow get a control — an unclamped short
+  // message with a "Show more" under it is a button that does nothing.
+  $("rows").querySelectorAll(".bubble .body.clamp").forEach(body => {
+    if (body.scrollHeight <= body.clientHeight + 4) {
+      body.classList.remove("clamp");
+      return;
+    }
+    const btn = document.createElement("button");
+    btn.className = "more";
+    btn.type = "button";
+    btn.textContent = "Show more";
+    btn.addEventListener("click", e => {
+      e.stopPropagation();          // the row toggle sits behind this
+      const on = body.classList.toggle("clamp");
+      btn.textContent = on ? "Show more" : "Show less";
+    });
+    body.after(btn);
+  });
+
+  $("rows").querySelectorAll("tr.trow").forEach(tr => {
+    tr.addEventListener("click", e => {
+      // A link inside the row is the row's other job — following it must not
+      // also toggle the thread open behind the new tab.
+      if (e.target.closest("a")) return;
+      toggle(tr.dataset.id);
+    });
+  });
+}
+
+function renderConvo(payload) {
+  if (!payload) return `<div class="convo"><span class="muted">Loading conversation…</span></div>`;
+  if (payload.error) return `<div class="convo"><span class="muted">${esc(payload.error)}</span></div>`;
+  const msgs = payload.messages || [];
+  if (!msgs.length) return `<div class="convo"><span class="muted">No messages stored for this ticket.</span></div>`;
+  return `<div class="convo">${msgs.map(m => {
+    const text = plainText(m.message_html);
+    const label = m.is_private ? `${m.author_name || "Unknown"} (private)`
+                               : (m.author_name || "Unknown");
+    return `<div class="bubble ${m.is_customer ? "customer" : ""}${m.is_private ? " private" : ""}">
+      <div class="who">${esc(label)}</div>
+      <div class="body clamp">${esc(text)}</div>
+      <div class="when">${esc(fmt(m.timestamp))}</div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+async function toggle(id) {
+  if (expanded.has(id)) { expanded.delete(id); renderRows(); return; }
+  expanded.set(id, null);
+  renderRows();
+  try {
+    const d = await QC.api(`/api/csm/ticket/${encodeURIComponent(id)}/conversation`);
+    // The row may have been collapsed, or the CSM switched, while this was in
+    // flight — dropping a late answer is correct, re-opening the row is not.
+    if (!expanded.has(id)) return;
+    expanded.set(id, d);
+  } catch (e) {
+    if (!expanded.has(id)) return;
+    expanded.set(id, { error: `Could not load the conversation: ${e.message}` });
+  }
+  renderRows();
+}
+
+// ── loading ─────────────────────────────────────────────────────────────────
+
+function skeleton() {
+  const span = view === "company" ? 3 : colOrder().length;
+  $("rows").innerHTML = Array.from({ length: 6 }, () =>
+    `<tr class="sk-row" aria-hidden="true"><td colspan="${span}">
+       <div class="sk" style="height:14px"></div></td></tr>`).join("");
+}
+
+async function load() {
+  const owner = $("csm-pick").value;
+  expanded.clear();
+  if (!owner) { data = { tickets: [], accounts: [] }; renderSummary(); renderRows(); return; }
+  const mine = ++seq;
+  skeleton();
+  $("summary").textContent = "";
+  try {
+    const d = await QC.api(`/api/csm/tickets?owner=${encodeURIComponent(owner)}`);
+    if (mine !== seq) return;
+    data = d;
+  } catch (e) {
+    if (mine !== seq) return;
+    // Clear every skeleton this loader painted — a half-shimmering table reads
+    // as "still working" long after the request gave up.
+    data = { tickets: [], accounts: [] };
+    $("summary").textContent = "";
+    $("rows").innerHTML = `<tr><td colspan="${view === "company" ? 3 : colOrder().length}"
+      class="empty">Could not load this CSM's tickets: ${esc(e.message)}. Try again.</td></tr>`;
+    return;
+  }
+  renderSummary();
+  renderRows();
+}
+
+async function loadOwners() {
+  let d;
+  try {
+    d = await QC.api("/api/csm/owners");
+  } catch (e) {
+    $("csm-pick").innerHTML = `<option value="">Could not load CSMs</option>`;
+    $("summary").innerHTML = `<span class="muted">${esc(e.message)}</span>`;
+    return;
+  }
+  const bucket = d.bucket_label || "Current Customer";
+  $("scope-note").textContent =
+    `Open tickets on the ${bucket} accounts a CSM owns, by Company owner.`;
+  $("sync-stamp").textContent = d.synced_at
+    ? `Accounts synced ${fmt(d.synced_at)}`
+    : "Accounts never synced";
+  if (!d.owners.length) {
+    $("csm-pick").innerHTML = `<option value="">No CSMs found</option>`;
+    $("summary").innerHTML =
+      `<span class="muted">No account lists an owner yet. Sync accounts to pull them from Pylon.</span>`;
+    return;
+  }
+  $("csm-pick").innerHTML =
+    `<option value="">Select a CSM…</option>` +
+    d.owners.map(o => `<option value="${esc(o.id)}">${
+      esc(o.name)} (${o.accounts})</option>`).join("");
+  // Land on your own book when the signed-in address owns accounts; a CSM
+  // opening their own page should not have to find themselves in a list of 29.
+  const me = (QC.me && QC.me.email || "").toLowerCase();
+  const mine = d.owners.find(o => (o.email || "").toLowerCase() === me);
+  if (mine) { $("csm-pick").value = mine.id; load(); }
+  else renderRows();
+}
+
+// ── analytics ───────────────────────────────────────────────────────────────
+//
+// Charts read the design tokens, exactly as the Weekly Dashboard does, so the
+// theme sweep moves every page at once and no colour is hardcoded here.
+
+const CH = {};
+const tok = n => getComputedStyle(document.documentElement)
+                   .getPropertyValue(n).trim();
+
+function pal() {
+  return {
+    accent: tok("--color-accent"), accent2: tok("--color-accent-400"),
+    accent3: tok("--color-accent-300"), pass: tok("--pass"),
+    fail: tok("--fail"), review: tok("--review"),
+    muted: tok("--muted"), border: tok("--color-divider"),
+  };
+}
+
+function chartBase() {
+  const p = pal();
+  return {
+    responsive: true, maintainAspectRatio: true,
+    interaction: { mode: "index", intersect: false },
+    plugins: {
+      legend: { labels: { color: p.muted, font: { size: 10 }, boxWidth: 10 } },
+    },
+    scales: {
+      x: { ticks: { color: p.muted, font: { size: 9 } }, grid: { color: p.border } },
+      y: { ticks: { color: p.muted, font: { size: 9 }, precision: 0 },
+           grid: { color: p.border }, beginAtZero: true },
+    },
+  };
+}
+
+const destroy = id => { if (CH[id]) { CH[id].destroy(); delete CH[id]; } };
+
+// A month label a person reads, from the 'YYYY-MM' the axis is keyed on.
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
+                "Jul","Aug","Sep","Oct","Nov","Dec"];
+const monthLabel = ym => {
+  const [y, m] = String(ym).split("-");
+  return `${MONTHS[Number(m) - 1] || m} ${String(y).slice(2)}`;
+};
+
+function chartOrEmpty(id, hasData, build) {
+  const canvas = $(id), host = canvas.closest(".cwrap");
+  let empty = host.querySelector(".chart-empty");
+  if (!hasData) {
+    destroy(id);
+    canvas.hidden = true;
+    if (!empty) {
+      empty = document.createElement("div");
+      empty.className = "empty chart-empty";
+      host.appendChild(empty);
+    }
+    empty.hidden = false;
+    empty.textContent = "No tickets on these accounts in the last six months.";
+    return;
+  }
+  canvas.hidden = false;
+  if (empty) empty.hidden = true;
+  build();
+}
+
+// One panel per account, all on the same y-scale so a tall panel really does
+// mean more tickets. A per-panel scale would let three tickets and thirty draw
+// the same shape, which is the whole failure mode of a sparkline grid.
+function renderSmallMultiples(accounts, labels, p) {
+  const host = $("account-charts");
+  Object.keys(CH).filter(k => k.startsWith("acc")).forEach(destroy);
+  if (!accounts.length) {
+    host.innerHTML = `<div class="empty">No tickets on these accounts in the
+      last six months.</div>`;
+    return;
+  }
+  const max = Math.max(1, ...accounts.flatMap(a => a.counts));
+  host.innerHTML = accounts.map((a, i) => `<div class="small">
+      <div class="nm" title="${esc(a.name)}">${esc(a.name)}</div>
+      <div class="tot">${a.counts.reduce((x, y) => x + y, 0)} tickets</div>
+      <canvas id="acc${i}"></canvas>
+    </div>`).join("");
+
+  accounts.forEach((a, i) => {
+    CH["acc" + i] = new Chart($("acc" + i), {
+      type: "line",
+      data: { labels, datasets: [{
+        label: a.name, data: a.counts, borderColor: p.accent,
+        backgroundColor: "transparent", borderWidth: 2, tension: .3,
+        pointRadius: 0, pointHoverRadius: 4,
+      }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        // The heading names the panel, so a legend box would repeat it in
+        // half the space the chart has to draw in.
+        plugins: { legend: { display: false },
+                   tooltip: { displayColors: false } },
+        scales: {
+          x: { display: false },
+          y: { display: false, beginAtZero: true, max, suggestedMax: max },
+        },
+      },
+    });
+  });
+}
+
+function renderAnalytics(d) {
+  if (typeof Chart === "undefined") return;
+  const p = pal(), labels = d.months.map(monthLabel);
+  const total = d.created.reduce((a, b) => a + b, 0);
+
+  chartOrEmpty("cVolume", total > 0, () => {
+    destroy("cVolume");
+    CH.cVolume = new Chart($("cVolume"), {
+      type: "line",
+      data: { labels, datasets: [
+        // Both series are ticket counts, so they share the one y-axis. A second
+        // scale for "still open" would let a flat handful of open tickets draw
+        // the same height as ninety raised.
+        { label: "Raised", data: d.created, borderColor: p.accent,
+          backgroundColor: p.accent, borderWidth: 2, tension: .3,
+          pointRadius: 3, pointHoverRadius: 5 },
+        { label: "Still open today", data: d.still_open, borderColor: p.review,
+          backgroundColor: p.review, borderWidth: 2, tension: .3,
+          pointRadius: 3, pointHoverRadius: 5 },
+      ] },
+      options: chartBase(),
+    });
+  });
+
+  renderSmallMultiples(d.accounts, labels, p);
+
+  const picked = $("csm-pick").value;
+  $("stand-rows").innerHTML = d.standings.map(r => `<tr class="${
+      r.id === picked ? "me" : ""}">
+      <td>${esc(r.name)}</td>
+      <td class="num">${r.accounts}</td>
+      <td class="num">${r.open_tickets}</td>
+    </tr>`).join("");
+}
+
+async function loadAnalytics() {
+  const owner = $("csm-pick").value;
+  if (!owner) {
+    $("stand-rows").innerHTML =
+      `<tr><td colspan="3" class="empty">Pick a CSM to see their trend.</td></tr>`;
+    destroy("cVolume");
+    Object.keys(CH).filter(k => k.startsWith("acc")).forEach(destroy);
+    $("account-charts").innerHTML = "";
+    return;
+  }
+  const mine = ++seq;
+  $("stand-rows").innerHTML = Array.from({ length: 5 }, () =>
+    `<tr aria-hidden="true"><td colspan="3"><div class="sk" style="height:14px"></div></td></tr>`).join("");
+  try {
+    const d = await QC.api(`/api/csm/analytics?owner=${encodeURIComponent(owner)}`);
+    if (mine !== seq) return;
+    renderAnalytics(d);
+  } catch (e) {
+    if (mine !== seq) return;
+    // Clear the skeletons this loader painted, and leave the charts empty
+    // rather than showing the previous CSM's numbers under a new name.
+    destroy("cVolume");
+    Object.keys(CH).filter(k => k.startsWith("acc")).forEach(destroy);
+    $("account-charts").innerHTML = "";
+    $("stand-rows").innerHTML = `<tr><td colspan="3" class="empty">
+      Could not load analytics: ${esc(e.message)}. Try again.</td></tr>`;
+  }
+}
+
+// ── wiring ──────────────────────────────────────────────────────────────────
+
+$("csm-pick").addEventListener("change", () => {
+  if (view === "analytics") loadAnalytics();
+  else load();
+});
+
+function setView(v) {
+  view = v;
+  $("view-tickets").classList.toggle("on", v === "tickets");
+  $("view-company").classList.toggle("on", v === "company");
+  $("view-analytics").classList.toggle("on", v === "analytics");
+  $("table-view").hidden = v === "analytics";
+  $("analytics-view").hidden = v !== "analytics";
+  $("summary").hidden = v === "analytics";
+  if (v === "analytics") { loadAnalytics(); return; }
+  renderHead();
+  renderRows();
+}
+$("view-tickets").addEventListener("click", () => setView("tickets"));
+$("view-company").addEventListener("click", () => setView("company"));
+$("view-analytics").addEventListener("click", () => setView("analytics"));
+
+$("col-reset").addEventListener("click", () => {
+  saveColOrder([...DEFAULT_ORDER]);
+  renderHead(); renderRows();
+});
+
+$("sync-btn").addEventListener("click", async () => {
+  const btn = $("sync-btn");
+  btn.disabled = true;
+  btn.textContent = "Refreshing…";
+  // The refresh reports into its OWN status line. It never replaces the table
+  // someone is reading — a side action that blanks the content is how people
+  // lose the row they were halfway through.
+  QC.show($("sync-msg"),
+    "Pulling accounts and open tickets from Pylon. This takes a minute; "
+    + "it costs nothing.", "info");
+  try {
+    const r = await QC.api("/api/csm/refresh", { method: "POST" });
+    const a = r.accounts || {}, t = r.tickets || {};
+    QC.show($("sync-msg"),
+      `Refreshed ${a.accounts} ${a.bucket_label} accounts and `
+      + `${t.stored ?? 0} open tickets from Pylon.`, "ok");
+    $("sync-stamp").textContent = `Refreshed ${fmt(a.at)}`;
+    await loadOwners();
+    if ($("csm-pick").value) {
+      if (view === "analytics") await loadAnalytics();
+      else await load();
+    }
+  } catch (e) {
+    QC.show($("sync-msg"),
+      `Refresh failed: ${e.message}. If a fetch is already running, wait for `
+      + `it to finish and press Refresh again.`, "err");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Refresh from Pylon";
+  }
+});
+
+QC.ready.then(me => {
+  who = (me && me.email) || "anon";
+  loadSort();
+  renderHead();
+  loadOwners();
+});
+</script>
+</body>
+</html>

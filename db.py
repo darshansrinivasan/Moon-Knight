@@ -80,6 +80,10 @@ _ADDED_COLUMNS = [
     # each clock keeps its own column.
     "ALTER TABLE tickets ADD COLUMN business_hours_first_response_seconds INTEGER",
     "ALTER TABLE tickets ADD COLUMN business_hours_resolution_seconds INTEGER",
+    # Deep link to the originating Slack thread. Assembled at fetch time
+    # from issue["slack"]; the CSM page hands it to a customer-facing owner
+    # who needs the conversation, not the Pylon record of it.
+    "ALTER TABLE tickets ADD COLUMN slack_url TEXT",
     # Rootly incident creator and its selected functionality names.
     "ALTER TABLE incidents ADD COLUMN created_by_name TEXT",
     "ALTER TABLE incidents ADD COLUMN functionality TEXT",

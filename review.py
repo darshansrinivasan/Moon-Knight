@@ -65,6 +65,29 @@ def list_coverages() -> list[dict]:
     ]
 
 
+def groups_by_assignee() -> dict:
+    """{assignee name: [coverage names]} — which groups cover each person.
+
+    One definition of "what group is this ticket in", because there are already
+    two readings of a coverage roster in the app (the Open tab's filter, the
+    Leaderboard's teams) and a third written from scratch is how APAC starts
+    meaning something different on two pages.
+
+    A name can appear on more than one roster and every one is returned: a
+    reviewer who covers both EMEA and NAM really does cover both, and silently
+    picking the first would hide half of that. The caller decides how to show a
+    two-group name; it is not this function's job to flatten it.
+    """
+    out: dict = {}
+    for cov in list_coverages():
+        name = (cov.get("name") or "").strip()
+        if not name:
+            continue
+        for who in cov.get("assignees") or []:
+            out.setdefault(who, []).append(name)
+    return out
+
+
 def save_coverage(payload: dict, updated_by: str) -> list[dict]:
     """Create or replace a coverage. `id` present means update."""
     name = (payload.get("name") or "").strip()

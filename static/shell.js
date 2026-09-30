@@ -13,6 +13,7 @@
     { id: "dashboard",   href: "/",                   label: "Dashboard" },
     { id: "analytics",   href: "/?view=analytics",    label: "Analytics" },
     { id: "open",        href: "/open",               label: "Open Tickets" },
+    { id: "csm",         href: "/csm",                label: "CSM Page" },
     { id: "funcheck",    href: "/funcheck",           label: "Functionality Check" },
     { id: "weekly",      href: "/weekly",             label: "Weekly Dashboard" },
     { id: "reports",     href: "/reports",            label: "Product Report" },
