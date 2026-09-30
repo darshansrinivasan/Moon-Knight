@@ -13,22 +13,73 @@
     margin-bottom: 14px;
   }
   .controls label { font-size: 12px; color: var(--muted); }
-  #csm-pick {
+  /* Same multiselect idiom as the Open tab's assignee and group pickers. */
+  .ms { position: relative; display: inline-block; }
+  .ms-btn {
     background: var(--surface); border: 1px solid var(--border);
-    color: var(--text); border-radius: 8px; padding: 6px 10px;
-    font-size: 12.5px; font-family: inherit; min-width: 240px;
+    border-radius: var(--radius); color: var(--text); font-size: 12.5px;
+    padding: 6px 26px 6px 10px; cursor: pointer; white-space: nowrap;
+    min-width: 240px; max-width: 420px; overflow: hidden;
+    text-overflow: ellipsis; text-align: left; font-family: inherit;
+    position: relative;
   }
-  .view-toggle { display: flex; gap: 0; }
+  .ms-btn::after {
+    content: "▾"; position: absolute; right: 9px; top: 50%;
+    transform: translateY(-50%); font-size: 10px; color: var(--muted);
+  }
+  .ms-btn:hover, .ms-btn.open { border-color: var(--color-accent); }
+  .ms-dropdown {
+    position: absolute; top: calc(100% + 4px); left: 0; min-width: 300px;
+    /* The pane this sits in scrolls (.content-pane is overflow-y: auto), so an
+       absolutely-positioned dropdown is clipped by it. 320px clears the pane
+       at every size worth supporting, but the vh cap makes that a guarantee
+       rather than an arithmetic coincidence on a short window. */
+    max-height: min(320px, 55vh); overflow-y: auto; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 4px 16px rgba(0,0,0,.35); z-index: 200; display: none;
+    padding: 4px 0;
+  }
+  .ms-dropdown.open { display: block; }
+  .ms-search {
+    display: block; width: calc(100% - 24px); margin: 4px 12px 6px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text);
+    font: inherit; font-size: 12px; padding: 5px 8px;
+  }
+  .ms-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    cursor: pointer; font-size: 12.5px; color: var(--text); user-select: none;
+  }
+  .ms-item:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+  .ms-item input { accent-color: var(--color-accent); cursor: pointer; }
+  .ms-count { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .ms-clear {
+    display: block; width: 100%; text-align: left; padding: 6px 12px;
+    background: none; border: none; color: var(--accent2); cursor: pointer;
+    font: inherit; font-size: 12px;
+  }
+  .ms-none { padding: 8px 12px; font-size: 12px; color: var(--muted); }
+  /* A segmented control: one outline, three segments — not three pills pushed
+     together. The rules have to cover the MIDDLE segment too. With only
+     :first-child and :last-child styled, "By company" kept square corners and
+     its own left border, so one seam was 2px and the other 1px and the whole
+     control read as broken. */
+  .view-toggle { display: flex; }
   .view-toggle button {
     background: transparent; border: 1px solid var(--border); color: var(--muted);
     font-size: 12px; font-weight: 600; padding: 6px 14px; cursor: pointer;
-    font-family: inherit;
+    font-family: inherit; border-radius: 0; position: relative;
   }
-  .view-toggle button:first-child { border-radius: 8px 0 0 8px; }
-  .view-toggle button:last-child  { border-radius: 0 8px 8px 0; border-left: none; }
+  /* Overlap rather than dropping a border, so the active segment still owns a
+     full accent outline instead of losing the edge it shares with a neighbour. */
+  .view-toggle button + button { margin-left: -1px; }
+  .view-toggle button:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+  .view-toggle button:last-child  { border-radius: 0 var(--radius) var(--radius) 0; }
+  .view-toggle button:hover { color: var(--text); z-index: 1; }
   .view-toggle button.on {
     background: color-mix(in srgb, var(--color-accent) 16%, transparent);
     border-color: var(--color-accent); color: var(--color-accent);
+    z-index: 2;   /* its accent edge draws over both neighbours' grey */
   }
   .right-side { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .right-side .stamp { font-size: 11.5px; color: var(--muted); }
@@ -60,7 +111,7 @@
      customer" on one line cost 146px of a 1276px pane. */
   .state-tag { white-space: normal; }
   td.status-cell { max-width: 104px; }
-  .title-cell { min-width: 180px; }
+  .title-cell { min-width: 165px; }
   .acct-cell { min-width: 150px; font-weight: 600; }
   .tno { color: var(--accent2); font-weight: 600; font-variant-numeric: tabular-nums; }
   .state-tag {
@@ -164,8 +215,17 @@
     <div class="content-pane">
 
       <div class="controls">
-        <label for="csm-pick">CSM</label>
-        <select id="csm-pick"><option value="">Loading…</option></select>
+        <label id="csm-label">CSM</label>
+        <div class="ms" id="csm-ms">
+          <button class="ms-btn" id="csm-ms-btn" aria-haspopup="listbox"
+                  aria-expanded="false">Loading…</button>
+          <div class="ms-dropdown" id="csm-ms-dropdown" role="listbox">
+            <input class="ms-search" id="csm-ms-search" type="search"
+                   placeholder="Search CSMs" aria-label="Search CSMs">
+            <button class="ms-clear" id="csm-ms-clear">Clear selection</button>
+            <div id="csm-ms-list"></div>
+          </div>
+        </div>
         <div class="view-toggle">
           <button id="view-tickets" class="on">Open tickets</button>
           <button id="view-company">By company</button>
@@ -192,7 +252,7 @@
       <div id="analytics-view" hidden>
         <div class="charts">
           <div class="chart-card">
-            <h2>Ticket volume — this CSM</h2>
+            <h2 id="vol-title">Ticket volume</h2>
             <div class="what">Tickets raised each month across their accounts,
               and how many of those are still open today.</div>
             <div class="cwrap"><canvas id="cVolume"></canvas></div>
@@ -296,6 +356,10 @@ const COLUMNS = {
   account:   { label: "Account", sort: t => (t.account_name || "").toLowerCase(),
                cls: "acct-cell",
                render: t => esc(t.account_name || "—") },
+  // Present only while more than one CSM is selected — see colOrder(). With a
+  // single selection it would repeat the same name down every row.
+  owner:     { label: "CSM", sort: t => (t.owner_name || "").toLowerCase(),
+               render: t => esc(t.owner_name || "—") },
   num:       { label: "#", sort: t => t.number ?? 0,
                render: t => `<span class="tno">#${esc(t.number ?? "")}</span>` },
   title:     { label: "Title", sort: t => (t.title || "").toLowerCase(),
@@ -332,8 +396,9 @@ const COLUMNS = {
   pylon:     { label: "Pylon", sort: t => t.link ? 0 : 1,
                render: t => link(t.link, "Open", "Open this ticket in Pylon") },
 };
-const DEFAULT_ORDER = ["created", "account", "num", "title", "creator", "assignee",
-                       "group", "status", "lastreply", "lastby", "slack", "pylon"];
+const DEFAULT_ORDER = ["created", "account", "owner", "num", "title", "creator",
+                       "assignee", "group", "status", "lastreply", "lastby",
+                       "slack", "pylon"];
 
 // Column order and sort belong to the PERSON, not the page: two CSMs sharing a
 // laptop must not inherit each other's layout, so the key carries the signed-in
@@ -381,10 +446,17 @@ function sortRows(rows) {
     return cmp * sortDir;
   });
 }
+// Columns that only earn their space in some selections. Dropped here rather
+// than at render so the saved order, the header, the rows and the skeleton
+// colspan all agree on how many columns there are.
+function visibleCols(order) {
+  return order.filter(k => k !== "owner" || multi());
+}
+
 function colOrder() {
   let stored = null;
   try { stored = JSON.parse(localStorage.getItem(orderKey()) || "null"); } catch {}
-  if (!Array.isArray(stored)) return [...DEFAULT_ORDER];
+  if (!Array.isArray(stored)) return visibleCols([...DEFAULT_ORDER]);
   const out = stored.filter(k => COLUMNS[k]);
   // A column added after someone saved an order lands where it was DESIGNED to
   // sit rather than being dumped on the end, where nobody who had ever dragged
@@ -392,11 +464,11 @@ function colOrder() {
   DEFAULT_ORDER.forEach((k, idx) => {
     if (!out.includes(k)) out.splice(Math.min(idx, out.length), 0, k);
   });
-  return out;
+  return visibleCols(out);
 }
 function saveColOrder(order) {
   try {
-    if (order.join() === DEFAULT_ORDER.join()) localStorage.removeItem(orderKey());
+    if (order.join() === visibleCols(DEFAULT_ORDER).join()) localStorage.removeItem(orderKey());
     else localStorage.setItem(orderKey(), JSON.stringify(order));
   } catch {}
 }
@@ -404,6 +476,9 @@ function saveColOrder(order) {
 // ── state ───────────────────────────────────────────────────────────────────
 
 let data = { tickets: [], accounts: [] };
+let allOwners = [];                 // every CSM, for the picker
+let pickedOnce = false;             // the "default to me" only fires once
+const selected = new Set();         // the chosen owner ids
 let view = "tickets";
 let seq = 0;                 // races: a slow CSM's rows must not land last
 const expanded = new Map();  // ticket_id → conversation payload (null = loading)
@@ -413,8 +488,8 @@ const expanded = new Map();  // ticket_id → conversation payload (null = loadi
 function renderHead() {
   if (view === "company") {
     $("head-row").innerHTML =
-      `<th class="nosort">Account</th><th class="nosort">Domain</th>` +
-      `<th class="nosort">Open tickets</th>`;
+      `<th class="nosort">Account</th>${multi() ? `<th class="nosort">CSM</th>` : ""}` +
+      `<th class="nosort">Domain</th><th class="nosort">Open tickets</th>`;
     $("col-reset").hidden = true;
     return;
   }
@@ -426,7 +501,7 @@ function renderHead() {
        title="Click to sort by ${esc(COLUMNS[k].label)} · drag to move this column"
       >${esc(COLUMNS[k].label)}<span class="sort-arrow">${arrow}</span></th>`;
   }).join("");
-  $("col-reset").hidden = order.join() === DEFAULT_ORDER.join();
+  $("col-reset").hidden = order.join() === visibleCols(DEFAULT_ORDER).join();
 
   let dragKey = null;
   $("head-row").querySelectorAll("th").forEach(th => {
@@ -467,25 +542,29 @@ function renderHead() {
 // ── rows ────────────────────────────────────────────────────────────────────
 
 function renderSummary() {
-  if (!$("csm-pick").value) { $("summary").textContent = ""; return; }
+  if (!selected.size) { $("summary").textContent = ""; return; }
   const open = data.tickets.length;
   const withOpen = data.accounts.filter(a => a.open_tickets > 0).length;
+  const who = multi() ? ` for <b>${selected.size}</b> CSMs` : "";
   $("summary").innerHTML =
     `<b>${open}</b> open ticket${open === 1 ? "" : "s"} across ` +
     `<b>${withOpen}</b> of <b>${data.accounts.length}</b> account` +
-    `${data.accounts.length === 1 ? "" : "s"}.`;
+    `${data.accounts.length === 1 ? "" : "s"}${who}.`;
 }
 
 function renderCompany() {
-  const rows = data.accounts;
+  const rows = data.accounts, span = multi() ? 4 : 3;
   if (!rows.length) {
-    $("rows").innerHTML = `<tr><td colspan="3" class="empty">
-      This CSM owns no ${esc(data.bucket_label || "Current Customer")} accounts.
-      Sync accounts if that looks wrong.</td></tr>`;
+    $("rows").innerHTML = `<tr><td colspan="${span}" class="empty">${
+      selected.size
+        ? `No ${esc(data.bucket_label || "Current Customer")} accounts for this
+           selection. Refresh from Pylon if that looks wrong.`
+        : "Pick a CSM to see their accounts."}</td></tr>`;
     return;
   }
   $("rows").innerHTML = rows.map(a => `<tr>
       <td class="acct-cell">${esc(a.name)}</td>
+      ${multi() ? `<td>${esc(a.owner_name || "—")}</td>` : ""}
       <td class="muted">${esc(a.domain || "—")}</td>
       <td class="num">${a.open_tickets}</td>
     </tr>`).join("");
@@ -497,8 +576,8 @@ function renderRows() {
   const rows = sortRows(data.tickets);
   if (!rows.length) {
     $("rows").innerHTML = `<tr><td colspan="${order.length}" class="empty">${
-      $("csm-pick").value
-        ? "Nothing open on this CSM's accounts."
+      selected.size
+        ? "Nothing open on these accounts."
         : "Pick a CSM to see what is open on their accounts."}</td></tr>`;
     return;
   }
@@ -586,21 +665,25 @@ async function toggle(id) {
 // ── loading ─────────────────────────────────────────────────────────────────
 
 function skeleton() {
-  const span = view === "company" ? 3 : colOrder().length;
+  const span = view === "company" ? (multi() ? 4 : 3) : colOrder().length;
   $("rows").innerHTML = Array.from({ length: 6 }, () =>
     `<tr class="sk-row" aria-hidden="true"><td colspan="${span}">
        <div class="sk" style="height:14px"></div></td></tr>`).join("");
 }
 
 async function load() {
-  const owner = $("csm-pick").value;
+  const owners = ownerIds();
   expanded.clear();
-  if (!owner) { data = { tickets: [], accounts: [] }; renderSummary(); renderRows(); return; }
+  if (!owners.length) {
+    data = { tickets: [], accounts: [] };
+    renderSummary(); renderHead(); renderRows(); return;
+  }
   const mine = ++seq;
   skeleton();
   $("summary").textContent = "";
   try {
-    const d = await QC.api(`/api/csm/tickets?owner=${encodeURIComponent(owner)}`);
+    const d = await QC.api(
+      `/api/csm/tickets?owner=${encodeURIComponent(owners.join(","))}`);
     if (mine !== seq) return;
     data = d;
   } catch (e) {
@@ -609,7 +692,8 @@ async function load() {
     // as "still working" long after the request gave up.
     data = { tickets: [], accounts: [] };
     $("summary").textContent = "";
-    $("rows").innerHTML = `<tr><td colspan="${view === "company" ? 3 : colOrder().length}"
+    $("rows").innerHTML = `<tr><td colspan="${
+      view === "company" ? (multi() ? 4 : 3) : colOrder().length}"
       class="empty">Could not load this CSM's tickets: ${esc(e.message)}. Try again.</td></tr>`;
     return;
   }
@@ -622,7 +706,7 @@ async function loadOwners() {
   try {
     d = await QC.api("/api/csm/owners");
   } catch (e) {
-    $("csm-pick").innerHTML = `<option value="">Could not load CSMs</option>`;
+    $("csm-ms-btn").textContent = "Could not load CSMs";
     $("summary").innerHTML = `<span class="muted">${esc(e.message)}</span>`;
     return;
   }
@@ -632,22 +716,30 @@ async function loadOwners() {
   $("sync-stamp").textContent = d.synced_at
     ? `Accounts synced ${fmt(d.synced_at)}`
     : "Accounts never synced";
-  if (!d.owners.length) {
-    $("csm-pick").innerHTML = `<option value="">No CSMs found</option>`;
+  allOwners = d.owners || [];
+  if (!allOwners.length) {
+    renderPicker();
     $("summary").innerHTML =
-      `<span class="muted">No account lists an owner yet. Sync accounts to pull them from Pylon.</span>`;
+      `<span class="muted">No account lists an owner yet. Refresh from Pylon to pull them in.</span>`;
     return;
   }
-  $("csm-pick").innerHTML =
-    `<option value="">Select a CSM…</option>` +
-    d.owners.map(o => `<option value="${esc(o.id)}">${
-      esc(o.name)} (${o.accounts})</option>`).join("");
+  // A refresh re-reads the roster; anyone still on it keeps their tick rather
+  // than having the selection silently reset under them.
+  const live = new Set(allOwners.map(o => o.id));
+  [...selected].forEach(id => { if (!live.has(id)) selected.delete(id); });
+
   // Land on your own book when the signed-in address owns accounts; a CSM
   // opening their own page should not have to find themselves in a list of 29.
-  const me = (QC.me && QC.me.email || "").toLowerCase();
-  const mine = d.owners.find(o => (o.email || "").toLowerCase() === me);
-  if (mine) { $("csm-pick").value = mine.id; load(); }
-  else renderRows();
+  // Only on the FIRST load — after that the selection is the reader's.
+  if (!pickedOnce) {
+    pickedOnce = true;
+    const me = (QC.me && QC.me.email || "").toLowerCase();
+    const mine = allOwners.find(o => (o.email || "").toLowerCase() === me);
+    if (mine) selected.add(mine.id);
+  }
+  renderPicker();
+  if (selected.size) reload();
+  else { renderHead(); renderRows(); }
 }
 
 // ── analytics ───────────────────────────────────────────────────────────────
@@ -757,6 +849,13 @@ function renderSmallMultiples(accounts, labels, p) {
 
 function renderAnalytics(d) {
   if (typeof Chart === "undefined") return;
+  $("vol-title").textContent =
+    d.everyone ? `Ticket volume — all ${d.standings.length} CSMs`
+    : multi()  ? `Ticket volume — ${selected.size} CSMs combined`
+               : "Ticket volume — this CSM";
+  $("stand-what").textContent = d.everyone
+    ? "Accounts owned and tickets open right now. Pick CSMs above to narrow the charts."
+    : "Accounts owned and tickets open right now.";
   const p = pal(), labels = d.months.map(monthLabel);
   const total = d.created.reduce((a, b) => a + b, 0);
 
@@ -781,9 +880,9 @@ function renderAnalytics(d) {
 
   renderSmallMultiples(d.accounts, labels, p);
 
-  const picked = $("csm-pick").value;
+  const picked = selected;
   $("stand-rows").innerHTML = d.standings.map(r => `<tr class="${
-      r.id === picked ? "me" : ""}">
+      picked.has(r.id) ? "me" : ""}">
       <td>${esc(r.name)}</td>
       <td class="num">${r.accounts}</td>
       <td class="num">${r.open_tickets}</td>
@@ -791,20 +890,21 @@ function renderAnalytics(d) {
 }
 
 async function loadAnalytics() {
-  const owner = $("csm-pick").value;
-  if (!owner) {
-    $("stand-rows").innerHTML =
-      `<tr><td colspan="3" class="empty">Pick a CSM to see their trend.</td></tr>`;
-    destroy("cVolume");
-    Object.keys(CH).filter(k => k.startsWith("acc")).forEach(destroy);
-    $("account-charts").innerHTML = "";
-    return;
-  }
+  // No selection means EVERY CSM here, not "nothing". This tab's standings
+  // table is company-wide either way, so opening it with nobody picked used to
+  // render a blank frame beside a table that needed no picker at all.
+  const owners = ownerIds();
   const mine = ++seq;
+  // The chart half used to stay blank while this loaded, so a slow query read
+  // as a broken tab rather than a busy one. Skeletons cover BOTH halves, and
+  // the error path below clears every one of them.
   $("stand-rows").innerHTML = Array.from({ length: 5 }, () =>
     `<tr aria-hidden="true"><td colspan="3"><div class="sk" style="height:14px"></div></td></tr>`).join("");
+  $("account-charts").innerHTML = Array.from({ length: 6 }, () =>
+    `<div class="small" aria-hidden="true"><div class="sk" style="height:46px"></div></div>`).join("");
   try {
-    const d = await QC.api(`/api/csm/analytics?owner=${encodeURIComponent(owner)}`);
+    const d = await QC.api(
+      `/api/csm/analytics?owner=${encodeURIComponent(owners.join(","))}`);
     if (mine !== seq) return;
     renderAnalytics(d);
   } catch (e) {
@@ -821,9 +921,75 @@ async function loadAnalytics() {
 
 // ── wiring ──────────────────────────────────────────────────────────────────
 
-$("csm-pick").addEventListener("change", () => {
+// ── the CSM picker ──────────────────────────────────────────────────────────
+
+const ownerIds = () => [...selected];
+const multi = () => selected.size > 1;
+
+function pickerLabel() {
+  if (!allOwners.length) return "No CSMs found";
+  if (!selected.size) return "Select CSMs…";
+  const names = allOwners.filter(o => selected.has(o.id)).map(o => o.name);
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return names.join(" + ");
+  // Naming two and counting the rest beats "5 selected": the reader keeps a
+  // foothold on whose data they are looking at.
+  return `${names[0]}, ${names[1]} +${names.length - 2} more`;
+}
+
+function renderPicker() {
+  $("csm-ms-btn").textContent = pickerLabel();
+  $("csm-ms-btn").title = allOwners.filter(o => selected.has(o.id))
+    .map(o => o.name).join(", ") || "No CSM selected";
+  const q = ($("csm-ms-search").value || "").trim().toLowerCase();
+  const shown = allOwners.filter(o => !q || o.name.toLowerCase().includes(q));
+  $("csm-ms-list").innerHTML = shown.length
+    ? shown.map(o => `<label class="ms-item">
+         <input type="checkbox" value="${esc(o.id)}"${
+           selected.has(o.id) ? " checked" : ""}>
+         <span>${esc(o.name)}</span>
+         <span class="ms-count">${o.accounts}</span>
+       </label>`).join("")
+    : `<div class="ms-none">No CSM matches “${esc(q)}”.</div>`;
+  $("csm-ms-list").querySelectorAll("input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) selected.add(cb.value); else selected.delete(cb.value);
+      renderPicker();
+      reload();
+    });
+  });
+}
+
+let wasMulti = false;
+
+function reload() {
+  // Crossing the one/many boundary adds or drops the CSM column, and the
+  // header has to be rebuilt for it — the rows alone would leave the table
+  // one <th> short of its <td>s.
+  if (multi() !== wasMulti) { wasMulti = multi(); renderHead(); }
   if (view === "analytics") loadAnalytics();
   else load();
+}
+
+$("csm-ms-btn").addEventListener("click", () => {
+  const open = $("csm-ms-dropdown").classList.toggle("open");
+  $("csm-ms-btn").classList.toggle("open", open);
+  $("csm-ms-btn").setAttribute("aria-expanded", String(open));
+  if (open) $("csm-ms-search").focus();
+});
+$("csm-ms-search").addEventListener("input", renderPicker);
+$("csm-ms-clear").addEventListener("click", () => {
+  selected.clear();
+  renderPicker();
+  reload();
+});
+// Clicking away closes it; clicking inside must not, or ticking a second name
+// would shut the list every time.
+document.addEventListener("click", e => {
+  if (e.target.closest("#csm-ms")) return;
+  $("csm-ms-dropdown").classList.remove("open");
+  $("csm-ms-btn").classList.remove("open");
+  $("csm-ms-btn").setAttribute("aria-expanded", "false");
 });
 
 function setView(v) {
@@ -865,10 +1031,7 @@ $("sync-btn").addEventListener("click", async () => {
       + `${t.stored ?? 0} open tickets from Pylon.`, "ok");
     $("sync-stamp").textContent = `Refreshed ${fmt(a.at)}`;
     await loadOwners();
-    if ($("csm-pick").value) {
-      if (view === "analytics") await loadAnalytics();
-      else await load();
-    }
+    if (selected.size) await reload();
   } catch (e) {
     QC.show($("sync-msg"),
       `Refresh failed: ${e.message}. If a fetch is already running, wait for `

@@ -13,7 +13,6 @@
     { id: "dashboard",   href: "/",                   label: "Dashboard" },
     { id: "analytics",   href: "/?view=analytics",    label: "Analytics" },
     { id: "open",        href: "/open",               label: "Open Tickets" },
-    { id: "csm",         href: "/csm",                label: "CSM Page" },
     { id: "funcheck",    href: "/funcheck",           label: "Functionality Check" },
     { id: "weekly",      href: "/weekly",             label: "Weekly Dashboard" },
     { id: "reports",     href: "/reports",            label: "Product Report" },
@@ -22,6 +21,9 @@
     { id: "runs",        href: "/runs",               label: "Runs" },
     { id: "rules",       href: "/rules",              label: "Rules" },
     { id: "admin",       href: "/admin",              label: "Admin", memberLabel: "Settings" },
+    // Last on purpose: the CSM page is the one surface here whose reader is not
+    // the support team, so it sits below the QC tools rather than among them.
+    { id: "csm",         href: "/csm",                label: "CSM Page" },
   ];
 
   window.QC = window.QC || {};

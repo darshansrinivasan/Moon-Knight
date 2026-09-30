@@ -180,6 +180,42 @@ check("and the real slug still works",
       [a["name"] for a in csm.accounts_for(SEETHA)], ["Alpha", "Delta"])
 
 print()
+print("=== several CSMs can be viewed together ===")
+# One code path for one owner and for many: the page sends a list, and a caller
+# passing a bare string (every caller did, before the picker went multi) must
+# keep working rather than iterating the characters of a UUID.
+check("a bare string still means one owner",
+      [a["name"] for a in csm.accounts_for(SEETHA)], ["Alpha", "Delta"])
+check("a one-item list is the same thing",
+      [a["name"] for a in csm.accounts_for([SEETHA])], ["Alpha", "Delta"])
+check("two owners union their accounts",
+      sorted(a["name"] for a in csm.accounts_for([SEETHA, OTHER])),
+      ["Alpha", "Delta", "Gamma"])
+check("duplicates in the selection do not duplicate rows",
+      len(csm.accounts_for([SEETHA, SEETHA])), 2)
+# The failure this pins: an empty selection falling through to a bare bucket
+# filter would hand the reader every account in the company.
+check("an empty selection matches nothing, not everything",
+      (csm.accounts_for([]), csm.tickets_for([])["tickets"]), ([], []))
+check("blank ids are ignored, not matched",
+      csm.accounts_for(["", None]), [])
+
+multi = csm.tickets_for([SEETHA, OTHER])
+check("tickets from both owners appear",
+      sorted(t["id"] for t in multi["tickets"]), ["t1", "t2", "t7"])
+# Without this the reader cannot tell whose account a row belongs to; the page
+# shows the column only when more than one CSM is selected.
+check("every row names its owning CSM",
+      {t["id"]: t["owner_name"] for t in multi["tickets"]},
+      {"t1": "Seetha Preetha", "t2": "Seetha Preetha", "t7": OTHER})
+check("the selection is echoed back", multi["owners"], [SEETHA, OTHER])
+check("accounts carry their owner too",
+      {a["name"]: a["owner_name"] for a in multi["accounts"]},
+      {"Alpha": "Seetha Preetha", "Delta": "Seetha Preetha", "Gamma": OTHER})
+check("an unnamed owner falls back to its id, not blank",
+      [a["owner_name"] for a in csm.accounts_for(OTHER)], [OTHER])
+
+print()
 print("=== the Group column follows the ASSIGNEE's coverage roster ===")
 # A coverage owns PEOPLE, not accounts. Deriving the group from the account
 # would put a CSM's own region on every ticket they own, which is not what
@@ -256,6 +292,24 @@ check("every series is the axis length",
       {len(a["created"]), len(a["still_open"])}, {6})
 check("still-open never exceeds raised",
       all(o <= c for o, c in zip(a["still_open"], a["created"])), True)
+
+print()
+print("=== Analytics opens on everyone; an empty selection still means none ===")
+# Reported as "the analytics page is not loading": with nobody picked the tab
+# rendered a blank frame beside a standings table that is company-wide anyway.
+# None (no selection sent) now means EVERY CSM; [] (asked for nobody) still
+# means nothing, because those are opposite intentions that look alike.
+allv = csm.analytics()
+mine = csm.analytics([SEETHA])
+check("no argument covers everyone", allv["everyone"], True)
+check("and a selection does not", mine["everyone"], False)
+check("everyone counts at least what one CSM does",
+      sum(allv["created"]) >= sum(mine["created"]) > 0, True)
+check("an explicit empty selection stays empty",
+      (csm.analytics([])["everyone"], sum(csm.analytics([])["created"])),
+      (False, 0))
+check("the standings table is company-wide either way",
+      len(allv["standings"]) == len(mine["standings"]) > 1, True)
 
 print()
 print("=== the by-account panels are capped, the tail folded not dropped ===")

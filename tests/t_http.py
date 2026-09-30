@@ -62,6 +62,12 @@ r = client.get("/api/csm/owners")
 check("/api/csm/owners unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/api/csm/tickets?owner=x")
 check("/api/csm/tickets unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.get("/api/csm/tickets?owner=a,b,c")
+check("/api/csm/tickets with several owners unauthenticated -> 401",
+      r.status_code == 401, str(r.status_code))
+r = client.get("/api/csm/analytics")
+check("/api/csm/analytics with no owner unauthenticated -> 401",
+      r.status_code == 401, str(r.status_code))
 r = client.get("/api/csm/analytics?owner=x")
 check("/api/csm/analytics unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.post("/api/csm/refresh")

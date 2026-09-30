@@ -803,12 +803,24 @@ async def csm_owners(user: dict = Depends(auth.require_user)):
     })
 
 
+def _csm_owners(owner: str) -> list[str]:
+    """The `owner` query param as a list of ids. Comma-separated for several.
+
+    Capped because the id list arrives in a URL and each one widens two
+    queries; a selection past every CSM in the company is a malformed request,
+    not a view anyone asked for.
+    """
+    ids = [o.strip() for o in (owner or "").split(",") if o.strip()]
+    if not ids:
+        raise HTTPException(400, "Pick at least one CSM.")
+    if len(ids) > 50:
+        raise HTTPException(400, "Too many CSMs selected — pick 50 or fewer.")
+    return ids
+
+
 @app.get("/api/csm/tickets")
 async def csm_tickets(owner: str, user: dict = Depends(auth.require_user)):
-    owner = (owner or "").strip()
-    if not owner:
-        raise HTTPException(400, "Pick a CSM first.")
-    return await asyncio.to_thread(csm.tickets_for, owner)
+    return await asyncio.to_thread(csm.tickets_for, _csm_owners(owner))
 
 
 @app.get("/api/csm/ticket/{ticket_id}/conversation")
@@ -821,11 +833,15 @@ async def csm_conversation(ticket_id: str,
 
 
 @app.get("/api/csm/analytics")
-async def csm_analytics(owner: str, user: dict = Depends(auth.require_user)):
-    owner = (owner or "").strip()
-    if not owner:
-        raise HTTPException(400, "Pick a CSM first.")
-    return await asyncio.to_thread(csm.analytics, owner)
+async def csm_analytics(owner: str = "", user: dict = Depends(auth.require_user)):
+    """Trends for the selected CSMs, or for all of them when none is given.
+
+    Unlike /api/csm/tickets this accepts an empty selection: the tab's
+    standings table is company-wide either way, so opening it with nobody
+    picked should show the whole picture rather than a blank frame.
+    """
+    owners = _csm_owners(owner) if (owner or "").strip() else None
+    return await asyncio.to_thread(csm.analytics, owners)
 
 
 @app.post("/api/csm/refresh")

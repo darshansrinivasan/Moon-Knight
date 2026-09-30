@@ -220,45 +220,95 @@ def owners() -> list[dict]:
 
 # ── the page's two views ──────────────────────────────────────────────────────
 
-def _account_filter(owner: str) -> tuple[str, list]:
-    return (f"{_CF} = ? AND {_CF} = ?",
-            [_owner_path(), owner, _bucket_path(), bucket_value()])
+def _owner_list(owners) -> list[str]:
+    """Normalise the owner argument to a de-duplicated list of ids.
+
+    Takes a single id or a list, because every caller used to pass one string
+    and the page now sends several — accepting both keeps one code path rather
+    than a `_for_one` and a `_for_many` that drift.
+    """
+    if isinstance(owners, str):
+        owners = [owners]
+    seen, out = set(), []
+    for o in owners or []:
+        o = (o or "").strip()
+        if o and o not in seen:
+            seen.add(o)
+            out.append(o)
+    return out
 
 
-def accounts_for(owner: str) -> list[dict]:
-    """One CSM's accounts and how many tickets are open on each.
+def _account_filter(owners, *, everyone: bool = False) -> tuple[str, list]:
+    """Accounts belonging to `owners`, or to anyone when `everyone`.
+
+    `everyone` is a separate argument rather than an empty list meaning "all",
+    because those two are opposite intentions that look identical: a caller
+    that asked for nobody must get nothing, and only a caller that said so by
+    name gets the whole company.
+    """
+    if everyone:
+        return (f"{_CF} = ? AND {_CF} IS NOT NULL AND TRIM({_CF}) != ''",
+                [_bucket_path(), bucket_value(), _owner_path(), _owner_path()])
+    ids = _owner_list(owners)
+    if not ids:
+        # An empty selection matches nothing. Returning a bare bucket filter
+        # would hand the reader every account in the company under the heading
+        # of whoever they last had selected.
+        return "0 = 1", []
+    marks = ",".join("?" * len(ids))
+    return (f"{_CF} IN ({marks}) AND {_CF} = ?",
+            [_owner_path(), *ids, _bucket_path(), bucket_value()])
+
+
+def _owner_names() -> dict:
+    """{pylon user id: display name} for naming an account's owner."""
+    with db.get_conn() as conn:
+        return {r["id"]: (r["name"] or r["id"]) for r in conn.execute(
+            "SELECT id, name FROM users").fetchall()}
+
+
+def accounts_for(owners) -> list[dict]:
+    """The selected CSMs' accounts and how many tickets are open on each.
 
     Every account is returned, including the ones at zero. A roster that drops
     quiet accounts cannot be read as a roster — the reader has no way to tell
-    "nothing open" from "not mine".
+    "nothing open" from "not mine". Each row carries its owner, because with
+    two CSMs selected an account name alone no longer says whose it is.
     """
-    acc_where, acc_params = _account_filter(owner)
+    acc_where, acc_params = _account_filter(owners)
     open_where, open_params = _open_where()
     with db.get_conn() as conn:
+        # Same shape as standings(): aggregate once, join, rather than a
+        # per-account correlated count.
         rows = conn.execute(
             f"""SELECT a.id, a.name, a.domain,
-                       (SELECT COUNT(*) FROM tickets t
-                         WHERE t.account_id = a.id AND {open_where})
-                           AS open_tickets
+                       json_extract(a.custom_fields, ?) AS owner_id,
+                       COALESCE(t.n, 0) AS open_tickets
                 FROM accounts a
+                LEFT JOIN (SELECT t.account_id AS aid, COUNT(*) AS n
+                             FROM tickets t WHERE {open_where}
+                            GROUP BY t.account_id) t ON t.aid = a.id
                 WHERE {acc_where}""",
-            [*open_params, *acc_params]).fetchall()
+            [_owner_path(), *open_params, *acc_params]).fetchall()
+    names = _owner_names()
     out = [{"id": r["id"], "name": r["name"] or r["id"],
-            "domain": r["domain"], "open_tickets": r["open_tickets"]}
+            "domain": r["domain"], "open_tickets": r["open_tickets"],
+            "owner_id": r["owner_id"],
+            "owner_name": names.get(r["owner_id"]) or r["owner_id"]}
            for r in rows]
     out.sort(key=lambda a: (-a["open_tickets"], a["name"].lower()))
     return out
 
 
-def tickets_for(owner: str) -> dict:
-    """Open tickets across one CSM's accounts, one row per ticket.
+def tickets_for(owners) -> dict:
+    """Open tickets across the selected CSMs' accounts, one row per ticket.
 
     `created_by` and the last reply are derived from the message thread rather
     than read off the ticket: Pylon's `requester` is a contact id that would
     cost a fetch per ticket to name, while the thread already holds the name of
     whoever opened it and whoever answered last.
     """
-    acc_where, acc_params = _account_filter(owner)
+    acc_where, acc_params = _account_filter(owners)
     open_where, open_params = _open_where()
     with db.get_conn() as conn:
         rows = conn.execute(
@@ -266,6 +316,7 @@ def tickets_for(owner: str) -> dict:
                        t.created_at, t.assignee_name, t.slack_url,
                        t.latest_message_time,
                        a.name AS account_name, a.domain AS account_domain,
+                       json_extract(a.custom_fields, ?) AS owner_id,
                        (SELECT m.author_name FROM messages m
                          WHERE m.ticket_id = t.id
                          ORDER BY m.timestamp ASC  LIMIT 1) AS created_by,
@@ -278,12 +329,13 @@ def tickets_for(owner: str) -> dict:
                 FROM tickets t
                 JOIN accounts a ON a.id = t.account_id
                 WHERE {acc_where} AND {open_where}""",
-            [*acc_params, *open_params]).fetchall()
+            [_owner_path(), *acc_params, *open_params]).fetchall()
 
     # The coverage rosters are read ONCE for the whole listing, not per row:
     # they are a handful of rows that every ticket asks the same question of.
     import review
     groups = review.groups_by_assignee()
+    names = _owner_names()
 
     out = []
     for r in rows:
@@ -296,9 +348,13 @@ def tickets_for(owner: str) -> dict:
         # and the Leaderboard's teams use — a coverage owns people, not
         # accounts, so an unassigned ticket has no group to belong to.
         d["groups"] = groups.get(d["assignee_name"] or "", [])
+        # Whose account this is. Constant when one CSM is selected, which is
+        # why the page only shows the column once more than one is.
+        d["owner_name"] = names.get(d["owner_id"]) or d["owner_id"]
         out.append(d)
     out.sort(key=lambda t: (t["account_name"] or "").lower())
-    return {"tickets": out, "accounts": accounts_for(owner),
+    return {"tickets": out, "accounts": accounts_for(owners),
+            "owners": _owner_list(owners),
             "bucket_label": bucket_label(), "synced_at": synced_at()}
 
 
@@ -330,8 +386,12 @@ def _month_axis(n: int = TREND_MONTHS) -> list[str]:
     return list(reversed(out))
 
 
-def analytics(owner: str) -> dict:
-    """Ticket volume over time for one CSM, and the standings for all of them.
+def analytics(owners=None) -> dict:
+    """Ticket volume over time for the selection, and standings for everyone.
+
+    `owners=None` means every CSM in the bucket — the Analytics tab opens on
+    the whole picture and the picker narrows it, because its standings table is
+    company-wide regardless and a blank page was the alternative.
 
     Both trends count tickets by the month they were CREATED, and both are
     counts of tickets — one y-axis, one unit. "Still open" is drawn as a subset
@@ -340,7 +400,8 @@ def analytics(owner: str) -> dict:
     """
     months = _month_axis()
     floor = months[0]
-    acc_where, acc_params = _account_filter(owner)
+    everyone = owners is None
+    acc_where, acc_params = _account_filter(owners, everyone=everyone)
     open_where, open_params = _open_where()
 
     with db.get_conn() as conn:
@@ -380,7 +441,9 @@ def analytics(owner: str) -> dict:
         accounts.append({"name": f"Other ({len(rest)} accounts)", "counts": merged})
 
     return {"months": months, "created": created, "still_open": still_open,
-            "accounts": accounts, "standings": standings()}
+            "accounts": accounts, "standings": standings(),
+            "owners": [] if everyone else _owner_list(owners),
+            "everyone": everyone}
 
 
 def standings() -> list[dict]:
@@ -393,13 +456,18 @@ def standings() -> list[dict]:
     op, bp, val = _owner_path(), _bucket_path(), bucket_value()
     open_where, open_params = _open_where()
     with db.get_conn() as conn:
+        # One pass over the open tickets, joined to their account — not a
+        # correlated COUNT per account. The subquery form re-ran an open-ticket
+        # count for each of ~1,100 accounts and took three seconds on its own,
+        # on every visit to the Analytics tab.
         rows = conn.execute(
             f"""SELECT {_CF} AS owner_id,
                        COUNT(*) AS accounts,
-                       SUM((SELECT COUNT(*) FROM tickets t
-                             WHERE t.account_id = a.id AND {open_where}))
-                         AS open_tickets
+                       COALESCE(SUM(t.n), 0) AS open_tickets
                 FROM accounts a
+                LEFT JOIN (SELECT t.account_id AS aid, COUNT(*) AS n
+                             FROM tickets t WHERE {open_where}
+                            GROUP BY t.account_id) t ON t.aid = a.id
                 WHERE {_CF} = ?
                   AND {_CF} IS NOT NULL AND TRIM({_CF}) != ''
                 GROUP BY owner_id""",

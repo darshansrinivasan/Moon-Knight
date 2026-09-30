@@ -353,6 +353,10 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_tickets_fetch_date ON tickets(fetch_date);
+        -- Every per-account ticket count (the CSM page's roster and its
+        -- standings table) filters on this column. Without the index each of
+        -- ~1,100 accounts scanned all 14k tickets: one screen cost 3 seconds.
+        CREATE INDEX IF NOT EXISTS idx_tickets_account ON tickets(account_id);
         CREATE INDEX IF NOT EXISTS idx_messages_ticket    ON messages(ticket_id);
         CREATE INDEX IF NOT EXISTS idx_rule_fetch_date   ON rule_checks(fetch_date);
         CREATE INDEX IF NOT EXISTS idx_ai_fetch_date     ON ai_checks(fetch_date);
