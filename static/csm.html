@@ -840,9 +840,6 @@ async function loadOwners() {
   const bucket = d.bucket_label || "Current Customer";
   $("scope-note").textContent =
     `Open tickets on the ${bucket} accounts a CSM owns, by Company owner.`;
-  $("sync-stamp").textContent = d.synced_at
-    ? `Accounts synced ${fmt(d.synced_at)}`
-    : "Accounts never synced";
   allOwners = d.owners || [];
   if (!allOwners.length) {
     renderPicker();
@@ -1232,9 +1229,9 @@ $("sync-btn").addEventListener("click", async () => {
     QC.show($("sync-msg"),
       `Refreshed ${a.accounts} ${a.bucket_label} accounts and `
       + `${t.stored ?? 0} open tickets from Pylon.`, "ok");
-    $("sync-stamp").textContent = `Refreshed ${fmt(a.at)}`;
     seenAt = null; dismissedAt = null; $("fresh-bar").hidden = true;
     await loadOwners();
+    await checkFreshness();     // one source for the stamp, not two
     if (selected.size) await reload();
   } catch (e) {
     // A 409 is not a failure. The store is shared, so whoever holds the lock is
@@ -1264,6 +1261,23 @@ $("sync-btn").addEventListener("click", async () => {
 let seenAt = null;          // the stamp this view was drawn from
 let dismissedAt = null;     // a stamp the reader chose to ignore
 
+// Two clocks, and they genuinely diverge: the accounts sweep and the ticket
+// refetch are separate jobs, so "Accounts synced 12:33" sat above a table built
+// from tickets fetched at 13:25. Naming only one of them invited exactly the
+// question "does that mean tickets are not synced?".
+function renderStamp(f) {
+  const t = f.tickets_at, a = f.accounts_at;
+  if (!t && !a) { $("sync-stamp").textContent = "Never synced"; return; }
+  const sameDay = t && a && t.slice(0, 10) === a.slice(0, 10);
+  const acct = !a ? "accounts never synced"
+    : `accounts ${sameDay ? fmt(a).slice(11) : fmt(a)}`;
+  $("sync-stamp").textContent =
+    (t ? `Tickets ${fmt(t)}` : "Tickets never fetched") + ` · ${acct}`;
+  $("sync-stamp").title = f.auto_minutes
+    ? `Auto-refreshing from Pylon every ${f.auto_minutes} minutes.`
+    : "Auto-refresh is off — use Refresh from Pylon, or turn it on under Runs.";
+}
+
 async function checkFreshness() {
   let f;
   try {
@@ -1271,6 +1285,7 @@ async function checkFreshness() {
   } catch {
     return;                 // a failed poll is not worth a message
   }
+  renderStamp(f);
   const at = f.tickets_at;
   if (!at) return;
   if (seenAt === null) { seenAt = at; return; }
