@@ -391,6 +391,34 @@ check("and it moves when the store does",
 vault.set_raw_setting("csm_auto_refresh", "0", "t")
 
 print()
+print("=== the page filters and sorts on what the server actually sends ===")
+# The status filter is client-side, so what it keys on has to be present on
+# every row. Pinned server-side because a filter built against a field the
+# listing stopped sending would silently match nothing.
+rows = csm.tickets_for([SEETHA, OTHER])["tickets"]
+check("every ticket carries a state to filter on",
+      all("state" in t for t in rows), True)
+check("and the states are RAW values, not the spellings the page shows",
+      all("_" in (t["state"] or "") or " " not in (t["state"] or "")
+          for t in rows), True)
+# Every column the table offers a sort on must exist on the row, or the sort
+# silently compares undefined to undefined and does nothing.
+for field in ("created_at", "account_name", "number", "title", "created_by",
+              "assignee_name", "groups", "state", "last_reply_at",
+              "last_reply_by", "slack_url", "link", "owner_name"):
+    if field not in rows[0]:
+        fails.append(f"sortable column {field} missing from the listing")
+check("every sortable ticket column is present on the row",
+      [f for f in fails if "sortable column" in f], [])
+acct = csm.accounts_for([SEETHA, OTHER])[0]
+check("and every sortable account column too",
+      all(k in acct for k in ("name", "owner_name", "domain", "open_tickets")),
+      True)
+stand = csm.standings()[0]
+check("and every sortable standings column",
+      all(k in stand for k in ("name", "accounts", "open_tickets")), True)
+
+print()
 print("=== the Runs page actually SENDS every setting it offers ===")
 # The bug this pins: csm_auto_refresh was listed in the Save button's
 # data-save attribute, but that attribute is a label — the handler builds its

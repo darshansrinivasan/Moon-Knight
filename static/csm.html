@@ -28,6 +28,9 @@
     transform: translateY(-50%); font-size: 10px; color: var(--muted);
   }
   .ms-btn:hover, .ms-btn.open { border-color: var(--color-accent); }
+  /* The status picker holds nine short words, not 29 names. */
+  #st-ms .ms-btn { min-width: 150px; }
+  #st-ms .ms-dropdown { min-width: 220px; }
   .ms-dropdown {
     position: absolute; top: calc(100% + 4px); left: 0; min-width: 300px;
     /* The pane this sits in scrolls (.content-pane is overflow-y: auto), so an
@@ -129,8 +132,11 @@
   /* Status wraps rather than forcing its own column width — "waiting on
      customer" on one line cost 146px of a 1276px pane. */
   .state-tag { white-space: normal; }
-  td.status-cell { max-width: 104px; }
-  .title-cell { min-width: 165px; }
+  /* Wide enough that the longest state ("waiting on customer") breaks once
+     rather than three times, and narrow enough that twelve columns still fit
+     a laptop pane. */
+  td.status-cell { max-width: 132px; }
+  .title-cell { min-width: 150px; }
   .acct-cell { min-width: 150px; font-weight: 600; }
   .tno { color: var(--accent2); font-weight: 600; font-variant-numeric: tabular-nums; }
   .state-tag {
@@ -245,6 +251,14 @@
             <div id="csm-ms-list"></div>
           </div>
         </div>
+        <div class="ms" id="st-ms">
+          <button class="ms-btn" id="st-ms-btn" aria-haspopup="listbox"
+                  aria-expanded="false">All statuses</button>
+          <div class="ms-dropdown" id="st-ms-dropdown" role="listbox">
+            <button class="ms-clear" id="st-ms-clear">All statuses</button>
+            <div id="st-ms-list"></div>
+          </div>
+        </div>
         <div class="view-toggle">
           <button id="view-tickets" class="on">Open tickets</button>
           <button id="view-company">By company</button>
@@ -294,8 +308,7 @@
           <div class="what" id="stand-what">Accounts owned and tickets open right now.</div>
           <div class="tbl-wrap">
             <table>
-              <thead><tr><th class="nosort">CSM</th><th class="nosort">Accounts</th>
-                <th class="nosort">Open tickets</th></tr></thead>
+              <thead><tr id="stand-head"></tr></thead>
               <tbody id="stand-rows"></tbody>
             </table>
           </div>
@@ -477,6 +490,58 @@ function visibleCols(order) {
   return order.filter(k => k !== "owner" || multi());
 }
 
+// ── sorting for the two simple tables ───────────────────────────────────────
+//
+// The ticket table has its own sorter because its columns are draggable and
+// keyed by a registry. These two are fixed three- and four-column tables, so
+// they share one small implementation rather than a copy of the big one.
+const COMPANY_COLS = [
+  { key: "name",         label: "Account", get: a => (a.name || "").toLowerCase() },
+  { key: "owner_name",   label: "CSM",     get: a => (a.owner_name || "").toLowerCase(),
+    only: () => multi() },
+  { key: "domain",       label: "Domain",  get: a => (a.domain || "").toLowerCase() },
+  { key: "open_tickets", label: "Open tickets", get: a => a.open_tickets, num: true },
+];
+const STAND_COLS = [
+  { key: "name",         label: "CSM",      get: r => (r.name || "").toLowerCase() },
+  { key: "accounts",     label: "Accounts", get: r => r.accounts, num: true },
+  { key: "open_tickets", label: "Open tickets", get: r => r.open_tickets, num: true },
+];
+
+let companySort = null;   // {key, dir} — null means the server's own order
+let standSort = null;
+
+function sortSimple(rows, state, cols) {
+  if (!state) return rows;
+  const col = cols.find(c => c.key === state.key);
+  if (!col) return rows;
+  return rows.slice().sort((a, b) => {
+    const x = col.get(a), y = col.get(b);
+    if (x === y) return 0;
+    const cmp = (typeof x === "number" && typeof y === "number")
+      ? x - y : String(x).localeCompare(String(y));
+    return cmp * state.dir;
+  });
+}
+
+// Same three-step cycle as the ticket table: asc, desc, back to the natural
+// order, so nobody is stuck in one of two sorts.
+function cycleSimple(state, key) {
+  if (!state || state.key !== key) return { key, dir: 1 };
+  if (state.dir === 1) return { key, dir: -1 };
+  return null;
+}
+
+function simpleHead(cols, state) {
+  return cols.filter(c => !c.only || c.only()).map(c => {
+    const on = state && state.key === c.key;
+    const arrow = on ? (state.dir === 1 ? " ▲" : " ▼") : "";
+    return `<th data-sk="${esc(c.key)}" class="${on ? "sorted" : ""}"
+       title="Click to sort by ${esc(c.label)}">${esc(c.label)}<span
+       class="sort-arrow">${arrow}</span></th>`;
+  }).join("");
+}
+
 function colOrder() {
   let stored = null;
   try { stored = JSON.parse(localStorage.getItem(orderKey()) || "null"); } catch {}
@@ -511,10 +576,13 @@ const expanded = new Map();  // ticket_id → conversation payload (null = loadi
 
 function renderHead() {
   if (view === "company") {
-    $("head-row").innerHTML =
-      `<th class="nosort">Account</th>${multi() ? `<th class="nosort">CSM</th>` : ""}` +
-      `<th class="nosort">Domain</th><th class="nosort">Open tickets</th>`;
+    $("head-row").innerHTML = simpleHead(COMPANY_COLS, companySort);
     $("col-reset").hidden = true;
+    $("head-row").querySelectorAll("th").forEach(th =>
+      th.addEventListener("click", () => {
+        companySort = cycleSimple(companySort, th.dataset.sk);
+        renderHead(); renderRows();
+      }));
     return;
   }
   const order = colOrder();
@@ -567,17 +635,40 @@ function renderHead() {
 
 function renderSummary() {
   if (!selected.size) { $("summary").textContent = ""; return; }
-  const open = data.tickets.length;
-  const withOpen = data.accounts.filter(a => a.open_tickets > 0).length;
+  const shown = visibleTickets();
+  const total = (data.tickets || []).length;
+  const counts = companyCounts();
+  const withOpen = [...counts.values()].filter(n => n > 0).length;
   const who = multi() ? ` for <b>${selected.size}</b> CSMs` : "";
+  // The filtered count is the headline, with the total behind it — a number
+  // that silently means "of the ones you filtered to" is how a reader walks
+  // away believing an account has three open tickets when it has thirty.
+  const filtered = statuses.size && shown.length !== total
+    ? ` <span class="muted">(filtered from ${total})</span>` : "";
   $("summary").innerHTML =
-    `<b>${open}</b> open ticket${open === 1 ? "" : "s"} across ` +
-    `<b>${withOpen}</b> of <b>${data.accounts.length}</b> account` +
+    `<b>${shown.length}</b> open ticket${shown.length === 1 ? "" : "s"}${filtered}` +
+    ` across <b>${withOpen}</b> of <b>${data.accounts.length}</b> account` +
     `${data.accounts.length === 1 ? "" : "s"}${who}.`;
 }
 
+// Per-account counts from the VISIBLE tickets, so filtering to
+// "waiting on customer" makes this view answer the same question the ticket
+// table is answering. Accounts with none still appear, at zero.
+function companyCounts() {
+  const out = new Map((data.accounts || []).map(a => [a.id, 0]));
+  visibleTickets().forEach(t => {
+    const a = (data.accounts || []).find(x => x.name === t.account_name);
+    if (a) out.set(a.id, (out.get(a.id) || 0) + 1);
+  });
+  return out;
+}
+
 function renderCompany() {
-  const rows = data.accounts, span = multi() ? 4 : 3;
+  const counts = companyCounts();
+  const rows = sortSimple(
+    (data.accounts || []).map(a => ({ ...a, open_tickets: counts.get(a.id) || 0 })),
+    companySort, COMPANY_COLS);
+  const span = multi() ? 4 : 3;
   if (!rows.length) {
     $("rows").innerHTML = `<tr><td colspan="${span}" class="empty">${
       selected.size
@@ -597,12 +688,14 @@ function renderCompany() {
 function renderRows() {
   if (view === "company") return renderCompany();
   const order = colOrder();
-  const rows = sortRows(data.tickets);
+  const rows = sortRows(visibleTickets());
   if (!rows.length) {
     $("rows").innerHTML = `<tr><td colspan="${order.length}" class="empty">${
-      selected.size
-        ? "Nothing open on these accounts."
-        : "Pick a CSM to see what is open on their accounts."}</td></tr>`;
+      !selected.size
+        ? "Pick a CSM to see what is open on their accounts."
+        : statuses.size
+          ? "No tickets in the statuses you picked. Clear the status filter to see the rest."
+          : "Nothing open on these accounts."}</td></tr>`;
     return;
   }
   $("rows").innerHTML = rows.map(t => {
@@ -700,7 +793,8 @@ async function load() {
   expanded.clear();
   if (!owners.length) {
     data = { tickets: [], accounts: [] };
-    renderSummary(); renderHead(); renderRows(); return;
+    renderStatusPicker(); renderSummary(); renderHead(); renderRows();
+    return;
   }
   const mine = ++seq;
   skeleton();
@@ -715,12 +809,14 @@ async function load() {
     // Clear every skeleton this loader painted — a half-shimmering table reads
     // as "still working" long after the request gave up.
     data = { tickets: [], accounts: [] };
+    renderStatusPicker();
     $("summary").textContent = "";
     $("rows").innerHTML = `<tr><td colspan="${
       view === "company" ? (multi() ? 4 : 3) : colOrder().length}"
       class="empty">Could not load this CSM's tickets: ${esc(e.message)}. Try again.</td></tr>`;
     return;
   }
+  renderStatusPicker();
   renderSummary();
   renderRows();
 }
@@ -904,8 +1000,22 @@ function renderAnalytics(d) {
 
   renderSmallMultiples(d.accounts, labels, p);
 
+  standings = d.standings;
+  renderStandings();
+}
+
+let standings = [];
+
+function renderStandings() {
+  $("stand-head").innerHTML = simpleHead(STAND_COLS, standSort);
+  $("stand-head").querySelectorAll("th").forEach(th =>
+    th.addEventListener("click", () => {
+      standSort = cycleSimple(standSort, th.dataset.sk);
+      renderStandings();
+    }));
   const picked = selected;
-  $("stand-rows").innerHTML = d.standings.map(r => `<tr class="${
+  $("stand-rows").innerHTML = sortSimple(standings, standSort, STAND_COLS)
+    .map(r => `<tr class="${
       picked.has(r.id) ? "me" : ""}">
       <td>${esc(r.name)}</td>
       <td class="num">${r.accounts}</td>
@@ -948,6 +1058,68 @@ async function loadAnalytics() {
 // ── the CSM picker ──────────────────────────────────────────────────────────
 
 const ownerIds = () => [...selected];
+
+// ── status filter ───────────────────────────────────────────────────────────
+//
+// Client-side: the whole ticket set is already in hand, so narrowing it is a
+// filter, not a fetch. Keyed on the RAW state value; the label is only the
+// underscore-free spelling the table already shows.
+const statuses = new Set();
+
+function statusCounts() {
+  const out = new Map();
+  (data.tickets || []).forEach(t =>
+    out.set(t.state || "", (out.get(t.state || "") || 0) + 1));
+  return [...out].sort((a, b) => b[1] - a[1]);
+}
+
+function visibleTickets() {
+  if (!statuses.size) return data.tickets || [];
+  return (data.tickets || []).filter(t => statuses.has(t.state || ""));
+}
+
+function renderStatusPicker() {
+  const counts = statusCounts();
+  // A status that vanished from the data must not keep filtering it out; the
+  // alternative is an empty table with no visible reason for being empty.
+  [...statuses].forEach(v => {
+    if (!counts.some(([k]) => k === v)) statuses.delete(v);
+  });
+  const btn = $("st-ms-btn");
+  btn.textContent = !statuses.size ? "All statuses"
+    : statuses.size === 1 ? stateLabel([...statuses][0])
+    : `${statuses.size} statuses`;
+  btn.title = statuses.size ? [...statuses].map(stateLabel).join(", ")
+                            : "Showing every status";
+  $("st-ms-list").innerHTML = counts.length
+    ? counts.map(([v, n]) => `<label class="ms-item">
+         <input type="checkbox" value="${esc(v)}"${statuses.has(v) ? " checked" : ""}>
+         <span>${esc(stateLabel(v) || "—")}</span>
+         <span class="ms-count">${n}</span>
+       </label>`).join("")
+    : `<div class="ms-none">No tickets to filter.</div>`;
+  $("st-ms-list").querySelectorAll("input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) statuses.add(cb.value); else statuses.delete(cb.value);
+      renderStatusPicker(); renderSummary(); renderRows();
+    });
+  });
+}
+
+$("st-ms-btn").addEventListener("click", () => {
+  const open = $("st-ms-dropdown").classList.toggle("open");
+  $("st-ms-btn").classList.toggle("open", open);
+  $("st-ms-btn").setAttribute("aria-expanded", String(open));
+});
+$("st-ms-clear").addEventListener("click", () => {
+  statuses.clear(); renderStatusPicker(); renderSummary(); renderRows();
+});
+document.addEventListener("click", e => {
+  if (e.target.closest("#st-ms")) return;
+  $("st-ms-dropdown").classList.remove("open");
+  $("st-ms-btn").classList.remove("open");
+  $("st-ms-btn").setAttribute("aria-expanded", "false");
+});
 const multi = () => selected.size > 1;
 
 function pickerLabel() {
@@ -1120,6 +1292,7 @@ QC.ready.then(me => {
   who = (me && me.email) || "anon";
   loadSort();
   renderHead();
+  renderStatusPicker();
   loadOwners().then(checkFreshness);
   // Every 60s against a 10-minute refresh: frequent enough that the offer
   // appears promptly, and the probe is 2ms.
