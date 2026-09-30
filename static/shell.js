@@ -58,7 +58,14 @@
       ...opts,
     });
     const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || r.statusText || `HTTP ${r.status}`);
+    if (!r.ok) {
+      // The status rides along: some refusals are not failures. A 409 from a
+      // shared job means someone else is already doing the work, which a
+      // caller should report differently from a real error.
+      const err = new Error(data.detail || r.statusText || `HTTP ${r.status}`);
+      err.status = r.status;
+      throw err;
+    }
     return data;
   };
 

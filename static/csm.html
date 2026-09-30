@@ -1058,9 +1058,18 @@ $("sync-btn").addEventListener("click", async () => {
     await loadOwners();
     if (selected.size) await reload();
   } catch (e) {
-    QC.show($("sync-msg"),
-      `Refresh failed: ${e.message}. If a fetch is already running, wait for `
-      + `it to finish and press Refresh again.`, "err");
+    // A 409 is not a failure. The store is shared, so whoever holds the lock is
+    // fetching the same data for everyone — this page will be offered it when
+    // the run lands. Telling people to "press Refresh again" sent them back to
+    // a button that had already done its job.
+    if (e.status === 409) {
+      QC.show($("sync-msg"),
+        "A refresh is already running — it updates this page too. "
+        + "You will be offered the new data as soon as it lands.", "info");
+    } else {
+      QC.show($("sync-msg"),
+        `Refresh failed: ${e.message}. Check the Pylon token in Admin.`, "err");
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = "Refresh from Pylon";
