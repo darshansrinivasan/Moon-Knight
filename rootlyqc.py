@@ -19,6 +19,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
+import csm
 import db
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,12 @@ def open_incidents() -> list[dict]:
                    -- ticket was never fetched; the UI separates those two.
                    pt.state AS pylon_state, pt.link AS pylon_link,
                    pt.custom_fields AS pylon_custom_fields,
+                   -- Who the linked ticket belongs to commercially: the
+                   -- account, and the CSM who owns that account. An incident
+                   -- row otherwise says which ticket it came from but not
+                   -- whose customer is living through it.
+                   pa.name AS pylon_account,
+                   json_extract(pa.custom_fields, ?) AS pylon_owner_id,
                    -- Slack channel identity, mined from the stored payload so
                    -- the row can link straight into the incident's channel.
                    json_extract(i.raw_json, '$.slack_channel_name')
@@ -256,9 +263,10 @@ def open_incidents() -> list[dict]:
             LEFT JOIN incident_ai    ai ON ai.incident_id = i.id
             LEFT JOIN tickets pt ON pt.number = i.pylon_ticket_number
                                  AND pt.deleted_at IS NULL
+            LEFT JOIN accounts pa ON pa.id = pt.account_id
             WHERE LOWER(COALESCE(i.status,'')) NOT IN ({marks})
             ORDER BY i.sequential_id DESC
-        """, excluded).fetchall()
+        """, [csm._owner_path(), *excluded]).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -708,12 +716,18 @@ def _pylon_functionality_raw(custom_fields_json) -> str | None:
 def annotate(rows: list[dict]) -> list[dict]:
     import funcheck
     cfg = rules_config()
+    # One lookup for the whole listing, and the SAME definition of "who owns
+    # this account" the CSM page uses — a second reading of that field is how
+    # the two pages start naming different people for the same customer.
+    owner_names = csm._owner_names()
     for inc in rows:
         inc["overall_result"] = overall(inc, cfg)
         try:
             inc["reasons"] = json.loads(inc.get("reasons") or "{}")
         except json.JSONDecodeError:
             inc["reasons"] = {}
+        oid = inc.get("pylon_owner_id")
+        inc["pylon_owner"] = (owner_names.get(oid) or oid) if oid else None
         raw = _pylon_functionality_raw(inc.pop("pylon_custom_fields", None))
         inc["pylon_functionality_raw"] = raw
         inc["pylon_functionality"] = funcheck.canon("functionality", raw) \

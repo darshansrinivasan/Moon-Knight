@@ -216,6 +216,77 @@ check("linked but never-fetched reads NULL, not an invented state",
 check("unlinked reads NULL too", by_id["inc5"]["pylon_state"], None)
 
 print()
+print("=== the linked ticket brings its account and its CSM along ===")
+# An incident row named the ticket it came from but not whose customer was
+# living through it. Both come off the LINKED ticket's account, and the owner
+# field is read through csm._owner_path() — one definition, or the two pages
+# start naming different people for the same account.
+import csm as _csm
+
+OWNER_SLUG = "account.hubspot.hubspot_owner_id"
+vault.set_raw_setting("csm_owner_field", OWNER_SLUG, "t")
+with db.get_conn() as c:
+    c.execute("INSERT OR REPLACE INTO accounts (id,name,domain,type,"
+              "custom_fields,fetched_at) VALUES ('racc','Medibuddy',"
+              "'medibuddy.in','customer',?,?)",
+              (json.dumps({OWNER_SLUG: {"value": "u-yati"}}), now))
+    c.execute("INSERT OR REPLACE INTO users (id,name,email)"
+              " VALUES ('u-yati','Yati Rana','yati@x.com')")
+    c.execute("UPDATE tickets SET account_id='racc' WHERE id='rt1'")
+by_id = {i["id"]: i for i in rootlyqc.annotate(rootlyqc.open_incidents())}
+check("the linked ticket's account is named",
+      by_id["inc1"]["pylon_account"], "Medibuddy")
+check("and its Company owner is resolved to a person",
+      by_id["inc1"]["pylon_owner"], "Yati Rana")
+# These two must stay distinguishable: "we have a number we never fetched" is
+# a sync gap, "no ticket at all" is a different incident entirely.
+check("a linked-but-unfetched ticket has no account, not a wrong one",
+      (by_id["inc2"]["pylon_account"], by_id["inc2"]["pylon_owner"]),
+      (None, None))
+check("an unlinked incident likewise",
+      (by_id["inc5"]["pylon_account"], by_id["inc5"]["pylon_owner"]),
+      (None, None))
+
+with db.get_conn() as c:
+    c.execute("UPDATE accounts SET custom_fields='{}' WHERE id='racc'")
+by_id = {i["id"]: i for i in rootlyqc.annotate(rootlyqc.open_incidents())}
+check("an account with no owner still names the account",
+      (by_id["inc1"]["pylon_account"], by_id["inc1"]["pylon_owner"]),
+      ("Medibuddy", None))
+
+# An owner id the directory cannot name shows the id, never a blank: an
+# unnameable owner is a sync to fix, not a customer to orphan.
+with db.get_conn() as c:
+    c.execute("UPDATE accounts SET custom_fields=? WHERE id='racc'",
+              (json.dumps({OWNER_SLUG: {"value": "u-ghost"}}),))
+check("an unknown owner id falls back to the id",
+      {i["id"]: i for i in rootlyqc.annotate(
+          rootlyqc.open_incidents())}["inc1"]["pylon_owner"], "u-ghost")
+
+print()
+print("=== the CSM filter is wired, not just present ===")
+# A filter can exist in the markup and do nothing: the Runs page shipped a
+# checkbox whose key was never sent, and it read as a control that refused to
+# stay on. These assert the four connections a Rootly filter needs, so a
+# dropdown can never be added without being joined up.
+import pathlib
+
+ROOTLY = pathlib.Path(__file__).resolve().parent.parent / "static" / "rootly.html"
+page = ROOTLY.read_text()
+for what, needle in (
+        ("markup exists",            'id="csm-ms-btn"'),
+        ("narrows the row set",      "selCsms.has(csmOf(i))"),
+        ("counts as an active filter", "selCsms.size > 0"),
+        ("repaints with the others", "renderCsmFilter();"),
+        ("its clear button empties it", "selCsms.clear();"),
+):
+    check(f"CSM filter: {what}", needle in page, True)
+# The three buckets the column shows must be the three the filter offers, or
+# "no linked ticket" becomes unfilterable and the counts stop adding up.
+check("the filter offers the no-ticket and no-owner buckets",
+      all(k in page for k in ("No linked ticket", "No Company owner")), True)
+
+print()
 print("=== the linked ticket's functionality: raw slug in, label out ===")
 # Tags discipline: the stored VALUE is the slug; only display translates.
 check("raw slug extracted from custom_fields",
