@@ -61,6 +61,11 @@
     background: none; border: none; color: var(--accent2); cursor: pointer;
     font: inherit; font-size: 12px;
   }
+  .ms-actions { display: flex; gap: 4px; }
+  .ms-actions .ms-clear { width: auto; padding: 6px 12px; }
+  /* The unattributable buckets read as a group, not as two more colleagues. */
+  .ms-item.pseudo { border-top: 1px solid var(--border); }
+  .ms-item.pseudo span:first-of-type { font-style: italic; color: var(--muted); }
   .ms-none { padding: 8px 12px; font-size: 12px; color: var(--muted); }
   /* A segmented control: one outline, three segments — not three pills pushed
      together. The rules have to cover the MIDDLE segment too. With only
@@ -86,12 +91,13 @@
   }
   .right-side { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .right-side .stamp { font-size: 11.5px; color: var(--muted); }
-  #sync-btn, #col-reset {
+  #sync-btn, #col-reset, #csv-btn {
     background: transparent; border: 1px solid var(--border); color: var(--muted);
     border-radius: 8px; padding: 6px 14px; font-size: 12.5px;
     font-weight: 600; cursor: pointer; font-family: inherit;
   }
-  #sync-btn:hover, #col-reset:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  #sync-btn:hover, #col-reset:hover, #csv-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+  #csv-btn:disabled { opacity: .5; cursor: default; }
   #sync-btn:disabled { opacity: .5; cursor: default; }
   /* `hidden` on a button a class gave a display value to does nothing — stated
      explicitly so Reset columns stays invisible until an order is saved. */
@@ -116,7 +122,15 @@
   }
   .fresh-bar button.dismiss { border-color: var(--border); color: var(--muted); }
 
-  .summary { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  .summary { font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
+  /* Says what this page cannot show. Quiet, but present: a scope that is
+     never stated reads as a miscount when someone compares two pages. */
+  .scope-note {
+    font-size: 11.5px; color: var(--muted); margin-bottom: 10px;
+    border-left: 2px solid var(--border); padding-left: 8px;
+  }
+  .scope-note[hidden] { display: none; }
+  .scope-note a { color: var(--accent2); }
   .summary b { color: var(--text); }
 
   .tbl-wrap { overflow-x: auto; }
@@ -247,7 +261,10 @@
           <div class="ms-dropdown" id="csm-ms-dropdown" role="listbox">
             <input class="ms-search" id="csm-ms-search" type="search"
                    placeholder="Search CSMs" aria-label="Search CSMs">
-            <button class="ms-clear" id="csm-ms-clear">Clear selection</button>
+            <div class="ms-actions">
+              <button class="ms-clear" id="csm-ms-all">Select all</button>
+              <button class="ms-clear" id="csm-ms-clear">Clear selection</button>
+            </div>
             <div id="csm-ms-list"></div>
           </div>
         </div>
@@ -267,6 +284,7 @@
         <div class="right-side">
           <span class="stamp" id="sync-stamp"></span>
           <button id="col-reset" hidden title="Put the columns back in their original order">Reset columns</button>
+          <button id="csv-btn" title="Download exactly the rows below — the CSMs and statuses you have filtered to, in the column order you have set">↓ CSV</button>
           <button id="sync-btn"
                   title="Pull the latest accounts and open tickets from Pylon. Costs nothing — no AI runs.">Refresh from Pylon</button>
         </div>
@@ -279,6 +297,7 @@
         <button id="fresh-dismiss" class="dismiss">Not now</button>
       </div>
       <div class="summary" id="summary"></div>
+      <div class="scope-note" id="scope-out" hidden></div>
 
       <div class="tbl-wrap" id="table-view">
         <table>
@@ -642,13 +661,46 @@ function renderHead() {
 
 // ── rows ────────────────────────────────────────────────────────────────────
 
+const NO_OWNER = "__no_owner__";
+const OTHER_BUCKET = "__other_bucket__";
+const isPseudo = id => id === NO_OWNER || id === OTHER_BUCKET;
+const realSelected = () => [...selected].filter(id => !isPseudo(id)).length;
+
+function renderScopeNote() {
+  const o = (data.out_of_scope) || {};
+  const el = $("scope-out");
+  // Only what the current selection is NOT showing. Once those buckets are
+  // ticked their tickets are on screen, and a note still claiming they are
+  // missing would be the very mismatch this note exists to explain.
+  const bits = [];
+  if (o.no_owner && !selected.has(NO_OWNER))
+    bits.push(`<b>${o.no_owner}</b> on accounts with no Company owner`);
+  if (o.other_bucket && !selected.has(OTHER_BUCKET))
+    bits.push(`<b>${o.other_bucket}</b> outside ${esc(data.bucket_label || "Current Customer")}`);
+  if (!selected.size || !bits.length) { el.hidden = true; return; }
+  const n = (selected.has(NO_OWNER) ? 0 : o.no_owner || 0)
+          + (selected.has(OTHER_BUCKET) ? 0 : o.other_bucket || 0);
+  // Actionable now that the buckets are selectable: say where the switch is
+  // rather than sending the reader to another page.
+  el.innerHTML =
+    `<b>${n}</b> more open ticket${n === 1 ? "" : "s"} are not shown — `
+    + `${bits.join(", ")}. Tick them in the CSM filter to include them.`;
+  el.hidden = false;
+}
+
 function renderSummary() {
   if (!selected.size) { $("summary").textContent = ""; return; }
   const shown = visibleTickets();
   const total = (data.tickets || []).length;
   const counts = companyCounts();
   const withOpen = [...counts.values()].filter(n => n > 0).length;
-  const who = multi() ? ` for <b>${selected.size}</b> CSMs` : "";
+  // The unattributable buckets are selections, not colleagues — counting them
+  // as CSMs would report 31 people where the company has 29.
+  const people = realSelected();
+  const extra = selected.size - people;
+  const who = !multi() ? ""
+    : ` for <b>${people}</b> CSM${people === 1 ? "" : "s"}`
+      + (extra ? ` and ${extra} unattributed group${extra === 1 ? "" : "s"}` : "");
   // The filtered count is the headline, with the total behind it — a number
   // that silently means "of the ones you filtered to" is how a reader walks
   // away believing an account has three open tickets when it has thirty.
@@ -810,7 +862,8 @@ async function load() {
   if (!owners.length) {
     data = { tickets: [], accounts: [] };
     dataFor = "";
-    renderStatusPicker(); renderSummary(); renderHead(); renderRows();
+    renderStatusPicker(); renderSummary(); renderScopeNote();
+    renderHead(); renderRows();
     return;
   }
   skeleton();
@@ -836,7 +889,9 @@ async function load() {
   }
   renderStatusPicker();
   renderSummary();
+  renderScopeNote();
   renderRows();
+  $("csv-btn").disabled = !visibleTickets().length;
 }
 
 async function loadOwners() {
@@ -990,7 +1045,7 @@ function renderAnalytics(d) {
   if (typeof Chart === "undefined") return;
   $("vol-title").textContent =
     d.everyone ? `Open tickets by age — all ${d.standings.length} CSMs`
-    : multi()  ? `Open tickets by age — ${selected.size} CSMs combined`
+    : multi()  ? `Open tickets by age — ${realSelected() || selected.size} CSMs combined`
                : "Open tickets by age — this CSM";
   // Say the window out loud, and account for everything outside it. The chart
   // is keyed on the month a ticket was RAISED, so tickets older than the axis
@@ -1166,6 +1221,7 @@ function pickerLabel() {
   const names = allOwners.filter(o => selected.has(o.id)).map(o => o.name);
   if (names.length === 1) return names[0];
   if (names.length === 2) return names.join(" + ");
+  if (names.length === allOwners.length) return `All (${names.length})`;
   // Naming two and counting the rest beats "5 selected": the reader keeps a
   // foothold on whose data they are looking at.
   return `${names[0]}, ${names[1]} +${names.length - 2} more`;
@@ -1176,9 +1232,12 @@ function renderPicker() {
   $("csm-ms-btn").title = allOwners.filter(o => selected.has(o.id))
     .map(o => o.name).join(", ") || "No CSM selected";
   const q = ($("csm-ms-search").value || "").trim().toLowerCase();
-  const shown = allOwners.filter(o => !q || o.name.toLowerCase().includes(q));
+  // People first, the unattributable buckets pinned below them — they are a
+  // different kind of thing and must not sort into the middle of the names.
+  const shown = allOwners.filter(o => !q || o.name.toLowerCase().includes(q))
+    .sort((a, b) => (a.pseudo ? 1 : 0) - (b.pseudo ? 1 : 0));
   $("csm-ms-list").innerHTML = shown.length
-    ? shown.map(o => `<label class="ms-item">
+    ? shown.map(o => `<label class="ms-item${o.pseudo ? " pseudo" : ""}">
          <input type="checkbox" value="${esc(o.id)}"${
            selected.has(o.id) ? " checked" : ""}>
          <span>${esc(o.name)}</span>
@@ -1217,6 +1276,14 @@ $("csm-ms-clear").addEventListener("click", () => {
   renderPicker();
   reload();
 });
+$("csm-ms-all").addEventListener("click", () => {
+  // Everything the picker currently OFFERS, including the unattributable
+  // buckets — with all of them ticked the page shows every open ticket, which
+  // is the only way "select all" can honestly mean all.
+  allOwners.forEach(o => selected.add(o.id));
+  renderPicker();
+  reload();
+});
 // Clicking away closes it; clicking inside must not, or ticking a second name
 // would shut the list every time.
 document.addEventListener("click", e => {
@@ -1245,6 +1312,72 @@ function setView(v) {
 $("view-tickets").addEventListener("click", () => setView("tickets"));
 $("view-company").addEventListener("click", () => setView("company"));
 $("view-analytics").addEventListener("click", () => setView("analytics"));
+
+// ── CSV export ──────────────────────────────────────────────────────────────
+//
+// Built from exactly what is on screen: the same rows the table is showing,
+// in the same column order, after the same CSM and status filters and the
+// same sort. A server-side export would have to re-derive all of that and
+// would drift from it the first time either side changed.
+
+function csvCell(v) {
+  const t = String(v ?? "");
+  // Quote when the value could otherwise break the row, and double any quote
+  // inside it. A stray comma in an account name is the common case.
+  return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+}
+
+// The cell renderers return HTML; the export needs the words. Each column
+// says how to write itself as text rather than having the CSV strip tags,
+// which would turn a link into its label and lose the URL.
+const CSV_VALUE = {
+  created:   t => t.created_at || "",
+  account:   t => t.account_name || "",
+  owner:     t => t.owner_name || "",
+  num:       t => t.number ?? "",
+  title:     t => t.title || "",
+  creator:   t => t.created_by || "",
+  assignee:  t => t.assignee_name || "",
+  group:     t => (t.groups || []).join(" / "),
+  status:    t => stateLabel(t.state),
+  lastreply: t => t.last_reply_at || "",
+  lastby:    t => t.last_reply_by || "",
+  slack:     t => t.oncall_url || "",
+  pylon:     t => t.link || "",
+};
+
+function exportCsv() {
+  const order = colOrder();
+  const rows = sortRows(visibleTickets());
+  const head = order.map(k => csvCell(COLUMNS[k].label)).join(",");
+  const body = rows.map(t =>
+    order.map(k => csvCell((CSV_VALUE[k] || (() => ""))(t))).join(",")).join("\n");
+  // The BOM is for Excel: without it a UTF-8 CSV opens with account names
+  // mangled, which is what most people will do with this file.
+  const blob = new Blob(["\ufeff" + head + "\n" + body],
+                        { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const who = selected.size === 1
+    ? (allOwners.find(o => selected.has(o.id)) || {}).name || "csm"
+    : `${selected.size}-csms`;
+  a.href = url;
+  a.download = `open-tickets-${who.replace(/[^\w.-]+/g, "-").toLowerCase()}`
+             + `-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return rows.length;
+}
+
+$("csv-btn").addEventListener("click", () => {
+  const n = exportCsv();
+  QC.show($("sync-msg"),
+    n ? `Exported ${n} ticket${n === 1 ? "" : "s"} — the rows shown below.`
+      : "Nothing to export: no tickets match these filters.",
+    n ? "ok" : "info");
+});
 
 $("col-reset").addEventListener("click", () => {
   saveColOrder([...DEFAULT_ORDER]);

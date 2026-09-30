@@ -314,6 +314,20 @@ def owners() -> list[dict]:
             "accounts": r["accounts"],
         })
     out.sort(key=lambda o: o["name"].lower())
+
+    # The unattributable buckets, offered after the people. Counted in accounts
+    # like the rest, and omitted when empty — an option that can only ever
+    # return nothing is noise in a list of 29.
+    for pid, label in ((NO_OWNER, "No Company owner"),
+                       (OTHER_BUCKET, f"Outside {bucket_label()}")):
+        where, params = _account_filter([pid])
+        with db.get_conn() as conn:
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM accounts a WHERE {where}",
+                params).fetchone()[0]
+        if n:
+            out.append({"id": pid, "name": label, "email": None,
+                        "named": True, "accounts": n, "pseudo": True})
     return out
 
 
@@ -337,6 +351,19 @@ def _owner_list(owners) -> list[str]:
     return out
 
 
+# Selectable alongside the real CSMs, so the tickets this page could not
+# attribute to anyone are reachable instead of merely counted. The three
+# branches below are mutually exclusive and in the same precedence order as
+# out_of_scope(), so picking everything yields every open ticket exactly once.
+NO_OWNER = "__no_owner__"
+OTHER_BUCKET = "__other_bucket__"
+PSEUDO_OWNERS = (NO_OWNER, OTHER_BUCKET)
+
+
+def _has_owner() -> str:
+    return f"({_CF} IS NOT NULL AND TRIM({_CF}) != '')"
+
+
 def _account_filter(owners, *, everyone: bool = False) -> tuple[str, list]:
     """Accounts belonging to `owners`, or to anyone when `everyone`.
 
@@ -344,19 +371,37 @@ def _account_filter(owners, *, everyone: bool = False) -> tuple[str, list]:
     because those two are opposite intentions that look identical: a caller
     that asked for nobody must get nothing, and only a caller that said so by
     name gets the whole company.
+
+    `owners` may contain the pseudo-ids above. They are ORed with the real
+    ones, so "Aakriti + no Company owner" is a single answerable question.
     """
     if everyone:
-        return (f"{_CF} = ? AND {_CF} IS NOT NULL AND TRIM({_CF}) != ''",
+        return (f"{_CF} = ? AND {_has_owner()}",
                 [_bucket_path(), bucket_value(), _owner_path(), _owner_path()])
+
     ids = _owner_list(owners)
-    if not ids:
+    real = [i for i in ids if i not in PSEUDO_OWNERS]
+    clauses, params = [], []
+
+    if real:
+        marks = ",".join("?" * len(real))
+        clauses.append(f"({_CF} IN ({marks}) AND {_CF} = ?)")
+        params += [_owner_path(), *real, _bucket_path(), bucket_value()]
+    if NO_OWNER in ids:
+        # Checked first, and without regard to bucket: an account with no owner
+        # cannot be filed under a CSM whatever lifecycle stage it is in.
+        clauses.append(f"(NOT {_has_owner()})")
+        params += [_owner_path(), _owner_path()]
+    if OTHER_BUCKET in ids:
+        clauses.append(f"({_has_owner()} AND COALESCE({_CF}, '') != ?)")
+        params += [_owner_path(), _owner_path(), _bucket_path(), bucket_value()]
+
+    if not clauses:
         # An empty selection matches nothing. Returning a bare bucket filter
         # would hand the reader every account in the company under the heading
         # of whoever they last had selected.
         return "0 = 1", []
-    marks = ",".join("?" * len(ids))
-    return (f"{_CF} IN ({marks}) AND {_CF} = ?",
-            [_owner_path(), *ids, _bucket_path(), bucket_value()])
+    return "(" + " OR ".join(clauses) + ")", params
 
 
 def _owner_names() -> dict:
@@ -397,6 +442,51 @@ def accounts_for(owners) -> list[dict]:
            for r in rows]
     out.sort(key=lambda a: (-a["open_tickets"], a["name"].lower()))
     return out
+
+
+def out_of_scope() -> dict:
+    """Open tickets this page cannot show, and why.
+
+    The page scopes to accounts that are in the covered bucket AND name a
+    Company owner — without both, there is no CSM to file the ticket under.
+    That is correct, and it was also invisible: 253 open tickets on the Open
+    Tickets page against 226 here, with nothing explaining the 27.
+
+    Reported page-wide rather than per-selection: a ticket with no owner
+    belongs to no CSM, so it cannot be attributed to the one you picked.
+    """
+    import openqc
+    where, params = openqc._where(None, None, None)
+    own = f"json_extract(a.custom_fields, {_q(_owner_path())})"
+    buk = f"json_extract(a.custom_fields, {_q(_bucket_path())})"
+    has_owner = f"({own} IS NOT NULL AND TRIM({own}) != '')"
+    with db.get_conn() as conn:
+        row = conn.execute(
+            f"""SELECT
+                  SUM(CASE WHEN a.id IS NULL THEN 1 ELSE 0 END) AS no_account,
+                  SUM(CASE WHEN a.id IS NOT NULL AND NOT {has_owner}
+                           THEN 1 ELSE 0 END) AS no_owner,
+                  SUM(CASE WHEN a.id IS NOT NULL AND {has_owner}
+                            AND COALESCE({buk}, '') != ? THEN 1 ELSE 0 END)
+                      AS other_bucket
+                FROM tickets t
+                LEFT JOIN accounts a ON a.id = t.account_id
+                WHERE {where}""",
+            [bucket_value(), *params]).fetchone()
+    d = {k: (row[k] or 0) for k in ("no_account", "no_owner", "other_bucket")}
+    d["total"] = sum(d.values())
+    return d
+
+
+def _q(literal: str) -> str:
+    """A single-quoted SQL literal for a json path we built ourselves.
+
+    The paths come from settings, so they are normally bound as parameters.
+    Here they sit inside a CASE that also takes positional params, and mixing
+    the two orders is how the wrong value lands in the wrong slot — so the
+    path is escaped and inlined, and nothing user-supplied reaches it.
+    """
+    return "'" + literal.replace("'", "''") + "'"
 
 
 def tickets_for(owners) -> dict:
@@ -456,6 +546,7 @@ def tickets_for(owners) -> dict:
     out.sort(key=lambda t: (t["account_name"] or "").lower())
     return {"tickets": out, "accounts": accounts_for(owners),
             "owners": _owner_list(owners),
+            "out_of_scope": out_of_scope(),
             "bucket_label": bucket_label(), "synced_at": synced_at()}
 
 

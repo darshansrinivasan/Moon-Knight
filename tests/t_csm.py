@@ -94,8 +94,11 @@ vault.set_raw_setting("csm_bucket_value", CURRENT, "t")
 
 print()
 print("=== the owner picker counts only the covered bucket ===")
-owners = {o["id"]: o for o in csm.owners()}
+owners = {o["id"]: o for o in csm.owners() if not o.get("pseudo")}
 check("both owners listed", sorted(owners), [OTHER, SEETHA])
+check("and the unattributable buckets are marked, not mixed in with people",
+      all(o["id"] in csm.PSEUDO_OWNERS
+          for o in csm.owners() if o.get("pseudo")), True)
 check("Seetha's churned account is not counted",
       owners[SEETHA]["accounts"], 1)
 check("an owner with no directory entry is shown, not dropped",
@@ -174,7 +177,11 @@ print("=== an admin-editable field slug cannot rewrite the query ===")
 # match everything.
 vault.set_raw_setting("csm_owner_field", 'x".value\') OR 1=1 --', "t")
 check("an injected slug matches nothing", csm.accounts_for(SEETHA), [])
-check("and the picker stays empty rather than erroring", csm.owners(), [])
+# No PEOPLE, because no account can be read as owned by anyone. The no-owner
+# bucket legitimately survives: with the field unreadable every account is
+# unowned, and saying so out loud beats a silently empty page.
+check("and the picker names no people rather than erroring",
+      [o for o in csm.owners() if not o.get("pseudo")], [])
 vault.set_raw_setting("csm_owner_field", OWNER_SLUG, "t")
 check("and the real slug still works",
       [a["name"] for a in csm.accounts_for(SEETHA)], ["Alpha", "Delta"])
@@ -311,6 +318,68 @@ check("an explicit empty selection stays empty",
       (False, 0))
 check("the standings table is company-wide either way",
       len(allv["standings"]) == len(mine["standings"]) > 1, True)
+
+print()
+print("=== the unattributable tickets are selectable, not just counted ===")
+# Counting them was half the answer; a reader told "27 are missing" still
+# could not look at them. The pseudo-selections are ORed with the real CSMs,
+# and the three branches are mutually exclusive in the same precedence order
+# as out_of_scope() — so ticking everything yields every open ticket once.
+import openqc as _oq2
+
+account("noown2", "Ownerless2", "", CURRENT)
+account("otherb2", "Prospect2", SEETHA, CHURNED)
+ticket("y1", "noown2")
+ticket("y2", "otherb2")
+allreal = [o["id"] for o in csm.owners() if not o.get("pseudo")]
+n_real = len(csm.tickets_for(allreal)["tickets"])
+check("the no-owner bucket selects exactly those tickets",
+      [t["id"] for t in csm.tickets_for([csm.NO_OWNER])["tickets"]], ["y1"])
+check("the outside-bucket one likewise",
+      [t["id"] for t in csm.tickets_for([csm.OTHER_BUCKET])["tickets"]], ["y2"])
+check("a pseudo-selection ORs with a real CSM, it does not replace it",
+      len(csm.tickets_for([SEETHA, csm.NO_OWNER])["tickets"]),
+      len(csm.tickets_for(SEETHA)["tickets"]) + 1)
+# The assertion that makes "select all" honest.
+everything = csm.tickets_for(allreal + list(csm.PSEUDO_OWNERS))["tickets"]
+check("everything selected is every open ticket, counted once",
+      (len(everything), len({t["id"] for t in everything})),
+      (len(_oq2.list_open()["tickets"]),) * 2)
+check("and the buckets are offered in the picker with counts",
+      sorted(o["id"] for o in csm.owners() if o.get("pseudo")),
+      sorted(csm.PSEUDO_OWNERS))
+with db.get_conn() as c:
+    c.execute("DELETE FROM tickets WHERE id IN ('y1','y2')")
+    c.execute("DELETE FROM accounts WHERE id IN ('noown2','otherb2')")
+
+print()
+print("=== the page says which open tickets it cannot show ===")
+# Reported from production: 241 here against 268 on the Open Tickets page.
+# The page scopes to accounts that are in the covered bucket AND name a
+# Company owner — correct, and previously invisible, so the difference read as
+# a miscount. The two must account for every open ticket between them.
+import openqc as _oq
+
+account("noown", "Ownerless", "", CURRENT)       # in bucket, no owner
+account("otherb", "Prospect", SEETHA, CHURNED)   # owned, wrong bucket
+ticket("x1", "noown")
+ticket("x2", "otherb")
+ticket("x3", "otherb")
+o = csm.out_of_scope()
+check("a ticket on an unowned account is counted as such", o["no_owner"] >= 1, True)
+check("and one outside the bucket separately", o["other_bucket"] >= 2, True)
+in_scope = len(csm.tickets_for([SEETHA, OTHER])["tickets"])
+check("in-scope plus out-of-scope is every open ticket",
+      in_scope + o["total"], len(_oq.list_open()["tickets"]))
+check("the listing carries the figure so the page can state it",
+      csm.tickets_for(SEETHA)["out_of_scope"]["total"], o["total"])
+# Page-wide, not per-selection: a ticket with no owner belongs to no CSM, so
+# it cannot be attributed to whichever one is picked.
+check("the same figure whoever is selected",
+      csm.tickets_for(OTHER)["out_of_scope"], o)
+with db.get_conn() as c:
+    c.execute("DELETE FROM tickets WHERE id IN ('x1','x2','x3')")
+    c.execute("DELETE FROM accounts WHERE id IN ('noown','otherb')")
 
 print()
 print("=== the age axis has no window: every open ticket is on it ===")
@@ -537,6 +606,14 @@ check("and never on the display name", "account_name" in counts_fn, False)
 # previous CSM's tickets under the new CSM's name.
 check("the ticket cache records which selection it belongs to",
       "dataFor" in PAGE, True)
+# The CSV is built from the rows on screen, so every column the table can show
+# needs a text form — a column added without one exports as an empty string.
+csv_map = PAGE.split("const CSV_VALUE = {", 1)[1].split("\n};", 1)[0]
+order = PAGE.split("const DEFAULT_ORDER = [", 1)[1].split("]", 1)[0]
+cols = [c.strip().strip('"') for c in order.split(",") if c.strip()]
+check("every column has a CSV form",
+      [c for c in cols if f"{c}:" not in csv_map], [])
+check("Select all is wired to the picker", 'id="csm-ms-all"' in PAGE, True)
 
 print()
 print("=== the Runs page actually SENDS every setting it offers ===")
