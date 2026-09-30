@@ -427,9 +427,16 @@ const COLUMNS = {
   lastby:    { label: "Last replied by", sort: t => (t.last_reply_by || "").toLowerCase(),
                render: t => t.last_reply_by
                  ? esc(t.last_reply_by) : `<span class="muted">—</span>` },
-  slack:     { label: "Slack", sort: t => t.slack_url ? 0 : 1,
-               render: t => link(t.slack_url, "Thread",
-                                 "Open the Slack thread this ticket came from") },
+  // The ON-CALL channel from Pylon's own field, not the thread the ticket came
+  // from. Those are different places — the origin is where the customer asked,
+  // the on-call link is the incident channel support opened for it — and both
+  // are Slack URLs in the same workspace, which is why the wrong one read as
+  // correct. A CSM opens this page to learn the second one exists.
+  slack:     { label: "On-call", sort: t => t.oncall_url ? 0 : 1,
+               render: t => t.oncall_url
+                 ? link(t.oncall_url, "Channel",
+                        "Open the on-call Slack channel for this ticket")
+                 : `<span class="muted" title="No on-call Slack channel is linked on this ticket in Pylon">—</span>` },
   pylon:     { label: "Pylon", sort: t => t.link ? 0 : 1,
                render: t => link(t.link, "Open", "Open this ticket in Pylon") },
 };

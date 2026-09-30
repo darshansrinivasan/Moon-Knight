@@ -286,6 +286,10 @@ SETTING_SPECS = [
     # LABELLED "Current Customer" is this string — a separate 'Churned
     # Customer' value sits one careless match away, so it is pinned exactly.
     {"key": "csm_bucket_value", "default": "Customer/ Churned Customer"},
+    # The Pylon issue field holding the on-call (Rootly) Slack channel for a
+    # ticket. A slug, not a label, and a setting rather than a constant because
+    # it is a Pylon-admin-editable field like every other one the app reads.
+    {"key": "csm_oncall_link_field", "default": "oncall_slack_chat_link"},
     # Auto-refresh for the CSM page: the full Pylon refetch on a timer, so a
     # CSM walking into a call is not reading yesterday's states. Off by default
     # and gated by may_act_outward() — a laptop must not fetch alongside

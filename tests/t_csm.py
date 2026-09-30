@@ -391,6 +391,52 @@ check("and it moves when the store does",
 vault.set_raw_setting("csm_auto_refresh", "0", "t")
 
 print()
+print("=== the Slack column is the ON-CALL channel, not the origin thread ===")
+# Reported after shipping: the column linked the thread the ticket came from,
+# but a CSM needs the incident channel support opened for it — Pylon records
+# that in its own field. Both are Slack URLs in the same workspace, which is
+# precisely why the wrong one read as correct for a whole release.
+ONCALL = "https://spotdraft.slack.com/archives/C0C5L6S1E6A"
+ORIGIN = "https://spotdraft.slack.com/archives/C0BCD5N5QJ0/p1790760344496259"
+with db.get_conn() as c:
+    c.execute("UPDATE tickets SET custom_fields=?, slack_url=? WHERE id='t1'",
+              (json.dumps({"oncall_slack_chat_link": {"value": ONCALL}}), ORIGIN))
+    c.execute("UPDATE tickets SET custom_fields='{}', slack_url=? WHERE id='t2'",
+              (ORIGIN,))
+rows = {t["id"]: t for t in csm.tickets_for(SEETHA)["tickets"]}
+check("the on-call link comes from the Pylon field", rows["t1"]["oncall_url"], ONCALL)
+# The failure worth pinning: falling back to the origin thread would put a
+# plausible Slack link under a column that promises the on-call channel.
+check("a ticket without one shows nothing, it does not fall back",
+      rows["t2"]["oncall_url"], None)
+check("the origin thread is still stored, just not what this column shows",
+      rows["t2"]["slack_url"], ORIGIN)
+
+with db.get_conn() as c:
+    c.execute("UPDATE tickets SET custom_fields=? WHERE id='t2'",
+              (json.dumps({"oncall_slack_chat_link": {"value": "javascript:alert(1)"}}),))
+check("a non-http value never reaches an href",
+      csm.tickets_for(SEETHA)["tickets"] and
+      {t["id"]: t["oncall_url"] for t in csm.tickets_for(SEETHA)["tickets"]}["t2"],
+      None)
+with db.get_conn() as c:
+    c.execute("UPDATE tickets SET custom_fields='not json' WHERE id='t2'")
+check("unparseable stored fields degrade to no link, not a 500",
+      {t["id"]: t["oncall_url"] for t in csm.tickets_for(SEETHA)["tickets"]}["t2"],
+      None)
+# The slug is admin-editable like every other Pylon field the app reads.
+vault.set_raw_setting("csm_oncall_link_field", "some_other_field", "t")
+check("repointing the setting moves where the link is read from",
+      {t["id"]: t["oncall_url"] for t in csm.tickets_for(SEETHA)["tickets"]}["t1"],
+      None)
+vault.set_raw_setting("csm_oncall_link_field", "oncall_slack_chat_link", "t")
+check("and back", {t["id"]: t["oncall_url"]
+                   for t in csm.tickets_for(SEETHA)["tickets"]}["t1"], ONCALL)
+# The payload must not carry the whole custom_fields blob to the browser.
+check("the raw field blob is not shipped to the page",
+      "custom_fields" in csm.tickets_for(SEETHA)["tickets"][0], False)
+
+print()
 print("=== the page filters and sorts on what the server actually sends ===")
 # The status filter is client-side, so what it keys on has to be present on
 # every row. Pinned server-side because a filter built against a field the
@@ -405,7 +451,7 @@ check("and the states are RAW values, not the spellings the page shows",
 # silently compares undefined to undefined and does nothing.
 for field in ("created_at", "account_name", "number", "title", "created_by",
               "assignee_name", "groups", "state", "last_reply_at",
-              "last_reply_by", "slack_url", "link", "owner_name"):
+              "last_reply_by", "oncall_url", "link", "owner_name"):
     if field not in rows[0]:
         fails.append(f"sortable column {field} missing from the listing")
 check("every sortable ticket column is present on the row",

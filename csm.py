@@ -43,6 +43,7 @@ import funcheck
 logger = logging.getLogger(__name__)
 
 OWNER_SETTING = "csm_owner_field"
+ONCALL_FIELD_SETTING = "csm_oncall_link_field"
 BUCKET_SETTING = "csm_bucket_field"
 BUCKET_VALUE_SETTING = "csm_bucket_value"
 SYNCED_AT_SETTING = "accounts_synced_at"
@@ -89,6 +90,33 @@ def bucket_label() -> str:
 
 
 _CF = "json_extract(a.custom_fields, ?)"
+
+
+def _oncall_link(raw_custom_fields: str | None) -> str | None:
+    """The on-call (Rootly) Slack channel Pylon recorded for this ticket.
+
+    NOT the thread the ticket came from. Those are different places: the origin
+    is where a customer asked, the on-call link is the incident channel support
+    opened for it, and a CSM reading this page wants to know the second one
+    exists. Both are Slack URLs in the same workspace, which is exactly why the
+    wrong one went unnoticed.
+
+    Read from the stored payload rather than a column of its own, so it needs
+    no migration and no refetch — every ticket already carries its custom
+    fields verbatim.
+    """
+    import qc_runner
+    try:
+        fields = json.loads(raw_custom_fields or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(fields, dict):
+        return None
+    value = qc_runner._cf_val(fields.get(_setting(ONCALL_FIELD_SETTING)))
+    value = (value or "").strip()
+    # Guarded here as well as in the page: a stored value is data from Pylon,
+    # and a non-http link has no business reaching an href.
+    return value if value[:8].lower().startswith(("http://", "https:/")) else None
 
 
 def _open_where() -> tuple[str, list]:
@@ -385,7 +413,7 @@ def tickets_for(owners) -> dict:
         rows = conn.execute(
             f"""SELECT t.id, t.number, t.title, t.link, t.state, t.source,
                        t.created_at, t.assignee_name, t.slack_url,
-                       t.latest_message_time,
+                       t.custom_fields, t.latest_message_time,
                        a.name AS account_name, a.domain AS account_domain,
                        json_extract(a.custom_fields, ?) AS owner_id,
                        (SELECT m.author_name FROM messages m
@@ -422,6 +450,7 @@ def tickets_for(owners) -> dict:
         # Whose account this is. Constant when one CSM is selected, which is
         # why the page only shows the column once more than one is.
         d["owner_name"] = names.get(d["owner_id"]) or d["owner_id"]
+        d["oncall_url"] = _oncall_link(d.pop("custom_fields", None))
         out.append(d)
     out.sort(key=lambda t: (t["account_name"] or "").lower())
     return {"tickets": out, "accounts": accounts_for(owners),
