@@ -357,6 +357,10 @@ def init_db():
         -- standings table) filters on this column. Without the index each of
         -- ~1,100 accounts scanned all 14k tickets: one screen cost 3 seconds.
         CREATE INDEX IF NOT EXISTS idx_tickets_account ON tickets(account_id);
+        -- MAX(fetched_at) is the CSM page's "has the store moved?" probe, and
+        -- a polled endpoint must cost nothing. Indexed, that is a single
+        -- lookup instead of a 14k-row scan.
+        CREATE INDEX IF NOT EXISTS idx_tickets_fetched_at ON tickets(fetched_at);
         CREATE INDEX IF NOT EXISTS idx_messages_ticket    ON messages(ticket_id);
         CREATE INDEX IF NOT EXISTS idx_rule_fetch_date   ON rule_checks(fetch_date);
         CREATE INDEX IF NOT EXISTS idx_ai_fetch_date     ON ai_checks(fetch_date);

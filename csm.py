@@ -179,9 +179,80 @@ async def sync_accounts() -> dict:
             "bucket": value, "bucket_label": bucket_label(), "at": now}
 
 
+AUTO_SETTING = "csm_auto_refresh"
+AUTO_MINUTES_SETTING = "csm_auto_refresh_minutes"
+MIN_AUTO_MINUTES = 5
+
+
+def auto_refresh_minutes() -> int | None:
+    """The auto-refresh interval, or None when it is off.
+
+    Floored at MIN_AUTO_MINUTES. The full refetch takes ~105s against a
+    few-hundred-ticket backlog, so an interval near that duration would have a
+    run starting as the last one finishes — a permanent fetch, not a schedule.
+    """
+    import vault
+    if vault.get_setting(AUTO_SETTING) != "1":
+        return None
+    raw = (vault.get_setting(AUTO_MINUTES_SETTING) or "").strip()
+    try:
+        minutes = int(float(raw))
+    except (TypeError, ValueError):
+        logger.warning("Unreadable %s=%r — falling back to 10 minutes",
+                       AUTO_MINUTES_SETTING, raw)
+        return 10
+    return max(MIN_AUTO_MINUTES, minutes)
+
+
+async def auto_refresh_once() -> dict:
+    """One scheduled refresh: the same work the page's button does.
+
+    Two things this must get right, because it runs unattended:
+
+      * it takes `fetch:open`, the SAME lock the 09:30 pipeline and the page's
+        button hold. A collision SKIPS this tick rather than waiting — a queued
+        refresh that lands twenty minutes later serves nobody, and blocking
+        here would hold the loop past its next tick.
+      * a local copy must not fetch alongside production. Same guard as every
+        other scheduled job.
+    """
+    import openqc
+    import vault
+
+    if not vault.may_act_outward():
+        return {"skipped": "not the deployed instance"}
+    try:
+        with db.advisory_lock("accounts:sync", "csm-auto", ttl_seconds=900), \
+             db.advisory_lock("fetch:open", "csm-auto", ttl_seconds=1800):
+            accounts = await sync_accounts()
+            tickets = await openqc.refetch_open()
+    except db.LockBusy as e:
+        logger.info("CSM auto-refresh skipped, a fetch is already running: %s", e)
+        return {"skipped": str(e)}
+    return {"accounts": accounts, "tickets": tickets}
+
+
 def synced_at() -> str | None:
     import vault
     return vault.get_setting(SYNCED_AT_SETTING) or None
+
+
+def freshness() -> dict:
+    """A cheap "has the store moved?" probe for the open page to poll.
+
+    Deliberately not the ticket list: a page checking whether to offer a reload
+    must not cost what the reload costs. The newest `fetched_at` across open
+    tickets changes on every refetch and on nothing else, so one indexed MAX
+    answers it.
+    """
+    with db.get_conn() as conn:
+        # Unfiltered on purpose. Every refetch stamps fetched_at on the tickets
+        # it stored, so the table maximum moves exactly when the store does —
+        # and on an indexed column that is one lookup, where the same MAX
+        # behind the open-set predicate was a 14k-row scan at 0.38s a poll.
+        at = conn.execute("SELECT MAX(fetched_at) FROM tickets").fetchone()[0]
+    return {"tickets_at": at, "accounts_at": synced_at(),
+            "auto_minutes": auto_refresh_minutes()}
 
 
 # ── the picker ────────────────────────────────────────────────────────────────

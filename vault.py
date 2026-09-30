@@ -286,6 +286,13 @@ SETTING_SPECS = [
     # LABELLED "Current Customer" is this string — a separate 'Churned
     # Customer' value sits one careless match away, so it is pinned exactly.
     {"key": "csm_bucket_value", "default": "Customer/ Churned Customer"},
+    # Auto-refresh for the CSM page: the full Pylon refetch on a timer, so a
+    # CSM walking into a call is not reading yesterday's states. Off by default
+    # and gated by may_act_outward() — a laptop must not fetch alongside
+    # production. The interval is a setting because the right number depends on
+    # how hard Pylon is being pushed by everything else.
+    {"key": "csm_auto_refresh", "default": "0", "bool": True},
+    {"key": "csm_auto_refresh_minutes", "default": "10"},
     # Stamped by the account sweep so the page can say how fresh its roster is.
     {"key": "accounts_synced_at", "default": ""},
     # Pylon survey used by the Weekly Dashboard CSAT pull.

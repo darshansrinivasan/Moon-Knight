@@ -94,6 +94,25 @@
      explicitly so Reset columns stays invisible until an order is saved. */
   #col-reset[hidden] { display: none; }
 
+  /* An offer, not an interruption. The table is never rewritten under someone
+     mid-read — with a conversation expanded, a silent re-render would collapse
+     it and lose their place. */
+  .fresh-bar {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+    padding: 7px 11px; border-radius: var(--radius); font-size: 12.5px;
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 36%, transparent);
+    color: var(--text);
+  }
+  .fresh-bar[hidden] { display: none; }
+  .fresh-bar button {
+    background: transparent; border: 1px solid var(--color-accent);
+    color: var(--color-accent); border-radius: var(--radius-sm);
+    padding: 3px 11px; font: inherit; font-size: 12px; font-weight: 600;
+    cursor: pointer;
+  }
+  .fresh-bar button.dismiss { border-color: var(--border); color: var(--muted); }
+
   .summary { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
   .summary b { color: var(--text); }
 
@@ -240,6 +259,11 @@
       </div>
 
       <div class="msg" id="sync-msg"></div>
+      <div class="fresh-bar" id="fresh-bar" hidden>
+        <span>Newer data has arrived from Pylon.</span>
+        <button id="fresh-reload">Show it</button>
+        <button id="fresh-dismiss" class="dismiss">Not now</button>
+      </div>
       <div class="summary" id="summary"></div>
 
       <div class="tbl-wrap" id="table-view">
@@ -1030,6 +1054,7 @@ $("sync-btn").addEventListener("click", async () => {
       `Refreshed ${a.accounts} ${a.bucket_label} accounts and `
       + `${t.stored ?? 0} open tickets from Pylon.`, "ok");
     $("sync-stamp").textContent = `Refreshed ${fmt(a.at)}`;
+    seenAt = null; dismissedAt = null; $("fresh-bar").hidden = true;
     await loadOwners();
     if (selected.size) await reload();
   } catch (e) {
@@ -1042,11 +1067,54 @@ $("sync-btn").addEventListener("click", async () => {
   }
 });
 
+// ── freshness watch ─────────────────────────────────────────────────────────
+//
+// The auto-refresh runs server-side, so an open tab can go stale without
+// anything on screen changing. This polls a probe that costs one indexed
+// lookup and OFFERS a reload; it never reloads by itself.
+
+let seenAt = null;          // the stamp this view was drawn from
+let dismissedAt = null;     // a stamp the reader chose to ignore
+
+async function checkFreshness() {
+  let f;
+  try {
+    f = await QC.api("/api/csm/freshness");
+  } catch {
+    return;                 // a failed poll is not worth a message
+  }
+  const at = f.tickets_at;
+  if (!at) return;
+  if (seenAt === null) { seenAt = at; return; }
+  $("fresh-bar").hidden = (at === seenAt || at === dismissedAt);
+}
+
+$("fresh-reload").addEventListener("click", async () => {
+  $("fresh-bar").hidden = true;
+  seenAt = null;
+  dismissedAt = null;
+  await loadOwners();
+  if (selected.size) await reload();
+  await checkFreshness();
+});
+$("fresh-dismiss").addEventListener("click", async () => {
+  // Remember WHICH version was waved away, so the bar returns for the next
+  // one rather than staying hidden for the life of the tab.
+  try {
+    const f = await QC.api("/api/csm/freshness");
+    dismissedAt = f.tickets_at;
+  } catch {}
+  $("fresh-bar").hidden = true;
+});
+
 QC.ready.then(me => {
   who = (me && me.email) || "anon";
   loadSort();
   renderHead();
-  loadOwners();
+  loadOwners().then(checkFreshness);
+  // Every 60s against a 10-minute refresh: frequent enough that the offer
+  // appears promptly, and the probe is 2ms.
+  setInterval(checkFreshness, 60000);
 });
 </script>
 </body>

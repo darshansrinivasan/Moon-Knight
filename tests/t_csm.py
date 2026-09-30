@@ -345,6 +345,52 @@ check("a CSM with no open tickets is still listed",
       OTHER in st, True)
 
 print()
+print("=== auto-refresh: interval, floor, and the freshness probe ===")
+import asyncio
+
+vault.set_raw_setting("csm_auto_refresh", "0", "t")
+check("off by default, so a deploy does not start fetching",
+      csm.auto_refresh_minutes(), None)
+vault.set_raw_settings({"csm_auto_refresh": "1",
+                        "csm_auto_refresh_minutes": "10"}, "t")
+check("on, at the configured interval", csm.auto_refresh_minutes(), 10)
+# The full refetch takes ~105s. An interval near that has a run starting as
+# the last one finishes, which is a permanent fetch rather than a schedule.
+vault.set_raw_setting("csm_auto_refresh_minutes", "1", "t")
+check("an interval below the floor is raised to it",
+      csm.auto_refresh_minutes(), csm.MIN_AUTO_MINUTES)
+vault.set_raw_setting("csm_auto_refresh_minutes", "banana", "t")
+check("an unreadable interval falls back, it does not crash the loop",
+      csm.auto_refresh_minutes(), 10)
+vault.set_raw_setting("csm_auto_refresh_minutes", "30", "t")
+check("a longer interval is honoured", csm.auto_refresh_minutes(), 30)
+
+# The guard that keeps a laptop from fetching alongside production.
+check("a non-deployed copy refuses to auto-refresh",
+      asyncio.run(csm.auto_refresh_once()).get("skipped"),
+      "not the deployed instance")
+
+vault.set_raw_setting("allow_local_side_effects", "1", "t")
+with db.advisory_lock("fetch:open", "someone-else", ttl_seconds=60):
+    # Skips rather than queues: a refresh that lands twenty minutes late
+    # serves nobody, and blocking here holds the loop past its next tick.
+    res = asyncio.run(csm.auto_refresh_once())
+check("a refresh already in flight is skipped, not queued",
+      bool(res.get("skipped")) and "not the deployed" not in res["skipped"], True)
+vault.set_raw_setting("allow_local_side_effects", "0", "t")
+
+f = csm.freshness()
+check("the probe reports the store's stamp and the interval",
+      (set(f) == {"tickets_at", "accounts_at", "auto_minutes"},
+       f["auto_minutes"]),
+      (True, 30))
+with db.get_conn() as c:
+    c.execute("UPDATE tickets SET fetched_at='2099-01-01T00:00:00Z' WHERE id='t1'")
+check("and it moves when the store does",
+      csm.freshness()["tickets_at"], "2099-01-01T00:00:00Z")
+vault.set_raw_setting("csm_auto_refresh", "0", "t")
+
+print()
 if fails:
     print(f"FAILED: {len(fails)} — {', '.join(fails)}")
     raise SystemExit(1)

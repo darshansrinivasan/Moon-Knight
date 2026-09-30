@@ -844,6 +844,12 @@ async def csm_analytics(owner: str = "", user: dict = Depends(auth.require_user)
     return await asyncio.to_thread(csm.analytics, owners)
 
 
+@app.get("/api/csm/freshness")
+async def csm_freshness(user: dict = Depends(auth.require_user)):
+    """Whether the store has moved since the page loaded. Polled, so cheap."""
+    return await asyncio.to_thread(csm.freshness)
+
+
 @app.post("/api/csm/refresh")
 async def csm_refresh(user: dict = Depends(auth.require_user)):
     """Pull fresh accounts AND fresh open tickets from Pylon, on demand.
@@ -2762,6 +2768,9 @@ async def list_runs(date: str | None = None, user: dict = Depends(auth.require_u
             "schedule_time":    vault.get_setting("schedule_time"),
             "schedule_tz":      vault.get_setting("schedule_tz"),
             "schedule_target":  vault.get_setting("schedule_target"),
+            "csm_auto_refresh": vault.get_setting("csm_auto_refresh"),
+            "csm_auto_refresh_minutes":
+                vault.get_setting("csm_auto_refresh_minutes"),
         },
         "can_edit":  user["role"] == "admin",
         # Separate from can_edit: an operator may trigger a run but not change

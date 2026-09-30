@@ -70,6 +70,8 @@ check("/api/csm/analytics with no owner unauthenticated -> 401",
       r.status_code == 401, str(r.status_code))
 r = client.get("/api/csm/analytics?owner=x")
 check("/api/csm/analytics unauthenticated -> 401", r.status_code == 401, str(r.status_code))
+r = client.get("/api/csm/freshness")
+check("/api/csm/freshness unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.post("/api/csm/refresh")
 check("/api/csm/refresh unauthenticated -> 401", r.status_code == 401, str(r.status_code))
 r = client.get("/api/rootly/incidents")

@@ -48,6 +48,7 @@ RESYNC_DAYS = 14
 LOCK_TTL_SECONDS = 1800
 
 _task: asyncio.Task | None = None
+_csm_task: asyncio.Task | None = None
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -554,18 +555,69 @@ async def _loop() -> None:
         await asyncio.sleep(TICK_SECONDS)
 
 
+# ── CSM auto-refresh ─────────────────────────────────────────────────────────
+#
+# Its own task, not a branch inside _tick(): the daily pipeline ticks once a
+# minute looking for one alarm time, while this runs a long fetch on its own
+# cadence. Sharing the loop would mean a 105-second refresh delaying the
+# 09:30 alarm check by as much.
+
+async def _csm_loop() -> None:
+    logger.info("CSM auto-refresh task started")
+    while True:
+        minutes = None
+        try:
+            minutes = await asyncio.to_thread(csm_auto_minutes)
+            if minutes:
+                res = await _csm_refresh()
+                if res.get("skipped"):
+                    logger.info("CSM auto-refresh skipped: %s", res["skipped"])
+                else:
+                    logger.info("CSM auto-refresh: %s accounts, %s open tickets",
+                                res["accounts"]["accounts"],
+                                res["tickets"].get("stored"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("CSM auto-refresh failed")
+        # Re-read the interval every pass, so turning it off in Admin takes
+        # effect within one sleep instead of needing a redeploy. When it is
+        # off, wake up on the shortest allowed interval to notice it coming
+        # back on.
+        await asyncio.sleep(60 * (minutes or csm_min_minutes()))
+
+
+def csm_auto_minutes():
+    import csm
+    return csm.auto_refresh_minutes()
+
+
+def csm_min_minutes() -> int:
+    import csm
+    return csm.MIN_AUTO_MINUTES
+
+
+async def _csm_refresh() -> dict:
+    import csm
+    return await csm.auto_refresh_once()
+
+
 def start() -> None:
-    global _task
+    global _task, _csm_task
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop())
+    if _csm_task is None or _csm_task.done():
+        _csm_task = asyncio.create_task(_csm_loop())
 
 
 async def stop() -> None:
-    global _task
-    if _task and not _task.done():
-        _task.cancel()
-        try:
-            await _task
-        except asyncio.CancelledError:
-            pass
-    _task = None
+    global _task, _csm_task
+    for name in ("_task", "_csm_task"):
+        task = globals()[name]
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        globals()[name] = None

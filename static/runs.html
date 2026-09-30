@@ -8,6 +8,15 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/static/shell.css">
 <style>
+  /* The interval sits inline with its own toggle, so the sentence reads as
+     one setting rather than a checkbox and an unrelated number field. */
+  .toggle-row .mins {
+    width: 62px; background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: var(--radius-sm); padding: 4px 7px;
+    font: inherit; font-size: 12.5px; text-align: right;
+  }
+  .toggle-row .mins:disabled { opacity: .5; }
+
   .defs {
     display: grid; grid-template-columns: repeat(3, 1fr);
     gap: 12px; margin-bottom: 18px;
@@ -127,6 +136,14 @@
                  title="After the day's run: re-fetch the whole open backlog from Pylon and QC it, so still-open tickets are re-examined every morning. Unchanged tickets cost nothing — only changed content is re-graded.">
             Also re-fetch &amp; QC all open tickets each morning</label>
         </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="csm_auto_refresh">
+          <label for="csm_auto_refresh"
+                 title="Re-fetch accounts and the whole open backlog from Pylon on a timer, so the CSM page is not showing this morning's states all afternoon. Costs no AI spend — it is a fetch plus the rule scorer. Skips any interval when a fetch is already running.">
+            Keep the CSM page fresh: re-fetch from Pylon every</label>
+          <input type="number" id="csm_auto_refresh_minutes" min="5" max="1440"
+                 step="5" class="mins"> minutes
+        </div>
         <div class="sched-grid">
           <div class="field">
             <label for="schedule_time">Time of day</label>
@@ -145,7 +162,7 @@
           </div>
         </div>
         <div class="actions">
-          <button data-save="schedule_enabled,schedule_open_qc,schedule_closed_qc,schedule_time,schedule_tz,schedule_target">Save schedule</button>
+          <button data-save="schedule_enabled,schedule_open_qc,schedule_closed_qc,schedule_time,schedule_tz,schedule_target,csm_auto_refresh,csm_auto_refresh_minutes">Save schedule</button>
           <button class="ghost" id="run-now">▶ Run now</button>
         </div>
         <div class="msg" id="msg-schedule"></div>
@@ -235,7 +252,17 @@ function fillSchedule(s) {
   $("schedule_time").value = s.schedule_time || "";
   $("schedule_tz").value = s.schedule_tz || "";
   $("schedule_target").value = s.schedule_target || "yesterday";
+  $("csm_auto_refresh").checked = s.csm_auto_refresh === "1";
+  $("csm_auto_refresh_minutes").value = s.csm_auto_refresh_minutes || "10";
+  syncCsmMins();
 }
+
+// The interval is meaningless while the toggle is off, and an editable field
+// beside an unchecked box reads as a setting that is doing something.
+function syncCsmMins() {
+  $("csm_auto_refresh_minutes").disabled = !$("csm_auto_refresh").checked;
+}
+$("csm_auto_refresh").addEventListener("change", syncCsmMins);
 
 function renderRuns(runs) {
   if (!runs.length) {
