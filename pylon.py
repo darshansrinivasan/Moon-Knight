@@ -296,7 +296,12 @@ async def fetch_users() -> list[dict]:
         out = list(body["data"])
         pag = body.get("pagination") or {}
         for _ in range(50):
-            if not pag.get("has_next_page"):
+            # The cursor is required, not just the flag. has_next_page=true with
+            # no cursor would re-request page one fifty times and then abort the
+            # whole roster sync — which empties the CSM picker rather than
+            # degrading it. /users currently returns no pagination block at all,
+            # so this is a guard against the shape changing, not a live bug.
+            if not (pag.get("has_next_page") and pag.get("cursor")):
                 break
             body = await _with_retry(lambda c=pag.get("cursor"): one_page(c))
             out.extend(body["data"])

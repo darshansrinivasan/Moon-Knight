@@ -290,16 +290,13 @@
       <div id="analytics-view" hidden>
         <div class="charts">
           <div class="chart-card">
-            <h2 id="vol-title">Ticket volume</h2>
-            <div class="what">Tickets raised each month across their accounts,
-              and how many of those are still open today.</div>
+            <h2 id="vol-title">Open tickets by age</h2>
+            <div class="what" id="vol-what"></div>
             <div class="cwrap"><canvas id="cVolume"></canvas></div>
           </div>
           <div class="chart-card">
-            <h2>Ticket volume by account</h2>
-            <div class="what">The same six months, one panel per account on a
-              shared scale. Everything past the top five is folded into the
-              last panel.</div>
+            <h2>Open tickets by account</h2>
+            <div class="what" id="acct-what"></div>
             <div class="smalls" id="account-charts"></div>
           </div>
         </div>
@@ -572,6 +569,11 @@ function saveColOrder(order) {
 // ── state ───────────────────────────────────────────────────────────────────
 
 let data = { tickets: [], accounts: [] };
+// Which selection `data` was fetched for. Without it, switching tabs re-rendered
+// the cache: pick Seetha, open Analytics, switch to Pooja, come back to Open
+// tickets — the picker said Pooja and the table showed Seetha's 20 tickets and
+// her accounts. A CSM would have been looking at someone else's customers.
+let dataFor = null;
 let allOwners = [];                 // every CSM, for the picker
 let pickedOnce = false;             // the "default to me" only fires once
 const selected = new Set();         // the chosen owner ids
@@ -662,10 +664,13 @@ function renderSummary() {
 // "waiting on customer" makes this view answer the same question the ticket
 // table is answering. Accounts with none still appear, at zero.
 function companyCounts() {
+  // Keyed on account_id, never the display name. Pylon auto-creates an account
+  // per email domain, so duplicate names are routine — there are 20 in this
+  // store, and "Meesho" appears twice in the roster itself. Matching on name
+  // collapsed every duplicate's tickets onto whichever row was found first.
   const out = new Map((data.accounts || []).map(a => [a.id, 0]));
   visibleTickets().forEach(t => {
-    const a = (data.accounts || []).find(x => x.name === t.account_name);
-    if (a) out.set(a.id, (out.get(a.id) || 0) + 1);
+    if (out.has(t.account_id)) out.set(t.account_id, out.get(t.account_id) + 1);
   });
   return out;
 }
@@ -798,12 +803,16 @@ function skeleton() {
 async function load() {
   const owners = ownerIds();
   expanded.clear();
+  // Claim the sequence BEFORE the early return. Clearing the selection used to
+  // leave `seq` untouched, so a request still in flight for the previous CSM
+  // passed the guard below and repainted the table someone had just emptied.
+  const mine = ++seq;
   if (!owners.length) {
     data = { tickets: [], accounts: [] };
+    dataFor = "";
     renderStatusPicker(); renderSummary(); renderHead(); renderRows();
     return;
   }
-  const mine = ++seq;
   skeleton();
   $("summary").textContent = "";
   try {
@@ -811,11 +820,13 @@ async function load() {
       `/api/csm/tickets?owner=${encodeURIComponent(owners.join(","))}`);
     if (mine !== seq) return;
     data = d;
+    dataFor = owners.join(",");
   } catch (e) {
     if (mine !== seq) return;
     // Clear every skeleton this loader painted — a half-shimmering table reads
     // as "still working" long after the request gave up.
     data = { tickets: [], accounts: [] };
+    dataFor = null;             // a failed load must not look cached
     renderStatusPicker();
     $("summary").textContent = "";
     $("rows").innerHTML = `<tr><td colspan="${
@@ -906,6 +917,10 @@ const destroy = id => { if (CH[id]) { CH[id].destroy(); delete CH[id]; } };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun",
                 "Jul","Aug","Sep","Oct","Nov","Dec"];
 const monthLabel = ym => {
+  // "older" is a real bucket on the age axis, not a month — everything raised
+  // before the axis starts. Naming it here keeps the axis honest without a
+  // window that silently drops the oldest, longest-suffering tickets.
+  if (ym === "older") return "Older";
   const [y, m] = String(ym).split("-");
   return `${MONTHS[Number(m) - 1] || m} ${String(y).slice(2)}`;
 };
@@ -942,19 +957,19 @@ function renderSmallMultiples(accounts, labels, p) {
     return;
   }
   const max = Math.max(1, ...accounts.flatMap(a => a.counts));
+  // Bars here too, for the same reason as the chart above.
   host.innerHTML = accounts.map((a, i) => `<div class="small">
       <div class="nm" title="${esc(a.name)}">${esc(a.name)}</div>
-      <div class="tot">${a.counts.reduce((x, y) => x + y, 0)} tickets</div>
+      <div class="tot">${a.total} open</div>
       <canvas id="acc${i}"></canvas>
     </div>`).join("");
 
   accounts.forEach((a, i) => {
     CH["acc" + i] = new Chart($("acc" + i), {
-      type: "line",
+      type: "bar",
       data: { labels, datasets: [{
-        label: a.name, data: a.counts, borderColor: p.accent,
-        backgroundColor: "transparent", borderWidth: 2, tension: .3,
-        pointRadius: 0, pointHoverRadius: 4,
+        label: a.name, data: a.counts, backgroundColor: p.accent,
+        borderRadius: 2, borderSkipped: false,
       }] },
       options: {
         responsive: true, maintainAspectRatio: false,
@@ -974,34 +989,53 @@ function renderSmallMultiples(accounts, labels, p) {
 function renderAnalytics(d) {
   if (typeof Chart === "undefined") return;
   $("vol-title").textContent =
-    d.everyone ? `Ticket volume — all ${d.standings.length} CSMs`
-    : multi()  ? `Ticket volume — ${selected.size} CSMs combined`
-               : "Ticket volume — this CSM";
+    d.everyone ? `Open tickets by age — all ${d.standings.length} CSMs`
+    : multi()  ? `Open tickets by age — ${selected.size} CSMs combined`
+               : "Open tickets by age — this CSM";
+  // Say the window out loud, and account for everything outside it. The chart
+  // is keyed on the month a ticket was RAISED, so tickets older than the axis
+  // are still open but absent here — which made the Open tickets tab look
+  // like it disagreed with this one.
+  // Every open ticket is on this chart. Saying the total out loud is how a
+  // reader can check that against the Open tickets tab without doing sums.
+  const older = d.open_counts[0] || 0;
+  $("vol-what").innerHTML =
+    `Every open ticket, by the month it was raised — <b>${d.total_open}</b> in `
+    + `total, the same figure as the Open tickets tab.`
+    + (older ? ` <b>${older}</b> of them predate ${esc(monthLabel(d.window_from))}.`
+             : "");
   $("stand-what").textContent = d.everyone
     ? "Accounts owned and tickets open right now. Pick CSMs above to narrow the charts."
     : "Accounts owned and tickets open right now.";
-  const p = pal(), labels = d.months.map(monthLabel);
-  const total = d.created.reduce((a, b) => a + b, 0);
+  const p = pal(), labels = d.buckets.map(monthLabel);
 
-  chartOrEmpty("cVolume", total > 0, () => {
+  chartOrEmpty("cVolume", d.total_open > 0, () => {
     destroy("cVolume");
     CH.cVolume = new Chart($("cVolume"), {
-      type: "line",
-      data: { labels, datasets: [
-        // Both series are ticket counts, so they share the one y-axis. A second
-        // scale for "still open" would let a flat handful of open tickets draw
-        // the same height as ninety raised.
-        { label: "Raised", data: d.created, borderColor: p.accent,
-          backgroundColor: p.accent, borderWidth: 2, tension: .3,
-          pointRadius: 3, pointHoverRadius: 5 },
-        { label: "Still open today", data: d.still_open, borderColor: p.review,
-          backgroundColor: p.review, borderWidth: 2, tension: .3,
-          pointRadius: 3, pointHoverRadius: 5 },
-      ] },
-      options: chartBase(),
+      type: "bar",
+      // Bars, not a line: these are counts per age bucket, a magnitude per
+      // category. A line implies a continuous series, and "Older" is not a
+      // month — joining it to April would draw a slope that means nothing.
+      data: { labels, datasets: [{
+        label: "Open tickets", data: d.open_counts,
+        backgroundColor: p.accent, borderRadius: 4, borderSkipped: false,
+      }] },
+      // One series, so the heading names it and a legend box would only
+      // repeat it.
+      options: { ...chartBase(),
+                 plugins: { legend: { display: false },
+                            tooltip: { displayColors: false } } },
     });
   });
 
+  const o = d.other || { accounts: 0, total: 0 };
+  $("acct-what").innerHTML =
+    `The busiest ${d.accounts.length} account${d.accounts.length === 1 ? "" : "s"}, `
+    + `on the same age buckets and a shared scale.`
+    + (o.accounts
+        ? ` A further <b>${o.total}</b> open across <b>${o.accounts}</b> other `
+          + `account${o.accounts === 1 ? "" : "s"}.`
+        : "");
   renderSmallMultiples(d.accounts, labels, p);
 
   standings = d.standings;
@@ -1194,6 +1228,7 @@ document.addEventListener("click", e => {
 
 function setView(v) {
   view = v;
+  const want = ownerIds().join(",");
   $("view-tickets").classList.toggle("on", v === "tickets");
   $("view-company").classList.toggle("on", v === "company");
   $("view-analytics").classList.toggle("on", v === "analytics");
@@ -1201,6 +1236,9 @@ function setView(v) {
   $("analytics-view").hidden = v !== "analytics";
   $("summary").hidden = v === "analytics";
   if (v === "analytics") { loadAnalytics(); return; }
+  // Re-fetch when the cache belongs to a different selection — including the
+  // case where a tab switch cancelled an in-flight load and left it empty.
+  if (dataFor !== want) { load(); return; }
   renderHead();
   renderRows();
 }

@@ -265,10 +265,10 @@ with db.get_conn() as c:
     c.execute("UPDATE tickets SET assignee_name='Ann' WHERE id='t1'")
 
 print()
-print("=== the trend axis is calendar months, gaps included ===")
+print("=== the age axis is calendar months, gaps included ===")
 # A month with no tickets must be a ZERO on the axis, not a missing point.
-# Taking the axis from the rows the query returned let a trend line close over
-# a quiet month, drawing continuous volume across a gap that was empty.
+# Taking the axis from the rows the query returned let a chart close over a
+# quiet month, drawing continuous volume across a gap that was empty.
 months = csm._month_axis()
 check("six months, oldest first", len(months), 6)
 check("ordered", months, sorted(months))
@@ -284,14 +284,15 @@ with db.get_conn() as c:
                   " (?,?,'2026-08-20',?,'new','a1',?,?)",
                   (tid, hash(tid) % 9999, tid, f"{when}-05T00:00:00Z", NOW))
 a = csm.analytics(SEETHA)
-check("the axis is the full six months", a["months"], months)
-check("the quiet month is a zero, not a gap", a["created"][1], 0)
+check("the axis is the older bucket plus the full six months",
+      a["buckets"], [csm.OLDER, *months])
+# buckets[0] is "older", so month N sits at index N+1.
+check("the quiet month is a zero, not a gap", a["open_counts"][2], 0)
 check("counts land in their own month",
-      (a["created"][0], a["created"][2]), (2, 1))
-check("every series is the axis length",
-      {len(a["created"]), len(a["still_open"])}, {6})
-check("still-open never exceeds raised",
-      all(o <= c for o, c in zip(a["still_open"], a["created"])), True)
+      (a["open_counts"][1], a["open_counts"][3]), (2, 1))
+check("the series is the axis length", len(a["open_counts"]), 7)
+check("and every account panel is too",
+      {len(x["counts"]) for x in a["accounts"]}, {7})
 
 print()
 print("=== Analytics opens on everyone; an empty selection still means none ===")
@@ -304,12 +305,44 @@ mine = csm.analytics([SEETHA])
 check("no argument covers everyone", allv["everyone"], True)
 check("and a selection does not", mine["everyone"], False)
 check("everyone counts at least what one CSM does",
-      sum(allv["created"]) >= sum(mine["created"]) > 0, True)
+      allv["total_open"] >= mine["total_open"] > 0, True)
 check("an explicit empty selection stays empty",
-      (csm.analytics([])["everyone"], sum(csm.analytics([])["created"])),
+      (csm.analytics([])["everyone"], csm.analytics([])["total_open"]),
       (False, 0))
 check("the standings table is company-wide either way",
       len(allv["standings"]) == len(mine["standings"]) > 1, True)
+
+print()
+print("=== the age axis has no window: every open ticket is on it ===")
+# Reported from production: "all CSMs" showed 241 on Analytics and 268 on the
+# Open tickets tab, because the chart counted tickets RAISED in a six-month
+# window and a ticket open since December fell outside it. The axis now leads
+# with an "older" bucket, so the chart and the ticket list must agree exactly.
+with db.get_conn() as c:
+    c.execute("INSERT OR REPLACE INTO tickets (id,number,fetch_date,title,state,"
+              "account_id,created_at,fetched_at) VALUES"
+              " ('anc',9401,'2026-08-20','Ancient','new','a1','2024-01-05T00:00:00Z',?)",
+              (NOW,))
+a = csm.analytics(SEETHA)
+total = len(csm.tickets_for(SEETHA)["tickets"])
+check("the axis leads with the older bucket", a["buckets"][0], csm.OLDER)
+check("and then the calendar months", a["buckets"][1:], a["months"])
+check("a ticket older than the axis lands in that bucket",
+      a["open_counts"][0] >= 1, True)
+# The assertion the production report was really about.
+check("the chart totals exactly what the ticket list shows",
+      (sum(a["open_counts"]), a["total_open"]), (total, total))
+check("the per-account panels plus the tail reconcile too",
+      sum(x["total"] for x in a["accounts"]) + a["other"]["total"], total)
+check("the older count respects the owner filter",
+      csm.analytics(OTHER)["open_counts"][0], 0)
+# Only OPEN tickets: a closed one must not appear anywhere on this tab.
+with db.get_conn() as c:
+    c.execute("UPDATE tickets SET state='closed' WHERE id='anc'")
+check("closing it removes it from the chart",
+      csm.analytics(SEETHA)["total_open"], total - 1)
+with db.get_conn() as c:
+    c.execute("DELETE FROM tickets WHERE id='anc'")
 
 print()
 print("=== the by-account panels are capped, the tail folded not dropped ===")
@@ -325,12 +358,16 @@ for i in range(csm.TREND_ACCOUNTS + 2):
                   (f"zt{i}", 7000 + i, aid, aid,
                    f"{months[3]}-05T00:00:00Z", NOW))
 a = csm.analytics(SEETHA)
-check("at most the cap plus one folded panel",
-      len(a["accounts"]) <= csm.TREND_ACCOUNTS + 1, True)
-check("the last panel is the fold",
-      a["accounts"][-1]["name"].startswith("Other ("), True)
+check("never more panels than the cap", len(a["accounts"]) <= csm.TREND_ACCOUNTS, True)
+# The tail is a figure, not a seventh panel: folded into one it reached 203
+# open against 4-6 per named account, and on the shared scale that made every
+# named panel an invisible sliver.
+check("no panel is the fold",
+      any(x["name"].startswith("Other (") for x in a["accounts"]), False)
+check("the tail is reported separately", a["other"]["accounts"] >= 1, True)
 check("nothing is lost to the fold",
-      sum(sum(x["counts"]) for x in a["accounts"]), sum(a["created"]))
+      sum(x["total"] for x in a["accounts"]) + a["other"]["total"],
+      a["total_open"])
 
 print()
 print("=== the standings table covers every CSM in the bucket ===")
@@ -437,6 +474,29 @@ check("the raw field blob is not shipped to the page",
       "custom_fields" in csm.tickets_for(SEETHA)["tickets"][0], False)
 
 print()
+print("=== rows carry account_id, so the page never joins on a display name ===")
+# Pylon auto-creates an account per email domain, so duplicate names are
+# routine — there are 20 in the live store and one CSM owns two accounts both
+# called "Meesho". The By-company view counted tickets by matching
+# account_name, which collapsed every duplicate onto whichever row it found
+# first. The identity has to travel with the row for that join to be safe.
+account("dup1", "Twin Corp", SEETHA, CURRENT)
+account("dup2", "Twin Corp", SEETHA, CURRENT)
+ticket("d1", "dup1")
+ticket("d2", "dup2")
+ticket("d3", "dup2")
+rows = csm.tickets_for(SEETHA)["tickets"]
+check("every ticket carries its account_id",
+      all(t.get("account_id") for t in rows), True)
+dup = {t["id"]: t["account_id"] for t in rows if t["id"] in ("d1", "d2", "d3")}
+check("same-named accounts stay distinguishable on the rows",
+      (dup["d1"] != dup["d2"], dup["d2"] == dup["d3"]), (True, True))
+counts = {(a["id"], a["name"]): a["open_tickets"]
+          for a in csm.accounts_for(SEETHA) if a["name"] == "Twin Corp"}
+check("and the server counts them apart, 1 and 2",
+      sorted(counts.values()), [1, 2])
+
+print()
 print("=== the page filters and sorts on what the server actually sends ===")
 # The status filter is client-side, so what it keys on has to be present on
 # every row. Pinned server-side because a filter built against a field the
@@ -449,7 +509,7 @@ check("and the states are RAW values, not the spellings the page shows",
           for t in rows), True)
 # Every column the table offers a sort on must exist on the row, or the sort
 # silently compares undefined to undefined and does nothing.
-for field in ("created_at", "account_name", "number", "title", "created_by",
+for field in ("created_at", "account_id", "account_name", "number", "title", "created_by",
               "assignee_name", "groups", "state", "last_reply_at",
               "last_reply_by", "oncall_url", "link", "owner_name"):
     if field not in rows[0]:
@@ -463,6 +523,20 @@ check("and every sortable account column too",
 stand = csm.standings()[0]
 check("and every sortable standings column",
       all(k in stand for k in ("name", "accounts", "open_tickets")), True)
+
+print()
+print("=== the CSM page joins tickets to accounts by id, not by name ===")
+# A static pin because this lives in page JS with no runtime coverage. Matching
+# on account_name here is the bug above, reintroduced.
+import pathlib as _pl
+PAGE = (_pl.Path(__file__).resolve().parent.parent / "static" / "csm.html").read_text()
+counts_fn = PAGE.split("function companyCounts()", 1)[1].split("\n}", 1)[0]
+check("company counts key on account_id", "t.account_id" in counts_fn, True)
+check("and never on the display name", "account_name" in counts_fn, False)
+# The cache has to remember whose data it holds, or a tab switch repaints the
+# previous CSM's tickets under the new CSM's name.
+check("the ticket cache records which selection it belongs to",
+      "dataFor" in PAGE, True)
 
 print()
 print("=== the Runs page actually SENDS every setting it offers ===")

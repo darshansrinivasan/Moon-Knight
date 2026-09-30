@@ -414,6 +414,7 @@ def tickets_for(owners) -> dict:
             f"""SELECT t.id, t.number, t.title, t.link, t.state, t.source,
                        t.created_at, t.assignee_name, t.slack_url,
                        t.custom_fields, t.latest_message_time,
+                       t.account_id,
                        a.name AS account_name, a.domain AS account_domain,
                        json_extract(a.custom_fields, ?) AS owner_id,
                        (SELECT m.author_name FROM messages m
@@ -486,64 +487,81 @@ def _month_axis(n: int = TREND_MONTHS) -> list[str]:
     return list(reversed(out))
 
 
+OLDER = "older"          # the catch-all bucket at the head of the age axis
+
+
 def analytics(owners=None) -> dict:
-    """Ticket volume over time for the selection, and standings for everyone.
+    """The open backlog by age, plus the standings for every CSM.
 
     `owners=None` means every CSM in the bucket — the Analytics tab opens on
     the whole picture and the picker narrows it, because its standings table is
     company-wide regardless and a blank page was the alternative.
 
-    Both trends count tickets by the month they were CREATED, and both are
-    counts of tickets — one y-axis, one unit. "Still open" is drawn as a subset
-    of "created" rather than on a second scale, because two scales in one frame
-    invite a comparison the numbers do not support.
+    Counts OPEN tickets only, bucketed by the month each was raised, with
+    everything older than the axis collected into one leading bucket. Two
+    consequences, both deliberate:
+
+      * the figures here add up to the Open tickets tab exactly. The previous
+        version charted tickets RAISED in a six-month window and drew the open
+        ones as a subset, so a ticket open since December was missing from the
+        chart entirely — 241 here against 268 there, with nothing on the page
+        explaining the difference.
+      * there is no window to fall outside of. A raised-volume trend needed one
+        to stay readable (the pre-window bar is 2.6x the tallest month, which
+        flattens six months of trend into a strip); an open-backlog-by-age
+        chart does not, because the old bucket is small by definition — a
+        backlog where it is not small is exactly what a CSM needs to see.
     """
     months = _month_axis()
     floor = months[0]
+    buckets = [OLDER, *months]
     everyone = owners is None
     acc_where, acc_params = _account_filter(owners, everyone=everyone)
     open_where, open_params = _open_where()
 
     with db.get_conn() as conn:
         rows = conn.execute(
-            f"""SELECT substr(t.created_at, 1, 7) AS ym,
-                       a.name AS account,
-                       COUNT(*) AS created,
-                       SUM(CASE WHEN {open_where} THEN 1 ELSE 0 END) AS still_open
+            f"""SELECT CASE WHEN COALESCE(substr(t.created_at, 1, 7), '') < ?
+                            THEN ? ELSE substr(t.created_at, 1, 7) END AS bucket,
+                       a.name AS account, a.id AS account_id,
+                       COUNT(*) AS n
                 FROM tickets t
                 JOIN accounts a ON a.id = t.account_id
-                WHERE {acc_where}
-                  AND t.deleted_at IS NULL
-                  AND substr(t.created_at, 1, 7) >= ?
-                GROUP BY ym, account""",
-            [*open_params, *acc_params, floor]).fetchall()
+                WHERE {acc_where} AND {open_where}
+                GROUP BY bucket, account_id""",
+            [floor, OLDER, *acc_params, *open_params]).fetchall()
 
-    idx = {ym: i for i, ym in enumerate(months)}
-    created = [0] * len(months)
-    still_open = [0] * len(months)
-    by_account: dict[str, list] = {}
+    idx = {b: i for i, b in enumerate(buckets)}
+    open_counts = [0] * len(buckets)
+    by_account: dict[str, dict] = {}
     for r in rows:
-        i = idx.get(r["ym"])
-        if i is None:                     # a month past the axis floor
-            continue
-        created[i] += r["created"]
-        still_open[i] += r["still_open"] or 0
-        series = by_account.setdefault(r["account"], [0] * len(months))
-        series[i] += r["created"]
+        # A ticket with no created_at cannot be placed on an age axis; it is
+        # older than everything we can date, which is what OLDER means.
+        i = idx.get(r["bucket"], idx[OLDER])
+        open_counts[i] += r["n"]
+        acc = by_account.setdefault(
+            r["account_id"], {"name": r["account"], "counts": [0] * len(buckets)})
+        acc["counts"][i] += r["n"]
 
-    ranked = sorted(by_account.items(), key=lambda kv: -sum(kv[1]))
-    accounts = [{"name": n, "counts": c} for n, c in ranked[:TREND_ACCOUNTS]]
+    # Keyed on account_id, so two accounts sharing a display name stay apart.
+    ranked = sorted(by_account.values(), key=lambda a: -sum(a["counts"]))
+    accounts = [{"name": a["name"], "counts": a["counts"],
+                 "total": sum(a["counts"])} for a in ranked[:TREND_ACCOUNTS]]
+    # The tail is reported as a figure, NOT as a seventh panel. Folded into one
+    # it reached 203 open against 4-6 for each named account, and on the shared
+    # scale that made every named panel an invisible sliver. A single account
+    # and the sum of 123 others are not comparable magnitudes; putting them in
+    # the same frame only destroys the comparison the panels exist for.
     rest = ranked[TREND_ACCOUNTS:]
-    if rest:
-        # Folded, not dropped and not given a made-up hue: the reader can still
-        # see the total, and the named lines stay the ones worth naming.
-        merged = [sum(c[i] for _, c in rest) for i in range(len(months))]
-        accounts.append({"name": f"Other ({len(rest)} accounts)", "counts": merged})
+    other = {"accounts": len(rest),
+             "total": sum(sum(a["counts"]) for a in rest)}
 
-    return {"months": months, "created": created, "still_open": still_open,
-            "accounts": accounts, "standings": standings(),
+    return {"buckets": buckets, "months": months, "open_counts": open_counts,
+            "accounts": accounts, "other": other, "standings": standings(),
             "owners": [] if everyone else _owner_list(owners),
-            "everyone": everyone}
+            "everyone": everyone,
+            "total_open": sum(open_counts),
+            "window_from": floor}
 
 
 def standings() -> list[dict]:
