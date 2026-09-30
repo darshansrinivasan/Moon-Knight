@@ -444,16 +444,24 @@ document.querySelector("[data-save]").addEventListener("click", async () => {
   // These inputs are empty until /api/runs resolves, and this handler binds at
   // parse time. Saving during that window used to wipe the stored schedule
   // time and timezone, so send only fields that actually hold a value.
+  // NOTE: data-save on the button is a label, not a source — this list is what
+  // actually gets sent. A key added to the attribute alone is silently dropped,
+  // saved as unchanged, and then re-rendered as off, which looks exactly like a
+  // checkbox that refuses to stay ticked. Add new settings HERE too.
   const body = { schedule_enabled: $("schedule_enabled").checked ? "1" : "0",
                  schedule_open_qc: $("schedule_open_qc").checked ? "1" : "0",
-                 schedule_closed_qc: $("schedule_closed_qc").checked ? "1" : "0" };
+                 schedule_closed_qc: $("schedule_closed_qc").checked ? "1" : "0",
+                 csm_auto_refresh: $("csm_auto_refresh").checked ? "1" : "0" };
   const held = [];
-  for (const key of ["schedule_time", "schedule_tz", "schedule_target"]) {
+  for (const key of ["schedule_time", "schedule_tz", "schedule_target",
+                     "csm_auto_refresh_minutes"]) {
     const value = ($(key).value || "").trim();
     if (value) body[key] = value; else held.push(key);
   }
 
-  if (held.length === 3) {
+  // Three of the four are the schedule fields that are blank before /api/runs
+  // resolves; the interval is allowed to be blank without meaning that.
+  if (held.length >= 3 && held.includes("schedule_time")) {
     show($("msg-schedule"), "The schedule has not loaded yet — reload the page.", "err");
     return;
   }

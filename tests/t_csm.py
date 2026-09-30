@@ -391,6 +391,40 @@ check("and it moves when the store does",
 vault.set_raw_setting("csm_auto_refresh", "0", "t")
 
 print()
+print("=== the Runs page actually SENDS every setting it offers ===")
+# The bug this pins: csm_auto_refresh was listed in the Save button's
+# data-save attribute, but that attribute is a label — the handler builds its
+# payload from a hardcoded list. The key was never sent, the save returned the
+# unchanged value, and the page re-rendered the box as unticked. It read as a
+# checkbox that refused to stay on.
+import pathlib
+import re
+
+RUNS = pathlib.Path(__file__).resolve().parent.parent / "static" / "runs.html"
+html = RUNS.read_text()
+declared = set()
+for attr in re.findall(r'data-save="([^"]+)"', html):
+    declared |= {k.strip() for k in attr.split(",") if k.strip()}
+# maxsplit=1: the selector appears twice in the handler, and splitting on all
+# occurrences hands back the sliver between them instead of the body.
+handler = html.split('document.querySelector("[data-save]")', 1)[1]
+# Whole-token, not substring: "csm_auto_refresh" occurs inside
+# "csm_auto_refresh_minutes", so a plain `in` reported the key as present
+# while the handler had dropped it — the pin passed against the very bug it
+# was written for. \b does not break on "_", which is what makes this work.
+missing = sorted(k for k in declared
+                 if not re.search(rf"\b{re.escape(k)}\b", handler))
+check("every advertised setting appears in the save handler", missing, [])
+check("the CSM controls are advertised",
+      {"csm_auto_refresh", "csm_auto_refresh_minutes"} <= declared, True)
+# And read back, or a saved value never reaches the form on the next load.
+fill = html.split("function fillSchedule")[1].split("\n}")[0]
+check("and are read back into the form",
+      all(re.search(rf"\b{k}\b", fill)
+          for k in ("csm_auto_refresh", "csm_auto_refresh_minutes")),
+      True)
+
+print()
 if fails:
     print(f"FAILED: {len(fails)} — {', '.join(fails)}")
     raise SystemExit(1)
