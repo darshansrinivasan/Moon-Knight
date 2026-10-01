@@ -106,16 +106,32 @@ print("=== session expiry: 0 means never, and the OAuth state still expires ==="
 # nothing renewed. 0 now disables expiry — defensible only because
 # `current_user` re-reads the user row on every request, so deactivating
 # someone takes effect immediately rather than waiting for a session to lapse.
-import importlib
 import os as _os
 import time as _time
 
+import vault
+
 _prev = _os.environ.get("QC_SESSION_HOURS")
 try:
-    _os.environ["QC_SESSION_HOURS"] = "0"
-    importlib.reload(auth)
+    _os.environ.pop("QC_SESSION_HOURS", None)
+    vault.set_raw_setting("session_hours", "0", "t")
     check("0 means the browser's maximum, not zero seconds",
           auth.session_seconds(), auth.MAX_COOKIE_DAYS * 86400)
+    # Admin-editable: the point of moving it off the platform is that a change
+    # lands without a restart, so it must be read live rather than at import.
+    vault.set_raw_setting("session_hours", "168", "t")
+    check("a change in Admin takes effect with no reload",
+          auth.session_seconds(), 168 * 3600)
+    vault.set_raw_setting("session_hours", "not a number", "t")
+    check("an unreadable value falls back rather than locking everyone out",
+          auth.session_seconds(), auth.DEFAULT_SESSION_HOURS * 3600)
+    # The platform still wins, so an ops override cannot be edited away in the UI.
+    _os.environ["QC_SESSION_HOURS"] = "0"
+    check("QC_SESSION_HOURS overrides the stored setting",
+          auth.session_seconds(), auth.MAX_COOKIE_DAYS * 86400)
+    check("and Admin reports it as environment-owned",
+          vault.setting_source("session_hours"), "env")
+    vault.set_raw_setting("session_hours", "0", "t")
     far = auth._unsign(auth.issue_session({"email": "x@spotdraft.com"}), b"session")
     check("a never-expiring session still verifies", bool(far), True)
     check("and its exp is far future, not absent",
@@ -126,7 +142,6 @@ try:
     check("an expired OAuth state is still refused",
           auth._unsign(stale, b"oauth-state"), None)
     _os.environ["QC_SESSION_HOURS"] = "12"
-    importlib.reload(auth)
     check("a positive value is still honoured", auth.session_seconds(), 12 * 3600)
 
     # Sliding renewal. A fresh cookie is NOT re-issued on every request (that
@@ -149,7 +164,6 @@ finally:
         _os.environ.pop("QC_SESSION_HOURS", None)
     else:
         _os.environ["QC_SESSION_HOURS"] = _prev
-    importlib.reload(auth)
 
 print()
 print("=== the CSM page: every role reads it, and refreshes it ===")

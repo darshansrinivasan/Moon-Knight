@@ -25,11 +25,14 @@ import vault
 
 ALLOWED_DOMAIN = os.getenv("QC_ALLOWED_DOMAIN", "spotdraft.com").lower()
 COOKIE_NAME    = "qc_session"
+# Session length lives in the settings registry, so an admin can change it
+# without a redeploy; QC_SESSION_HOURS still wins when the platform sets it.
 # 0 means "do not expire": sessions last as long as the browser will keep the
 # cookie. Safe here only because authorisation is re-checked on every request —
 # `current_user` re-reads the user row and refuses anyone deactivated, so
 # removing access does NOT depend on waiting for a session to lapse.
-SESSION_HOURS  = int(os.getenv("QC_SESSION_HOURS", "12"))
+SESSION_SETTING = "session_hours"
+DEFAULT_SESSION_HOURS = 12
 
 # Browsers cap persistent cookies at 400 days (Chrome/Edge enforce it; others
 # are heading the same way), so this is the real ceiling on "never expires" —
@@ -372,11 +375,29 @@ async def exchange_code(request: Request, code: str) -> dict:
 
 # ── session cookie ────────────────────────────────────────────────────────────
 
+def session_hours() -> int:
+    """The configured session length in hours; 0 means never expire.
+
+    Read live rather than captured at import, or changing it in Admin would
+    need a restart to take effect — which is the whole point of moving it off
+    the platform. An unreadable value falls back rather than raising: a typo in
+    a settings box must not lock everyone out of the app.
+    """
+    raw = (vault.get_setting(SESSION_SETTING) or "").strip()
+    if raw == "":
+        return DEFAULT_SESSION_HOURS
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return DEFAULT_SESSION_HOURS
+
+
 def session_seconds() -> int:
     """How long a session is good for, in seconds."""
-    if SESSION_HOURS <= 0:
+    hours = session_hours()
+    if hours <= 0:
         return MAX_COOKIE_DAYS * 86400
-    return SESSION_HOURS * 3600
+    return hours * 3600
 
 
 def issue_session(user: dict) -> str:
@@ -384,11 +405,15 @@ def issue_session(user: dict) -> str:
     # omitting it: `_unsign` is shared with the OAuth state check, whose
     # ten-minute TTL depends on a missing `exp` being treated as expired.
     # Teaching it that absent means "forever" would quietly lift that TTL too.
+    now = time.time()
     return _sign(
         {
             "email": user["email"],
             "name":  user.get("name") or "",
-            "exp":   time.time() + session_seconds(),
+            # `iat` is what lets needs_renewal work without reading the
+            # settings table on every single request — see there.
+            "iat":   now,
+            "exp":   now + session_seconds(),
         },
         b"session",
     )
@@ -425,9 +450,14 @@ def needs_renewal(request) -> bool:
     payload = _unsign(token, b"session")
     if not payload:
         return False
-    total = session_seconds()
-    left = payload.get("exp", 0) - time.time()
-    return left < total * (1 - RENEW_AFTER)
+    iat, exp = payload.get("iat"), payload.get("exp", 0)
+    if iat is None:
+        # Minted before `iat` existed. Renew it, which rewrites it in the
+        # current format — the alternative is reading the settings table here,
+        # and this runs on every authenticated request.
+        return True
+    total = exp - iat
+    return total > 0 and (time.time() - iat) > total * RENEW_AFTER
 
 
 def clear_session_cookie(response) -> None:

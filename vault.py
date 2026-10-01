@@ -286,6 +286,11 @@ SETTING_SPECS = [
     # LABELLED "Current Customer" is this string — a separate 'Churned
     # Customer' value sits one careless match away, so it is pinned exactly.
     {"key": "csm_bucket_value", "default": "Customer/ Churned Customer"},
+    # How long a sign-in lasts, in hours. 0 = never expire. Admin-editable so
+    # it does not need a redeploy, with QC_SESSION_HOURS winning when the
+    # platform sets it — the same precedence as dashboard_base_url, and the
+    # reason the UI control reports itself as environment-owned there.
+    {"key": "session_hours", "env": "QC_SESSION_HOURS", "default": "0"},
     # The Pylon issue field holding the on-call (Rootly) Slack channel for a
     # ticket. A slug, not a label, and a setting rather than a constant because
     # it is a Pylon-admin-editable field like every other one the app reads.

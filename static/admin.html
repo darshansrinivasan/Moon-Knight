@@ -406,6 +406,25 @@
             </div>
             <div id="role-key" class="hint"></div>
             <div class="msg" id="msg-users"></div>
+            <div class="row" style="margin:16px 0 4px; align-items:flex-end">
+              <div class="field" style="max-width:220px">
+                <label for="session_hours">Stay signed in for</label>
+                <select id="session_hours">
+                  <option value="0">Never sign out</option>
+                  <option value="12">12 hours</option>
+                  <option value="24">1 day</option>
+                  <option value="168">1 week</option>
+                  <option value="720">30 days</option>
+                </select>
+              </div>
+              <button data-save="session_hours">Save sign-in length</button>
+            </div>
+            <div class="hint">
+              Access is removed by deactivating someone above, which takes effect
+              on their next click whatever this is set to. Changing this affects
+              new sign-ins and sessions as they renew, not existing ones.
+            </div>
+            <div class="msg" id="msg-session"></div>
             <table>
               <thead><tr><th>Person</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
               <tbody id="users"></tbody>
@@ -671,6 +690,19 @@ function fillSettings(s, sources = {}) {
   // A select falls back to its first option on "", which would misreport the
   // effective default (leads) as Off — so default it explicitly.
   $("slack_mention_mode").value = s.slack_mention_mode || "leads";
+  // A select falls back to its first option on an unknown value; a session
+  // length set to something not in this list (via the env var) must not
+  // silently display as "Never sign out".
+  const sh = String(s.session_hours ?? "");
+  if ($("session_hours")) {
+    if (![...$("session_hours").options].some(o => o.value === sh)) {
+      const opt = document.createElement("option");
+      opt.value = sh;
+      opt.textContent = `${sh} hours (set elsewhere)`;
+      $("session_hours").appendChild(opt);
+    }
+    $("session_hours").value = sh;
+  }
   $("share_drive_folder_id").value = s.share_drive_folder_id || "";
   $("share_sheet_visibility").value = s.share_sheet_visibility || "domain";
   fillQuotaSelect([], s.vertex_quota_project || "");
@@ -942,7 +974,8 @@ function wireSaveButtons() {
         if (v === "" && NEVER_BLANK.has(k)) return;
         body[k] = v;
       });
-      const msgId = keys[0].startsWith("vertex") ? "msg-vertex"
+      const msgId = keys[0] === "session_hours" ? "msg-session"
+        : keys[0].startsWith("vertex") ? "msg-vertex"
         : keys[0] === "csat_survey_id" ? "msg-csat"
         : keys[0] === "slack_mention_mode" ? "msg-mentions"
         : keys[0].startsWith("share_") ? "msg-share" : "msg-slack";
