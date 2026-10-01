@@ -101,6 +101,57 @@ for name, cl, denied in (("admin", ADMIN, False),
     check(f"{name} invites people", r.status_code == 403, denied)
 
 print()
+print("=== session expiry: 0 means never, and the OAuth state still expires ===")
+# People were being signed out every day: a 12-hour absolute session that
+# nothing renewed. 0 now disables expiry — defensible only because
+# `current_user` re-reads the user row on every request, so deactivating
+# someone takes effect immediately rather than waiting for a session to lapse.
+import importlib
+import os as _os
+import time as _time
+
+_prev = _os.environ.get("QC_SESSION_HOURS")
+try:
+    _os.environ["QC_SESSION_HOURS"] = "0"
+    importlib.reload(auth)
+    check("0 means the browser's maximum, not zero seconds",
+          auth.session_seconds(), auth.MAX_COOKIE_DAYS * 86400)
+    far = auth._unsign(auth.issue_session({"email": "x@spotdraft.com"}), b"session")
+    check("a never-expiring session still verifies", bool(far), True)
+    check("and its exp is far future, not absent",
+          far["exp"] > _time.time() + 300 * 86400, True)
+    # The guard that matters: _unsign is shared, and the OAuth state's
+    # ten-minute TTL relies on a missing/past exp being rejected.
+    stale = auth._sign({"n": "x", "exp": _time.time() - 1}, b"oauth-state")
+    check("an expired OAuth state is still refused",
+          auth._unsign(stale, b"oauth-state"), None)
+    _os.environ["QC_SESSION_HOURS"] = "12"
+    importlib.reload(auth)
+    check("a positive value is still honoured", auth.session_seconds(), 12 * 3600)
+
+    # Sliding renewal. A fresh cookie is NOT re-issued on every request (that
+    # would put a Set-Cookie on every response for nothing); an aged one is,
+    # which is what stops the browser's 400-day cap from ending an active
+    # session.
+    class _Req:
+        def __init__(self, token): self.cookies = {auth.COOKIE_NAME: token} if token else {}
+    fresh = auth.issue_session({"email": "x@spotdraft.com"})
+    check("a brand-new session is not re-issued",
+          auth.needs_renewal(_Req(fresh)), False)
+    aged = auth._sign({"email": "x@spotdraft.com", "name": "",
+                       "exp": _time.time() + 60}, b"session")
+    check("an aged one is", auth.needs_renewal(_Req(aged)), True)
+    check("no cookie means nothing to renew", auth.needs_renewal(_Req(None)), False)
+    check("a forged cookie is never renewed",
+          auth.needs_renewal(_Req("not.a.token")), False)
+finally:
+    if _prev is None:
+        _os.environ.pop("QC_SESSION_HOURS", None)
+    else:
+        _os.environ["QC_SESSION_HOURS"] = _prev
+    importlib.reload(auth)
+
+print()
 print("=== the CSM page: every role reads it, and refreshes it ===")
 # Deliberately open to members end to end: a CSM checking what is open on their
 # own accounts is reading, not administering.

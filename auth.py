@@ -25,7 +25,16 @@ import vault
 
 ALLOWED_DOMAIN = os.getenv("QC_ALLOWED_DOMAIN", "spotdraft.com").lower()
 COOKIE_NAME    = "qc_session"
+# 0 means "do not expire": sessions last as long as the browser will keep the
+# cookie. Safe here only because authorisation is re-checked on every request —
+# `current_user` re-reads the user row and refuses anyone deactivated, so
+# removing access does NOT depend on waiting for a session to lapse.
 SESSION_HOURS  = int(os.getenv("QC_SESSION_HOURS", "12"))
+
+# Browsers cap persistent cookies at 400 days (Chrome/Edge enforce it; others
+# are heading the same way), so this is the real ceiling on "never expires" —
+# promising more would be a number the browser quietly ignores.
+MAX_COOKIE_DAYS = 400
 STATE_TTL      = 600          # 10 minutes
 
 
@@ -363,12 +372,23 @@ async def exchange_code(request: Request, code: str) -> dict:
 
 # ── session cookie ────────────────────────────────────────────────────────────
 
+def session_seconds() -> int:
+    """How long a session is good for, in seconds."""
+    if SESSION_HOURS <= 0:
+        return MAX_COOKIE_DAYS * 86400
+    return SESSION_HOURS * 3600
+
+
 def issue_session(user: dict) -> str:
+    # The token keeps an `exp` even when expiry is disabled, rather than
+    # omitting it: `_unsign` is shared with the OAuth state check, whose
+    # ten-minute TTL depends on a missing `exp` being treated as expired.
+    # Teaching it that absent means "forever" would quietly lift that TTL too.
     return _sign(
         {
             "email": user["email"],
             "name":  user.get("name") or "",
-            "exp":   time.time() + SESSION_HOURS * 3600,
+            "exp":   time.time() + session_seconds(),
         },
         b"session",
     )
@@ -377,12 +397,37 @@ def issue_session(user: dict) -> str:
 def set_session_cookie(response, token: str) -> None:
     response.set_cookie(
         COOKIE_NAME, token,
-        max_age=SESSION_HOURS * 3600,
+        max_age=session_seconds(),
         httponly=True,
         samesite="lax",
         secure=_cookie_secure(),
         path="/",
     )
+
+
+# How much of a session must elapse before using the app re-issues it. Not
+# every request: that would put a Set-Cookie on every response for no gain.
+RENEW_AFTER = 0.25
+
+
+def needs_renewal(request) -> bool:
+    """True when this request should be handed a fresh cookie.
+
+    Without renewal "never expires" is still a deadline: browsers cap a
+    persistent cookie at MAX_COOKIE_DAYS whatever the server asks for, so an
+    untouched session would end after 400 days mid-use. Re-issuing while
+    someone is active pushes that horizon ahead of them, which is what makes
+    "no auto logout" actually true rather than merely distant.
+    """
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return False
+    payload = _unsign(token, b"session")
+    if not payload:
+        return False
+    total = session_seconds()
+    left = payload.get("exp", 0) - time.time()
+    return left < total * (1 - RENEW_AFTER)
 
 
 def clear_session_cookie(response) -> None:

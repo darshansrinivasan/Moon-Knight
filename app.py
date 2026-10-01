@@ -135,13 +135,21 @@ async def auth_gate(request: Request, call_next):
     if auth.is_public_path(path):
         return await call_next(request)
 
-    if auth.current_user(request) is None:
+    user = auth.current_user(request)
+    if user is None:
         if path.startswith("/api/"):
             return JSONResponse({"detail": "Sign-in required"}, status_code=401)
         nxt = request.url.path or "/"
         return RedirectResponse(f"/login?next={nxt}", status_code=302)
 
-    return await call_next(request)
+    response = await call_next(request)
+    # Sliding session: using the app keeps you signed in. Renewal is what makes
+    # "no expiry" true in practice — the server can promise forever, but the
+    # browser still drops a persistent cookie at 400 days, so an active
+    # session has to be re-issued before it gets there.
+    if auth.needs_renewal(request):
+        auth.set_session_cookie(response, auth.issue_session(user))
+    return response
 
 
 # ── sign-in ───────────────────────────────────────────────────────────────────
